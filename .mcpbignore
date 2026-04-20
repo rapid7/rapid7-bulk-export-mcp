@@ -1,0 +1,42 @@
+# Version control
+.git/
+.github/
+
+# Tests
+tests/
+
+# Documentation
+docs/
+README.md
+SECURITY.md
+LICENSE
+
+# Build artifacts
+*.mcpb
+rapid7-bulk-export-skill-*.zip
+
+# IDE and OS
+.vscode/
+.idea/
+.kiro/
+.DS_Store
+Thumbs.db
+
+# Python artifacts
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.coverage
+htmlcov/
+.venv/
+venv/
+
+# Data files (should not be bundled)
+*.csv
+*.parquet
+*.db
+*.db.wal
+
+# Skill folder (separate distribution)
+rapid7-bulk-export-skill/
