@@ -1,0 +1,17 @@
+openapi: 3.0.0
+info:
+  title: rapid7-bulk-export-mcp
+  description: An MCP for the Bulk Export API Created by Craig Roberts via the GitHub Connector
+  x-cortex-git:
+    github:
+      alias: r7org
+      repository: rapid7/rapid7-bulk-export-mcp
+  x-cortex-tag: rapid7-bulk-export-mcp
+  x-cortex-type: service
+  x-cortex-domain-parents:
+    - tag: surface-command
+  x-cortex-groups:
+    - target:not-deployed
+    - strategy:cloud
+    - exposure:internal-ship
+    

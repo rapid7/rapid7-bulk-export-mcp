@@ -1,0 +1,66 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "rapid7-vulnerability-export"
+version = "0.2.6"
+description = "Python script to export vulnerability data from Rapid7 InsightVM using the Bulk Export API"
+requires-python = ">=3.10"
+dependencies = [
+    "requests>=2.31.0",
+    "pyarrow>=12.0.0",
+    "duckdb>=0.9.0",
+    "fastmcp>=0.2.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.4.0",
+    "hypothesis>=6.82.0",
+    "responses>=0.23.0",
+    "ruff>=0.14.0",
+]
+
+[project.scripts]
+rapid7-mcp-server = "src.mcp_server:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src"]
+
+[dependency-groups]
+dev = [
+    "pytest>=7.4.0",
+    "hypothesis>=6.82.0",
+    "responses>=0.23.0",
+    "ruff>=0.14.0",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = ["test_*.py"]
+python_classes = ["Test*"]
+python_functions = ["test_*"]
+addopts = [
+    "-v",
+    "--strict-markers",
+    "--tb=short",
+]
+markers = [
+    "property: Property-based tests using hypothesis",
+    "unit: Unit tests for specific functionality",
+    "integration: Integration tests for complete workflows",
+]
+
+[tool.hypothesis]
+max_examples = 100
+
+[tool.ruff]
+target-version = "py310"
+line-length = 120
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I"]
+
+[tool.ruff.lint.isort]
+known-first-party = ["src"]

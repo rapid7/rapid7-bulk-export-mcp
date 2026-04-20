@@ -1,0 +1,64 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+
+.kiro/
+
+# Virtual environments
+venv/
+env/
+ENV/
+.venv
+.venv/
+
+# Testing
+.pytest_cache/
+.coverage
+htmlcov/
+.hypothesis/
+.benchmarks/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Kiro
+.kiro/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Project specific
+*.csv
+*.parquet
+rapid7_bulk_export_tracking.db
+rapid7_bulk_export_tracking.db.wal
+rapid7_bulk_export.db
+rapid7_bulk_export.db.wal
+
+# Build artifacts
+*.mcpb
+rapid7-bulk-export-skill-*.zip
+rapid7-bulk-export-skill.zip

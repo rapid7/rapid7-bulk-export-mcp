@@ -1,0 +1,121 @@
+{
+  "manifest_version": "0.4",
+  "name": "rapid7-bulk-export",
+  "display_name": "Rapid7 Bulk Export",
+  "version": "0.2.6",
+  "description": "Export and analyze Rapid7 InsightVM vulnerability data via SQL queries",
+  "long_description": "Connects to the Rapid7 Bulk Export API to fetch vulnerability and asset data, loads it into a local DuckDB database, and exposes SQL query tools for AI-powered security analysis. Supports export reuse, EPSS-based prioritization, and cross-cloud vulnerability tracking.",
+  "author": {
+    "name": "Rapid7",
+    "url": "https://github.com/rapid7/rapid7-bulk-export-mcp"
+  },
+  "icons": [
+    {
+      "src": "icon-light.png",
+      "size": "256x256",
+      "theme": "light"
+    },
+    {
+      "src": "icon-dark.png",
+      "size": "256x256",
+      "theme": "dark"
+    }
+  ],
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/rapid7/rapid7-bulk-export-mcp.git"
+  },
+  "server": {
+    "type": "uv",
+    "entry_point": "run_server.py",
+    "mcp_config": {
+      "command": "uv",
+      "args": [
+        "run",
+        "--directory",
+        "${__dirname}",
+        "run_server.py"
+      ],
+      "env": {
+        "RAPID7_API_KEY": "${user_config.api_key}",
+        "RAPID7_REGION": "${user_config.region}"
+      }
+    }
+  },
+  "tools": [
+    {
+      "name": "start_export",
+      "description": "Start a new Rapid7 export job (instant, non-blocking). Returns an export ID."
+    },
+    {
+      "name": "check_export_status",
+      "description": "Check the current status of a Rapid7 export job (instant, non-blocking)."
+    },
+    {
+      "name": "download_and_load_export",
+      "description": "Download a completed export and load it into the database for querying."
+    },
+    {
+      "name": "export_and_load",
+      "description": "Convenience wrapper: start, poll, download, and load in one blocking call (3-5 min). Prefer the step-by-step tools."
+    },
+    {
+      "name": "load_from_parquet",
+      "description": "Load vulnerability data from existing local Parquet files."
+    },
+    {
+      "name": "query_vulnerabilities",
+      "description": "Execute SQL queries against the vulnerability database."
+    },
+    {
+      "name": "get_schema",
+      "description": "Get the vulnerabilities table schema and column types."
+    },
+    {
+      "name": "get_stats",
+      "description": "Get summary statistics about the loaded vulnerability data."
+    },
+    {
+      "name": "list_exports",
+      "description": "List recent Rapid7 exports tracked in the system."
+    }
+  ],
+  "keywords": [
+    "security",
+    "vulnerabilities",
+    "rapid7",
+    "insightvm",
+    "bulk-export",
+    "analysis"
+  ],
+  "license": "MIT",
+  "privacy_policies": [
+    "https://www.rapid7.com/privacy-policy/"
+  ],
+  "compatibility": {
+    "platforms": [
+      "darwin",
+      "win32",
+      "linux"
+    ],
+    "runtimes": {
+      "python": ">=3.10"
+    }
+  },
+  "user_config": {
+    "api_key": {
+      "type": "string",
+      "title": "Rapid7 API Key",
+      "description": "Your Rapid7 InsightVM API key (User or Organization key). Generate one at Administration > API Key Management in the Rapid7 Insight Platform.",
+      "sensitive": true,
+      "required": true
+    },
+    "region": {
+      "type": "string",
+      "title": "Rapid7 Region",
+      "description": "Your Rapid7 data storage region: us, eu, ca, au, or ap. Find this under your account name in the Insight Platform.",
+      "required": true,
+      "default": "us"
+    }
+  }
+}
