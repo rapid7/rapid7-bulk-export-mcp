@@ -38,6 +38,12 @@ class VulnerabilityDatabase:
         """
         self.db_path = db_path or ":memory:"
         self.conn = duckdb.connect(self.db_path)
+        # Restrict file permissions to owner-only for on-disk databases
+        # since they may contain sensitive vulnerability data
+        if self.db_path != ":memory:":
+            import os
+
+            os.chmod(self.db_path, 0o600)
         self._setup_database()
 
     def _setup_database(self):

@@ -42,7 +42,7 @@ def initialize_database(db_path: str = "rapid7_bulk_export.db") -> Vulnerability
         openWorldHint=False,
     )
 )
-def load_from_parquet(parquet_path: str) -> str:
+def load_rapid7_parquet(parquet_path: str) -> str:
     """Load vulnerability data from existing Parquet file(s).
 
     Use this if you already have Parquet files downloaded and want to skip
@@ -60,19 +60,31 @@ def load_from_parquet(parquet_path: str) -> str:
         import glob
         from pathlib import Path
 
+        ALLOWED_ROOT = (Path.home() / ".rapid7-mcp" / "imports").resolve()
+
+        # Resolve and validate path is within allowed root
+        resolved = Path(parquet_path).resolve()
+        try:
+            resolved.relative_to(ALLOWED_ROOT)
+        except ValueError:
+            return (
+                f"✗ Error: Path must be within {ALLOWED_ROOT}\n"
+                f"Resolved path '{resolved}' is outside the allowed directory.\n"
+                f"Please copy your Parquet files into {ALLOWED_ROOT} first."
+            )
+
         # Check if path exists
-        path = Path(parquet_path)
-        if not path.exists():
-            return f"✗ Error: Path does not exist: {parquet_path}"
+        if not resolved.exists():
+            return f"✗ Error: Path does not exist: {resolved}"
 
         # Get list of parquet files
-        if path.is_file():
-            parquet_files = [str(path)]
+        if resolved.is_file():
+            parquet_files = [str(resolved)]
         else:
-            parquet_files = glob.glob(str(path / "*.parquet"))
+            parquet_files = glob.glob(str(resolved / "*.parquet"))
 
         if not parquet_files:
-            return f"✗ Error: No Parquet files found at: {parquet_path}"
+            return f"✗ Error: No Parquet files found at: {resolved}"
 
         # Initialize database if needed
         if db is None:
@@ -87,7 +99,7 @@ def load_from_parquet(parquet_path: str) -> str:
         return (
             f"✓ Successfully loaded {row_count} vulnerabilities from {len(parquet_files)} file(s).\n\n"
             f"Statistics:\n{json.dumps(stats, indent=2, default=str)}\n\n"
-            f"You can now query the data using query, get_schema, or get_stats tools."
+            f"You can now query the data using query_rapid7, get_rapid7_schema, or get_rapid7_stats tools."
         )
 
     except Exception as e:
@@ -102,7 +114,11 @@ def load_from_parquet(parquet_path: str) -> str:
         openWorldHint=True,
     )
 )
-def start_export(export_type: str = "vulnerability", start_date: str = "", end_date: str = "") -> str:
+def start_rapid7_export(
+    export_type: str = "vulnerability",
+    start_date: str = "",
+    end_date: str = "",
+) -> str:
     """Start a new Rapid7 export job (non-blocking).
 
     This is a fast, non-blocking call that creates an export job on the
@@ -110,17 +126,23 @@ def start_export(export_type: str = "vulnerability", start_date: str = "", end_d
     will process in the background on Rapid7's servers (typically 3-5
     minutes).
 
-    Use check_export_status(export_id) to monitor progress, then
-    download_and_load_export(export_id, export_type="...") once it completes.
+    Use check_rapid7_export_status(export_id) to monitor progress, then
+    download_rapid7_export(export_id, export_type="...") once it completes.
 
     If an export from today already exists, returns that export's ID
     instead of creating a duplicate.
+
+    For remediation exports, the Rapid7 API limits each request to 31 days.
+    If the date range exceeds 31 days, this tool automatically splits it
+    into multiple 31-day chunks and kicks off an export for each chunk.
 
     Args:
         export_type: Type of export to create. One of "vulnerability",
                      "policy", or "remediation".
         start_date: Start date in YYYY-MM-DD format (only for remediation exports).
+                    Defaults to 30 days ago if not specified.
         end_date: End date in YYYY-MM-DD format (only for remediation exports).
+                  Defaults to today if not specified.
 
     Returns:
         The export ID and next steps.
@@ -148,7 +170,7 @@ def start_export(export_type: str = "vulnerability", start_date: str = "", end_d
                 f"Created: {today_export['created_at']}\n"
                 f"Rows: {today_export['row_count']}\n\n"
                 f"Load it with: "
-                f"download_and_load_export("
+                f"download_rapid7_export("
                 f'export_id="{eid}", '
                 f'export_type="{export_type}")'
             )
@@ -160,22 +182,64 @@ def start_export(export_type: str = "vulnerability", start_date: str = "", end_d
             print("Creating new vulnerability export...", file=sys.stderr)
             new_id = create_vulnerability_export(config)
 
+            print(f"Created {export_type} export with ID: {new_id}", file=sys.stderr)
+
+            tracker = ExportTracker()
+            tracker.save_export(
+                export_id=new_id,
+                status="PENDING",
+                parquet_urls=[],
+                export_type=export_type,
+            )
+            tracker.close()
+
+            return (
+                f"✓ Vulnerability export job created.\n\n"
+                f"Export ID: {new_id}\n"
+                f"Status: PENDING\n\n"
+                f"The export is now processing on Rapid7's servers "
+                f"(typically 3-5 minutes).\n"
+                f'Check progress: check_rapid7_export_status(export_id="{new_id}")\n'
+                f"Once COMPLETE, load with: "
+                f'download_rapid7_export(export_id="{new_id}", export_type="vulnerability")'
+            )
+
         elif export_type == "policy":
             from .export_manager import create_policy_export
 
             print("Creating new policy export...", file=sys.stderr)
             new_id = create_policy_export(config)
 
+            print(f"Created {export_type} export with ID: {new_id}", file=sys.stderr)
+
+            tracker = ExportTracker()
+            tracker.save_export(
+                export_id=new_id,
+                status="PENDING",
+                parquet_urls=[],
+                export_type=export_type,
+            )
+            tracker.close()
+
+            return (
+                f"✓ Policy export job created.\n\n"
+                f"Export ID: {new_id}\n"
+                f"Status: PENDING\n\n"
+                f"The export is now processing on Rapid7's servers "
+                f"(typically 3-5 minutes).\n"
+                f'Check progress: check_rapid7_export_status(export_id="{new_id}")\n'
+                f"Once COMPLETE, load with: "
+                f'download_rapid7_export(export_id="{new_id}", export_type="policy")'
+            )
+
         elif export_type == "remediation":
             import datetime as _dt
+            import re as _re
 
             if not start_date:
                 start_date = (_dt.date.today() - _dt.timedelta(days=30)).isoformat()
             if not end_date:
                 end_date = _dt.date.today().isoformat()
-
-            # Validate dates
-            import re as _re
 
             date_pattern = r"^\d{4}-\d{2}-\d{2}$"
             if not _re.match(date_pattern, start_date):
@@ -183,146 +247,43 @@ def start_export(export_type: str = "vulnerability", start_date: str = "", end_d
             if not _re.match(date_pattern, end_date):
                 return f"✗ Invalid end_date format: '{end_date}'. Expected YYYY-MM-DD (e.g. '2024-01-31')."
 
-            from .export_manager import create_remediation_export
+            from .export_manager import build_remediation_date_chunks, create_remediation_export
 
-            print("Creating new remediation export...", file=sys.stderr)
-            new_id = create_remediation_export(config, start_date, end_date)
+            chunks = build_remediation_date_chunks(start_date, end_date)
 
-        print(f"Created {export_type} export with ID: {new_id}", file=sys.stderr)
+            export_ids = []
+            tracker = ExportTracker()
+            for chunk_start, chunk_end in chunks:
+                print(f"Creating remediation export: {chunk_start} → {chunk_end}", file=sys.stderr)
+                eid = create_remediation_export(config, chunk_start, chunk_end)
+                export_ids.append({"id": eid, "start": chunk_start, "end": chunk_end})
 
-        # Track the export immediately so it can be recovered if the session is lost
-        tracker = ExportTracker()
-        tracker.save_export(
-            export_id=new_id,
-            status="PENDING",
-            parquet_urls=[],
-            export_type=export_type,
-        )
-        tracker.close()
+                tracker.save_export(
+                    export_id=eid,
+                    status="PENDING",
+                    parquet_urls=[],
+                    export_type="remediation",
+                )
+            tracker.close()
 
-        return (
-            f"✓ {export_type.capitalize()} export job created.\n\n"
-            f"Export ID: {new_id}\n"
-            f"Status: PENDING\n\n"
-            f"The export is now processing on Rapid7's servers "
-            f"(typically 3-5 minutes).\n"
-            f"Check progress: "
-            f"check_export_status("
-            f'export_id="{new_id}")\n'
-            f"Once COMPLETE, load with: "
-            f"download_and_load_export("
-            f'export_id="{new_id}", '
-            f'export_type="{export_type}")'
-        )
+            lines = [
+                f"✓ Created {len(export_ids)} remediation export(s) covering {start_date} → {end_date}.\n",
+            ]
+            for i, info in enumerate(export_ids, 1):
+                lines.append(f"  {i}. {info['start']} → {info['end']}  Export ID: {info['id']}")
+
+            lines.append("")
+            lines.append("Each export takes ~3-5 minutes to process.")
+            lines.append('Check progress with: check_rapid7_export_status(export_id="...")')
+            lines.append(
+                'Once COMPLETE, load each with: download_rapid7_export(export_id="...", export_type="remediation")'
+            )
+            lines.append("All chunks load into the same vulnerability_remediation table.")
+
+            return "\n".join(lines)
 
     except Exception as e:
         return f"✗ Error starting {export_type} export: {str(e)}"
-
-
-@mcp.tool(
-    annotations=ToolAnnotations(
-        readOnlyHint=False,
-        destructiveHint=False,
-        idempotentHint=True,
-        openWorldHint=True,
-    )
-)
-def start_remediation_export(period: str = "3m", start_date: str = "", end_date: str = "") -> str:
-    """Start one or more remediation exports covering up to 6 months.
-
-    The Rapid7 API limits each remediation export to 31 days. This tool
-    automatically splits longer periods into 31-day chunks and kicks off
-    an export for each chunk (all non-blocking).
-
-    Specify either a period shorthand OR explicit start/end dates:
-      - period="1m"  → last 1 month
-      - period="3m"  → last 3 months (default)
-      - period="6m"  → last 6 months
-      - start_date / end_date → custom range (YYYY-MM-DD), ignores period
-
-    After all exports complete, load each one with download_and_load_export().
-    Results accumulate in the same vulnerability_remediation table.
-
-    Args:
-        period: Shorthand for how far back to look. One of "1m", "3m", "6m".
-                Ignored when start_date and end_date are both provided.
-        start_date: Optional start date (YYYY-MM-DD). Overrides period.
-        end_date: Optional end date (YYYY-MM-DD). Defaults to today.
-
-    Returns:
-        List of export IDs with instructions for polling and loading.
-    """
-    import datetime as _dt
-    import re as _re
-
-    try:
-        from .config import load_config
-        from .export_manager import build_remediation_date_chunks, create_remediation_export
-        from .export_tracker import ExportTracker
-
-        config = load_config()
-
-        # Resolve date range
-        today = _dt.date.today()
-
-        if start_date and end_date:
-            # Custom range — validate formats
-            date_pattern = r"^\d{4}-\d{2}-\d{2}$"
-            if not _re.match(date_pattern, start_date):
-                return f"✗ Invalid start_date format: '{start_date}'. Expected YYYY-MM-DD."
-            if not _re.match(date_pattern, end_date):
-                return f"✗ Invalid end_date format: '{end_date}'. Expected YYYY-MM-DD."
-        else:
-            # Period-based
-            period_map = {
-                "1m": 30,
-                "3m": 90,
-                "6m": 180,
-            }
-            if period not in period_map:
-                return f"✗ Invalid period: '{period}'. Valid values: {', '.join(period_map.keys())}"
-
-            end_date = today.isoformat()
-            start_date = (today - _dt.timedelta(days=period_map[period])).isoformat()
-
-        # Build 31-day chunks
-        chunks = build_remediation_date_chunks(start_date, end_date)
-
-        # Kick off an export for each chunk
-        export_ids = []
-        tracker = ExportTracker()
-        for chunk_start, chunk_end in chunks:
-            print(f"Creating remediation export: {chunk_start} → {chunk_end}", file=sys.stderr)
-            eid = create_remediation_export(config, chunk_start, chunk_end)
-            export_ids.append({"id": eid, "start": chunk_start, "end": chunk_end})
-
-            tracker.save_export(
-                export_id=eid,
-                status="PENDING",
-                parquet_urls=[],
-                export_type="remediation",
-            )
-        tracker.close()
-
-        # Build response
-        lines = [
-            f"✓ Created {len(export_ids)} remediation export(s) covering {start_date} → {end_date}.\n",
-        ]
-        for i, info in enumerate(export_ids, 1):
-            lines.append(f"  {i}. {info['start']} → {info['end']}  Export ID: {info['id']}")
-
-        lines.append("")
-        lines.append("Each export takes ~3-5 minutes to process.")
-        lines.append('Check progress with: check_export_status(export_id="...")')
-        lines.append(
-            'Once COMPLETE, load each with: download_and_load_export(export_id="...", export_type="remediation")'
-        )
-        lines.append("All chunks load into the same vulnerability_remediation table.")
-
-        return "\n".join(lines)
-
-    except Exception as e:
-        return f"✗ Error starting remediation exports: {str(e)}"
 
 
 @mcp.tool(
@@ -333,14 +294,14 @@ def start_remediation_export(period: str = "3m", start_date: str = "", end_date:
         openWorldHint=True,
     )
 )
-def check_export_status(export_id: str) -> str:
+def check_rapid7_export_status(export_id: str) -> str:
     """Check the current status of a Rapid7 export job.
 
     This is a fast, non-blocking call that queries the Rapid7 API once
     and returns the current status. Does NOT poll or wait.
 
     Args:
-        export_id: The export ID returned by start_export.
+        export_id: The export ID returned by start_rapid7_export.
 
     Returns:
         Current export status and next steps.
@@ -361,13 +322,16 @@ def check_export_status(export_id: str) -> str:
                 f"Status: {current_status}\n"
                 f"Files ready: {file_count}\n\n"
                 f"Load the data with: "
-                f"download_and_load_export("
+                f"download_rapid7_export("
                 f'export_id="{export_id}", '
                 f'export_type="...")'
             )
         elif current_status == "FAILED":
             return (
-                f"✗ Export failed.\n\nExport ID: {export_id}\nStatus: FAILED\n\nStart a new export with: start_export()"
+                f"✗ Export failed.\n\n"
+                f"Export ID: {export_id}\n"
+                f"Status: FAILED\n\n"
+                f"Start a new export with: start_rapid7_export()"
             )
         else:
             return (
@@ -375,7 +339,7 @@ def check_export_status(export_id: str) -> str:
                 f"Export ID: {export_id}\n"
                 f"Status: {current_status}\n\n"
                 f"Check again in 30-60 seconds with: "
-                f"check_export_status("
+                f"check_rapid7_export_status("
                 f'export_id="{export_id}")'
             )
 
@@ -391,10 +355,10 @@ def check_export_status(export_id: str) -> str:
         openWorldHint=True,
     )
 )
-def download_and_load_export(export_id: str, export_type: str = "vulnerability") -> str:
+def download_rapid7_export(export_id: str, export_type: str = "vulnerability") -> str:
     """Download a completed Rapid7 export and load into the database.
 
-    Call this after check_export_status confirms the export is COMPLETE.
+    Call this after check_rapid7_export_status confirms the export is COMPLETE.
     Downloads the Parquet files and loads them into the local DuckDB
     database for querying.
 
@@ -431,7 +395,7 @@ def download_and_load_export(export_id: str, export_type: str = "vulnerability")
                 f"Export ID: {export_id}\n"
                 f"Status: {current_status}\n\n"
                 f"Check again with: "
-                f"check_export_status("
+                f"check_rapid7_export_status("
                 f'export_id="{export_id}")'
             )
 
@@ -512,15 +476,15 @@ def download_and_load_export(export_id: str, export_type: str = "vulnerability")
             f"{row_info}\n\n"
             f"Statistics:\n"
             f"{json.dumps(stats, indent=2, default=str)}\n\n"
-            f"Query the data with query, "
-            f"get_schema, or get_stats."
+            f"Query the data with query_rapid7, "
+            f"get_rapid7_schema, or get_rapid7_stats."
         )
 
     except Exception as e:
         return (
             f"✗ Error downloading/loading {export_type}: {str(e)}\n\n"
             f"Export ID: {export_id}\n"
-            f"Retry with: download_and_load_export("
+            f"Retry with: download_rapid7_export("
             f'export_id="{export_id}", '
             f'export_type="{export_type}")'
         )
@@ -534,7 +498,7 @@ def download_and_load_export(export_id: str, export_type: str = "vulnerability")
         openWorldHint=False,
     )
 )
-def query(sql: str) -> str:
+def query_rapid7(sql: str) -> str:
     """Execute a SQL query against the Rapid7 database.
 
     The database contains the following tables loaded from Rapid7 InsightVM
@@ -583,7 +547,7 @@ def query(sql: str) -> str:
     global db
 
     if db is None:
-        return "Error: Database not initialized. Please run start_export and download_and_load_export first."
+        return "Error: Database not initialized. Please run start_rapid7_export and download_rapid7_export first."
 
     try:
         results = db.query(sql)
@@ -601,7 +565,7 @@ def query(sql: str) -> str:
         openWorldHint=False,
     )
 )
-def get_schema() -> str:
+def get_rapid7_schema() -> str:
     """Get the schema of all database tables.
 
     Returns column names and data types for all existing tables:
@@ -616,7 +580,7 @@ def get_schema() -> str:
     global db
 
     if db is None:
-        return "Error: Database not initialized. Please run start_export and download_and_load_export first."
+        return "Error: Database not initialized. Please run start_rapid7_export and download_rapid7_export first."
 
     try:
         schema = db.get_schema()
@@ -634,7 +598,7 @@ def get_schema() -> str:
         openWorldHint=False,
     )
 )
-def get_stats() -> str:
+def get_rapid7_stats() -> str:
     """Get summary statistics for all database tables.
 
     Returns row counts and relevant distributions for all existing tables:
@@ -649,7 +613,7 @@ def get_stats() -> str:
     global db
 
     if db is None:
-        return "Error: Database not initialized. Please run start_export and download_and_load_export first."
+        return "Error: Database not initialized. Please run start_rapid7_export and download_rapid7_export first."
 
     try:
         stats = db.get_stats()
@@ -667,7 +631,7 @@ def get_stats() -> str:
         openWorldHint=False,
     )
 )
-def list_exports(limit: int = 10) -> str:
+def list_rapid7_exports(limit: int = 10) -> str:
     """List recent Rapid7 exports tracked in the system.
 
     Shows export metadata including export ID, date, status, type, and row counts.
