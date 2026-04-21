@@ -1,4 +1,4 @@
-.PHONY: help version check-version bump-version lint lint-fix test build \
+.PHONY: help version check-version bump-version lint lint-fix security test build \
        package-mcpb package-skill package clean create-release release
 
 SHELL := /usr/bin/env bash
@@ -49,6 +49,9 @@ bump-version: ## Set a new version: make bump-version V=0.3.0
 lint: ## Run ruff linter and format check
 	uv run ruff check src/ tests/
 	uv run ruff format --check src/ tests/
+
+security: ## Run bandit security scan
+	uv run bandit -r src/ -c pyproject.toml
 
 lint-fix: ## Auto-fix lint and format issues
 	uv run ruff check --fix src/ tests/
