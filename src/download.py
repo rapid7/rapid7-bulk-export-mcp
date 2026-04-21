@@ -50,7 +50,7 @@ def download_parquet_file(url: str, api_key: str) -> bytes:
     }
 
     # Stream download for memory efficiency
-    response = requests.get(url, headers=headers, stream=True)
+    response = requests.get(url, headers=headers, stream=True, timeout=30)
 
     # Raise HTTPError for failed downloads
     response.raise_for_status()

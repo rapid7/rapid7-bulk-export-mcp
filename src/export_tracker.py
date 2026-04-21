@@ -50,7 +50,7 @@ class ExportTracker:
             """)
         except Exception:
             # Column already exists, ignore
-            pass
+            pass  # nosec B110
 
         # Create index on export_date and export_type for fast lookups
         self.conn.execute("""
