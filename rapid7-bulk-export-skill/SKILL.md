@@ -1,7 +1,7 @@
 ---
 name: Rapid7 Bulk Export Analysis Expert
 description: Expert analysis of Rapid7 InsightVM data exported via Bulk Export API with strict MCP requirements
-version: 0.2.7
+version: 0.2.8
 author: Rapid7 Bulk Export MCP Tool
 tags: [security, vulnerabilities, rapid7, insightvm, bulk-export, analysis, policy, remediation]
 ---
