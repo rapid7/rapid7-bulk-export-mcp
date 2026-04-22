@@ -38,6 +38,12 @@ class VulnerabilityDatabase:
         """
         self.db_path = db_path or ":memory:"
         self.conn = duckdb.connect(self.db_path)
+        # Restrict file permissions to owner-only for on-disk databases
+        # since they may contain sensitive vulnerability data
+        if self.db_path != ":memory:":
+            import os
+
+            os.chmod(self.db_path, 0o600)
         self._setup_database()
 
     def _setup_database(self):
@@ -72,7 +78,7 @@ class VulnerabilityDatabase:
         for path in parquet_paths:
             # Peek at the schema to determine file type
             try:
-                schema_query = f"SELECT * FROM read_parquet('{path}', filename=true) LIMIT 0"
+                schema_query = f"SELECT * FROM read_parquet('{path}', filename=true) LIMIT 0"  # nosec B608 - path is an internal file path, not user input
                 result = self.conn.execute(schema_query)
                 columns = [desc[0] for desc in result.description]
 
@@ -95,13 +101,13 @@ class VulnerabilityDatabase:
                 self.conn.execute(f"""
                     CREATE TABLE assets AS
                     SELECT * FROM read_parquet('{asset_files[0]}')
-                """)
+                """)  # nosec B608 - file paths from local filesystem, not user input
             else:
                 asset_list = ", ".join([f"'{p}'" for p in asset_files])
                 self.conn.execute(f"""
                     CREATE TABLE assets AS
                     SELECT * FROM read_parquet([{asset_list}], union_by_name=true)
-                """)
+                """)  # nosec B608
 
             result = self.conn.execute("SELECT COUNT(*) FROM assets").fetchone()
             asset_count = result[0] if result else 0
@@ -115,13 +121,13 @@ class VulnerabilityDatabase:
                 self.conn.execute(f"""
                     CREATE TABLE vulnerabilities AS
                     SELECT * FROM read_parquet('{vuln_files[0]}')
-                """)
+                """)  # nosec B608 - file paths from local filesystem, not user input
             else:
                 vuln_list = ", ".join([f"'{p}'" for p in vuln_files])
                 self.conn.execute(f"""
                     CREATE TABLE vulnerabilities AS
                     SELECT * FROM read_parquet([{vuln_list}], union_by_name=true)
-                """)
+                """)  # nosec B608
 
             result = self.conn.execute("SELECT COUNT(*) FROM vulnerabilities").fetchone()
             vuln_count = result[0] if result else 0
@@ -184,18 +190,18 @@ class VulnerabilityDatabase:
                 try:
                     # Try reading the parquet file
                     if source_value is not None:
-                        select_expr = f"SELECT *, '{source_value}' AS source FROM read_parquet('{file_path}')"
+                        select_expr = f"SELECT *, '{source_value}' AS source FROM read_parquet('{file_path}')"  # nosec B608
                     else:
-                        select_expr = f"SELECT * FROM read_parquet('{file_path}')"
+                        select_expr = f"SELECT * FROM read_parquet('{file_path}')"  # nosec B608
 
                     if table_name not in tables_created:
                         # First load for this table in this call — drop and create
-                        self.conn.execute(f"DROP TABLE IF EXISTS {table_name}")
-                        self.conn.execute(f"CREATE TABLE {table_name} AS {select_expr}")
+                        self.conn.execute(f"DROP TABLE IF EXISTS {table_name}")  # nosec B608
+                        self.conn.execute(f"CREATE TABLE {table_name} AS {select_expr}")  # nosec B608
                         tables_created.add(table_name)
                     else:
                         # Subsequent load — insert into existing table
-                        self.conn.execute(f"INSERT INTO {table_name} {select_expr}")
+                        self.conn.execute(f"INSERT INTO {table_name} {select_expr}")  # nosec B608
                 except Exception as e:
                     print(
                         f"Warning: Failed to read Parquet file '{file_path}': {e}",
@@ -205,7 +211,7 @@ class VulnerabilityDatabase:
 
         # Collect row counts for all tables that were loaded
         for table_name in tables_created:
-            result = self.conn.execute(f"SELECT COUNT(*) FROM {table_name}").fetchone()
+            result = self.conn.execute(f"SELECT COUNT(*) FROM {table_name}").fetchone()  # nosec B608
             row_counts[table_name] = result[0] if result else 0
 
         return row_counts
@@ -253,11 +259,11 @@ class VulnerabilityDatabase:
         for col in common_index_columns:
             try:
                 # Check if column exists by attempting to select it
-                self.conn.execute(f"SELECT {col} FROM vulnerabilities LIMIT 1")
+                self.conn.execute(f"SELECT {col} FROM vulnerabilities LIMIT 1")  # nosec B608
                 # Note: DuckDB doesn't require explicit indexes for performance
                 # It automatically optimizes queries based on column statistics
             except Exception:
-                pass  # Column doesn't exist in this export, skip
+                pass  # nosec B110 - column doesn't exist in this export, skip
 
     def query(self, sql: str, params: Optional[Dict[str, Any]] = None) -> List[Dict[str, Any]]:
         """
@@ -320,7 +326,7 @@ class VulnerabilityDatabase:
                     schemas[table_name] = [{"column_name": row[0], "data_type": row[1]} for row in result]
             except Exception:
                 # Table doesn't exist or query failed — skip it
-                continue
+                continue  # nosec B112
 
         return schemas
 

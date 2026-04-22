@@ -2,7 +2,7 @@
   "manifest_version": "0.4",
   "name": "rapid7-bulk-export",
   "display_name": "Rapid7 Bulk Export",
-  "version": "0.2.6",
+  "version": "0.2.7",
   "description": "Export and analyze Rapid7 InsightVM vulnerability data via SQL queries",
   "long_description": "Connects to the Rapid7 Bulk Export API to fetch vulnerability and asset data, loads it into a local DuckDB database, and exposes SQL query tools for AI-powered security analysis. Supports export reuse, EPSS-based prioritization, and cross-cloud vulnerability tracking.",
   "author": {
@@ -44,39 +44,35 @@
   },
   "tools": [
     {
-      "name": "start_export",
-      "description": "Start a new Rapid7 export job (instant, non-blocking). Returns an export ID."
+      "name": "start_rapid7_export",
+      "description": "Start a new Rapid7 export job (instant, non-blocking). Returns an export ID. For remediation exports, automatically splits date ranges exceeding 31 days into chunks."
     },
     {
-      "name": "check_export_status",
+      "name": "check_rapid7_export_status",
       "description": "Check the current status of a Rapid7 export job (instant, non-blocking)."
     },
     {
-      "name": "download_and_load_export",
-      "description": "Download a completed export and load it into the database for querying."
+      "name": "download_rapid7_export",
+      "description": "Download a completed Rapid7 export and load it into the database for querying."
     },
     {
-      "name": "export_and_load",
-      "description": "Convenience wrapper: start, poll, download, and load in one blocking call (3-5 min). Prefer the step-by-step tools."
+      "name": "load_rapid7_parquet",
+      "description": "Load Rapid7 vulnerability data from existing local Parquet files."
     },
     {
-      "name": "load_from_parquet",
-      "description": "Load vulnerability data from existing local Parquet files."
+      "name": "query_rapid7",
+      "description": "Execute SQL queries against the Rapid7 vulnerability database."
     },
     {
-      "name": "query_vulnerabilities",
-      "description": "Execute SQL queries against the vulnerability database."
+      "name": "get_rapid7_schema",
+      "description": "Get the Rapid7 database table schemas and column types."
     },
     {
-      "name": "get_schema",
-      "description": "Get the vulnerabilities table schema and column types."
+      "name": "get_rapid7_stats",
+      "description": "Get summary statistics about the loaded Rapid7 vulnerability data."
     },
     {
-      "name": "get_stats",
-      "description": "Get summary statistics about the loaded vulnerability data."
-    },
-    {
-      "name": "list_exports",
+      "name": "list_rapid7_exports",
       "description": "List recent Rapid7 exports tracked in the system."
     }
   ],

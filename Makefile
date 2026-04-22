@@ -1,5 +1,5 @@
-.PHONY: help version check-version bump-version lint lint-fix test build \
-       package-mcpb package-skill package clean release
+.PHONY: help version check-version bump-version lint lint-fix security test build \
+       package-mcpb package-skill package clean create-release release
 
 SHELL := /usr/bin/env bash
 VERSION := $(shell jq -r '.version' manifest.json)
@@ -50,6 +50,9 @@ lint: ## Run ruff linter and format check
 	uv run ruff check src/ tests/
 	uv run ruff format --check src/ tests/
 
+security: ## Run bandit security scan
+	uv run bandit -r src/ -c pyproject.toml
+
 lint-fix: ## Auto-fix lint and format issues
 	uv run ruff check --fix src/ tests/
 	uv run ruff format src/ tests/
@@ -62,7 +65,7 @@ test: ## Run the test suite
 # ---------------------------------------------------------------------------
 
 package-mcpb: ## Build the MCPB bundle
-	@command -v mcpb >/dev/null 2>&1 || { echo "mcpb not found — run: npm install -g @anthropic-ai/mcpb"; exit 1; }
+	@command -v mcpb >/dev/null 2>&1 || { echo "mcpb not found -- run: npm install -g @anthropic-ai/mcpb"; exit 1; }
 	mcpb pack
 	@MCPB=$$(ls *.mcpb 2>/dev/null | head -1); \
 	if [ -z "$$MCPB" ]; then echo "ERROR: mcpb pack produced no .mcpb file"; exit 1; fi; \
@@ -75,12 +78,14 @@ package-skill: ## Zip the agent skill directory
 package: package-mcpb package-skill ## Build all release artifacts
 
 # ---------------------------------------------------------------------------
-# Release (used by CI — requires GH_TOKEN and gh CLI)
+# Release (used by CI -- requires GH_TOKEN and gh CLI)
 # ---------------------------------------------------------------------------
 
-release: check-version package ## Create a GitHub release with all artifacts
+create-release: ## Upload artifacts to a new GitHub release
 	@MCPB=$$(ls *.mcpb 2>/dev/null | head -1); \
 	SKILL="rapid7-bulk-export-skill-$(VERSION).zip"; \
+	if [ -z "$$MCPB" ]; then echo "ERROR: no .mcpb artifact found -- run make package first"; exit 1; fi; \
+	if [ ! -f "$$SKILL" ]; then echo "ERROR: $$SKILL not found -- run make package first"; exit 1; fi; \
 	echo "Creating release v$(VERSION)"; \
 	echo "  MCPB:  $$MCPB"; \
 	echo "  Skill: $$SKILL"; \
@@ -89,6 +94,8 @@ release: check-version package ## Create a GitHub release with all artifacts
 		--generate-notes \
 		"$$MCPB" \
 		"$$SKILL"
+
+release: check-version package create-release ## Full release: verify, build, and publish
 
 # ---------------------------------------------------------------------------
 # Housekeeping

@@ -56,7 +56,7 @@ def send_graphql_request(
         body["variables"] = variables
 
     # Send POST request
-    response = requests.post(endpoint, headers=headers, json=body)
+    response = requests.post(endpoint, headers=headers, json=body, timeout=30)
 
     # Raise HTTPError for non-200 status codes
     response.raise_for_status()

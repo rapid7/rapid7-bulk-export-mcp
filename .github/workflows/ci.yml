@@ -1,0 +1,115 @@
+name: CI
+
+on:
+  pull_request:
+    branches: [main]
+
+# Zero permissions by default — broadened per-job below.
+permissions: {}
+
+jobs:
+  version:
+    name: Version check
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+
+      - name: Verify versions are in sync
+        run: make check-version
+
+      - name: Check if release code changed
+        id: changes
+        run: |
+          CHANGED=$(git diff --name-only origin/main...HEAD -- \
+            src/ \
+            rapid7-bulk-export-skill/ \
+            pyproject.toml \
+            manifest.json \
+            requirements.txt)
+          if [ -n "$CHANGED" ]; then
+            echo "release_code=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "release_code=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Check release does not already exist
+        if: steps.changes.outputs.release_code == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          TAG="v$(make version)"
+          if gh release view "$TAG" > /dev/null 2>&1; then
+            echo "::error::Release $TAG already exists. Bump the version with: make bump-version V=x.y.z"
+            exit 1
+          fi
+
+  lint:
+    name: Lint
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+
+      - uses: astral-sh/setup-uv@22695119d769bdb6f7032ad67b9bca0ef8c4a174 # v5.4.0
+        with:
+          enable-cache: false
+
+      - name: Ruff check
+        run: uv run ruff check src/ tests/
+
+      - name: Ruff format check
+        run: uv run ruff format --check src/ tests/
+
+  security:
+    name: Security
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+
+      - uses: astral-sh/setup-uv@22695119d769bdb6f7032ad67b9bca0ef8c4a174 # v5.4.0
+        with:
+          enable-cache: false
+
+      - name: Install security tools
+        run: |
+          uv tool install pip-audit
+          uv tool install bandit
+
+      - name: Audit dependencies for known vulnerabilities
+        run: uv export --no-hashes --frozen -o /tmp/requirements.txt && pip-audit -r /tmp/requirements.txt
+
+      - name: Bandit security scan
+        run: bandit -r src/ -c pyproject.toml || bandit -r src/
+
+  test:
+    name: Test (Python ${{ matrix.python-version }})
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.10", "3.12", "3.13"]
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+
+      - uses: astral-sh/setup-uv@22695119d769bdb6f7032ad67b9bca0ef8c4a174 # v5.4.0
+        with:
+          enable-cache: false
+
+      - name: Run tests
+        run: uv run --python ${{ matrix.python-version }} pytest --tb=short

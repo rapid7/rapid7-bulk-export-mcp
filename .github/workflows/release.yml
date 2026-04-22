@@ -4,12 +4,16 @@ on:
   push:
     branches: [main]
 
-permissions:
-  contents: write
+# Zero permissions by default -- broadened per-job below.
+permissions: {}
 
 jobs:
   release:
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      id-token: write
+      attestations: write
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
 
@@ -20,31 +24,25 @@ jobs:
       - name: Verify versions are in sync
         run: make check-version
 
-      - name: Check if release already exists
-        id: check_release
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          TAG="v${{ steps.version.outputs.version }}"
-          if gh release view "$TAG" > /dev/null 2>&1; then
-            echo "exists=true" >> "$GITHUB_OUTPUT"
-            echo "Release $TAG already exists, skipping."
-          else
-            echo "exists=false" >> "$GITHUB_OUTPUT"
-          fi
-
       - name: Setup Node.js
-        if: steps.check_release.outputs.exists == 'false'
         uses: actions/setup-node@53b83947a5a98c8d113130e565377fae1a50d02f # v6.3.0
         with:
           node-version: '22'
 
       - name: Install mcpb CLI
-        if: steps.check_release.outputs.exists == 'false'
         run: npm install -g @anthropic-ai/mcpb@2.1.2
 
-      - name: Create release
-        if: steps.check_release.outputs.exists == 'false'
+      - name: Build release artifacts
+        run: make package
+
+      - name: Attest build provenance
+        uses: actions/attest-build-provenance@a2bbfa25375fe432b6a289bc6b6cd05ecd0c4c32 # v4.1.0
+        with:
+          subject-path: |
+            *.mcpb
+            rapid7-bulk-export-skill-${{ steps.version.outputs.version }}.zip
+
+      - name: Create GitHub release
         env:
           GH_TOKEN: ${{ github.token }}
-        run: make release
+        run: make create-release
