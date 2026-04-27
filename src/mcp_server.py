@@ -18,7 +18,7 @@ from mcp.types import ToolAnnotations
 from .duckdb_loader import VulnerabilityDatabase
 
 # Initialize FastMCP server
-mcp = FastMCP("rapid7-vulnerability-server")
+mcp = FastMCP("rapid7-bulk-export")
 
 # Global database instance
 db: Optional[VulnerabilityDatabase] = None
@@ -36,6 +36,7 @@ def initialize_database(db_path: str = "rapid7_bulk_export.db") -> Vulnerability
 
 @mcp.tool(
     annotations=ToolAnnotations(
+        title="Load Rapid7 Parquet File",
         readOnlyHint=False,
         destructiveHint=False,
         idempotentHint=True,
@@ -108,6 +109,7 @@ def load_rapid7_parquet(parquet_path: str) -> str:
 
 @mcp.tool(
     annotations=ToolAnnotations(
+        title="Start Rapid7 Export",
         readOnlyHint=False,
         destructiveHint=False,
         idempotentHint=True,
@@ -288,6 +290,7 @@ def start_rapid7_export(
 
 @mcp.tool(
     annotations=ToolAnnotations(
+        title="Check Rapid7 Export Status",
         readOnlyHint=True,
         destructiveHint=False,
         idempotentHint=True,
@@ -349,6 +352,7 @@ def check_rapid7_export_status(export_id: str) -> str:
 
 @mcp.tool(
     annotations=ToolAnnotations(
+        title="Download Rapid7 Export",
         readOnlyHint=False,
         destructiveHint=False,
         idempotentHint=True,
@@ -492,6 +496,7 @@ def download_rapid7_export(export_id: str, export_type: str = "vulnerability") -
 
 @mcp.tool(
     annotations=ToolAnnotations(
+        title="Query Rapid7 Data",
         readOnlyHint=True,
         destructiveHint=False,
         idempotentHint=True,
@@ -559,6 +564,7 @@ def query_rapid7(sql: str) -> str:
 
 @mcp.tool(
     annotations=ToolAnnotations(
+        title="Get Rapid7 Schema",
         readOnlyHint=True,
         destructiveHint=False,
         idempotentHint=True,
@@ -592,6 +598,7 @@ def get_rapid7_schema() -> str:
 
 @mcp.tool(
     annotations=ToolAnnotations(
+        title="Get Rapid7 Statistics",
         readOnlyHint=True,
         destructiveHint=False,
         idempotentHint=True,
@@ -625,6 +632,7 @@ def get_rapid7_stats() -> str:
 
 @mcp.tool(
     annotations=ToolAnnotations(
+        title="List Rapid7 Exports",
         readOnlyHint=True,
         destructiveHint=False,
         idempotentHint=True,

@@ -40,6 +40,7 @@ bump-version: ## Set a new version: make bump-version V=0.3.0
 	jq --arg v "$(V)" '.version = $$v' manifest.json > manifest.tmp && mv manifest.tmp manifest.json
 	sed -i.bak 's/^version = ".*"/version = "$(V)"/' pyproject.toml && rm -f pyproject.toml.bak
 	sed -i.bak 's/^version: .*/version: $(V)/' rapid7-bulk-export-skill/SKILL.md && rm -f rapid7-bulk-export-skill/SKILL.md.bak
+	uv lock
 	@echo "Bumped to $(V)"
 
 # ---------------------------------------------------------------------------

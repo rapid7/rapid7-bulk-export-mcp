@@ -2,7 +2,7 @@
   "manifest_version": "0.4",
   "name": "rapid7-bulk-export",
   "display_name": "Rapid7 Bulk Export",
-  "version": "0.2.8",
+  "version": "0.2.9",
   "description": "Export and analyze Rapid7 InsightVM vulnerability data via SQL queries",
   "long_description": "Connects to the Rapid7 Bulk Export API to fetch vulnerability and asset data, loads it into a local DuckDB database, and exposes SQL query tools for AI-powered security analysis. Supports export reuse, EPSS-based prioritization, and cross-cloud vulnerability tracking.",
   "author": {
@@ -85,6 +85,8 @@
     "bulk-export",
     "analysis"
   ],
+  "homepage": "https://github.com/rapid7/rapid7-bulk-export-mcp",
+  "support": "https://github.com/rapid7/rapid7-bulk-export-mcp/issues",
   "license": "MIT",
   "privacy_policies": [
     "https://www.rapid7.com/privacy-policy/"
