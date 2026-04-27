@@ -1286,7 +1286,7 @@ wheels = [
 
 [[package]]
 name = "rapid7-vulnerability-export"
-version = "0.2.8"
+version = "0.2.9"
 source = { editable = "." }
 dependencies = [
     { name = "duckdb" },
