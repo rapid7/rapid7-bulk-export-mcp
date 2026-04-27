@@ -85,6 +85,8 @@
     "bulk-export",
     "analysis"
   ],
+  "homepage": "https://github.com/rapid7/rapid7-bulk-export-mcp",
+  "support": "https://github.com/rapid7/rapid7-bulk-export-mcp/issues",
   "license": "MIT",
   "privacy_policies": [
     "https://www.rapid7.com/privacy-policy/"
