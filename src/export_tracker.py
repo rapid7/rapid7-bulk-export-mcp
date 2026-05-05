@@ -4,6 +4,7 @@ Export Tracker Module
 This module manages a separate DuckDB database to track Rapid7 export metadata,
 allowing reuse of exports from the same day instead of creating new ones.
 """
+import os
 
 from datetime import date, datetime
 from typing import Any, Dict, List, Optional
@@ -28,6 +29,9 @@ class ExportTracker:
     def _initialize_db(self):
         """Initialize the export tracking database and create schema."""
         self.conn = duckdb.connect(self.db_path)
+
+        # Restrict file permissions
+        os.chmod(self.db_path, 0o600)
 
         # Create exports table to track export metadata
         self.conn.execute("""
@@ -270,6 +274,26 @@ class ExportTracker:
         if self.conn:
             self.conn.close()
             self.conn = None
+
+    def purge(self):
+        """Purge all tracking data by deleting the database file.
+
+        Closes the connection, removes the database file and any associated
+        WAL file from disk, then reinitializes with a fresh connection.
+        """
+        # Close existing connection
+        if self.conn:
+            self.conn.close()
+            self.conn = None
+
+        # Delete database file and WAL
+        for suffix in ("", ".wal"):
+            path = self.db_path + suffix
+            if os.path.exists(path):
+                os.remove(path)
+
+        # Reinitialize fresh
+        self._initialize_db()
 
     def __enter__(self):
         """Context manager entry."""
