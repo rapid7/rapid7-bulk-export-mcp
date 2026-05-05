@@ -9,6 +9,7 @@ allowing AI assistants to query and analyze the data.
 import datetime as _dt
 import glob
 import json
+import os
 import re as _re
 import shutil
 import sys
@@ -837,14 +838,17 @@ def main():
         print("  database_path    Path to the DuckDB database file (optional, default: rapid7_bulk_export.db)")
         print()
         print("Environment Variables:")
-        print("  RAPID7_API_KEY   Your Rapid7 InsightVM API key (required)")
-        print("  RAPID7_REGION    Your Rapid7 region: us, eu, ca, au, or ap (required)")
+        print("  RAPID7_API_KEY    Your Rapid7 InsightVM API key (required)")
+        print("  RAPID7_REGION     Your Rapid7 region: us, eu, ca, au, or ap (required)")
+        print("  MCP_TRANSPORT     Transport protocol: 'stdio' (default) or 'http'")
+        print("  MCP_HOST          HTTP bind address (default: 0.0.0.0)")
+        print("  MCP_PORT          HTTP port (default: 8000)")
         print()
         print("Example:")
         print("  rapid7-mcp-server /path/to/rapid7_bulk_export.db")
         print()
-        print("The server communicates via stdio using the Model Context Protocol.")
-        print("It should be configured in your MCP client (e.g., Kiro, Claude Desktop).")
+        print("The server communicates via stdio by default, or streamable HTTP")
+        print("when MCP_TRANSPORT=http (for Docker / remote deployments).")
         print()
         print("See README.md for configuration details.")
         sys.exit(0)
@@ -860,8 +864,15 @@ def main():
         print(f"Warning: Could not initialize database: {e}", file=sys.stderr)
         print("Database will be created when data is loaded.", file=sys.stderr)
 
-    # Run the FastMCP server
-    mcp.run()
+    # Determine transport mode from environment
+    transport = os.environ.get("MCP_TRANSPORT", "stdio")
+    if transport == "http":
+        host = os.environ.get("MCP_HOST", "0.0.0.0")
+        port = int(os.environ.get("MCP_PORT", "8000"))
+        print(f"Starting HTTP transport on {host}:{port}", file=sys.stderr)
+        mcp.run(transport="http", host=host, port=port)
+    else:
+        mcp.run()
 
 
 if __name__ == "__main__":
