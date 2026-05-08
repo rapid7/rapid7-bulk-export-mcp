@@ -1,7 +1,7 @@
 ---
 name: Rapid7 Bulk Export Analysis Expert
 description: Expert analysis of Rapid7 InsightVM data exported via Bulk Export API with strict MCP requirements
-version: 0.2.9
+version: 0.3.0
 author: Rapid7 Bulk Export MCP Tool
 tags: [security, vulnerabilities, rapid7, insightvm, bulk-export, analysis, policy, remediation]
 ---
@@ -146,7 +146,7 @@ The `assets` table contains core asset identification and metadata. Each row rep
 - `osDescription` (String) - Full OS description
 
 **Risk and Organization:**
-- `riskScore` (Double) - Asset risk score
+- `riskScore` (Double) - Asset risk score (scale: 1–1000; legacy — deprecated as of Jan 2026, use riskScoreV2_0 instead)
 - `sites` (List) - Array of sites the asset belongs to
 - `assetGroups` (List) - Asset groups
 - `tags` (List) - Tags with name and tagType
@@ -197,8 +197,8 @@ The `vulnerabilities` table contains detailed vulnerability information. Each ro
 - `severity` (String) - Severity level (Critical, Severe, Moderate)
 - `severityRank` (Integer) - Severity rank
 - `severityScore` (Integer) - Severity score
-- `riskScore` (Double) - Legacy risk score (use when riskScoreV2_0 not present)
-- `riskScoreV2_0` (Integer) - Active risk score (preferred)
+- `riskScore` (Double) - Legacy risk score (scale: 1–1000; deprecated as of Jan 2026 — use riskScoreV2_0 instead)
+- `riskScoreV2_0` (Integer) - Active Risk score (scale: 1–1000; preferred)
 
 **Exploit & Threat Intelligence:**
 - `hasExploits` (Boolean) - Whether exploits exist
@@ -292,7 +292,7 @@ The `vulnerability_remediation` table tracks the lifecycle of vulnerabilities �
 - `cvssV3AttackVector` (String) - CVSS v3 attack vector
 
 **Risk:**
-- `riskScoreV2_0` (Integer) - Active risk score
+- `riskScoreV2_0` (Integer) - Active Risk score (scale: 1–1000)
 
 **Temporal Information:**
 - `datePublished` (Timestamp) - When the vulnerability was published
@@ -942,7 +942,7 @@ ORDER BY pciSeverity DESC;
 9. **Consider performance** - Common filter columns: vulnId, assetId, severity, cvssV3Score, hasExploits, hostName, ip, finalStatus, source, cveId
 10. **Leverage EPSS scores** - Use epssscore and epsspercentile for data-driven prioritization (available in both vulnerabilities and vulnerability_remediation tables)
 11. **Check for reintroductions** - Monitor reintroducedTimestamp in both vulnerabilities and vulnerability_remediation tables to catch recurring issues
-12. **Use risk scores wisely** - Prefer riskScoreV2_0 over riskScore when available
+12. **Use risk scores wisely** - Use riskScoreV2_0 (Active Risk); legacy riskScore is deprecated as of Jan 2026. Both use a 1–1000 scale; if a raw value exceeds 1000, display it as 1000
 13. **Combine metrics** - Use CVSS, EPSS, severity, and hasExploits together for best prioritization
 14. **Asset-first analysis** - Start with asset queries to understand your environment before diving into vulnerabilities or policies
 15. **Cloud awareness** - Use cloud identifiers (awsInstanceId, azureResourceId, gcpObjectId) to segment analysis by provider
