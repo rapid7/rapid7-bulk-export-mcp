@@ -1,0 +1,12 @@
+{
+  "mcpServers": {
+    "rapid7-bulk-export": {
+      "command": "rapid7-mcp-server",
+      "args": [],
+      "env": {
+        "RAPID7_API_KEY": "${RAPID7_API_KEY}",
+        "RAPID7_REGION": "${RAPID7_REGION}"
+      }
+    }
+  }
+}

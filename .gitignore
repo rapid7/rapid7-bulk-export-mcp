@@ -20,8 +20,6 @@ wheels/
 .installed.cfg
 *.egg
 
-.kiro/
-
 # Virtual environments
 venv/
 env/
@@ -44,7 +42,7 @@ htmlcov/
 *~
 
 # Kiro
-.kiro/
+.kiro/settings/
 
 # OS
 .DS_Store
