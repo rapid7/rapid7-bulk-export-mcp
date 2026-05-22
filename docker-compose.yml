@@ -1,0 +1,21 @@
+services:
+  rapid7-bulk-export-mcp:
+    build: .
+    image: rapid7-bulk-export-mcp
+    container_name: rapid7-bulk-export-mcp
+    ports:
+      - "8000:8000"
+    environment:
+      - RAPID7_API_KEY=${RAPID7_API_KEY}
+      - RAPID7_REGION=${RAPID7_REGION}
+      - MCP_TRANSPORT=http
+    volumes:
+      - rapid7-data:/data
+    read_only: true
+    tmpfs:
+      - /tmp
+    security_opt:
+      - no-new-privileges:true
+
+volumes:
+  rapid7-data:

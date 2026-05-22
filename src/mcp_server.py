@@ -6,16 +6,32 @@ This server exposes vulnerability data through the Model Context Protocol,
 allowing AI assistants to query and analyze the data.
 """
 
+import datetime as _dt
+import glob
 import json
+import os
+import re as _re
+import shutil
 import sys
 import tempfile
 from pathlib import Path
 from typing import Optional
 
+import duckdb as _duckdb
 from fastmcp import FastMCP
 from mcp.types import ToolAnnotations
 
+from .config import load_config
+from .download import download_all_files
 from .duckdb_loader import VulnerabilityDatabase
+from .export_manager import (
+    build_remediation_date_chunks,
+    create_policy_export,
+    create_remediation_export,
+    create_vulnerability_export,
+    get_export_status,
+)
+from .export_tracker import ExportTracker
 
 # Initialize FastMCP server
 mcp = FastMCP("rapid7-bulk-export")
@@ -58,9 +74,6 @@ def load_rapid7_parquet(parquet_path: str) -> str:
     global db
 
     try:
-        import glob
-        from pathlib import Path
-
         ALLOWED_ROOT = (Path.home() / ".rapid7-mcp" / "imports").resolve()
 
         # Resolve and validate path is within allowed root
@@ -91,14 +104,37 @@ def load_rapid7_parquet(parquet_path: str) -> str:
         if db is None:
             initialize_database()
 
+        # Detect file types by peeking at schema and build prefix map
+        prefix_file_map: dict = {}
+        for pf in parquet_files:
+            try:
+                cols = [
+                    desc[0]
+                    for desc in _duckdb.execute(
+                        f"SELECT * FROM read_parquet('{pf}') LIMIT 0"  # nosec B608
+                    ).description
+                ]
+                if "vulnId" in cols or "checkId" in cols:
+                    prefix_file_map.setdefault("asset_vulnerability", []).append(pf)
+                else:
+                    prefix_file_map.setdefault("asset", []).append(pf)
+            except Exception:
+                # If we can't determine type, skip the file
+                continue
+
+        if not prefix_file_map:
+            return f"✗ Error: Could not determine schema for any Parquet files at: {resolved}"
+
         # Load into database
-        row_count = db.load_parquet_files(parquet_files)
+        row_counts = db.load_parquet_files_by_prefix(prefix_file_map)
+        row_count = sum(row_counts.values())
 
         # Get statistics
         stats = db.get_stats()
 
         return (
-            f"✓ Successfully loaded {row_count} vulnerabilities from {len(parquet_files)} file(s).\n\n"
+            f"✓ Successfully loaded {row_count} rows from {len(parquet_files)} file(s).\n\n"
+            f"Per-table row counts: {json.dumps(row_counts, default=str)}\n\n"
             f"Statistics:\n{json.dumps(stats, indent=2, default=str)}\n\n"
             f"You can now query the data using query_rapid7, get_rapid7_schema, or get_rapid7_stats tools."
         )
@@ -153,9 +189,6 @@ def start_rapid7_export(
         return f"✗ Invalid export_type: '{export_type}'. Valid values are: {', '.join(VALID_EXPORT_TYPES)}"
 
     try:
-        from .config import load_config
-        from .export_tracker import ExportTracker
-
         config = load_config()
 
         # Check if we already have a completed export from today
@@ -179,8 +212,6 @@ def start_rapid7_export(
 
         # Create the export based on type
         if export_type == "vulnerability":
-            from .export_manager import create_vulnerability_export
-
             print("Creating new vulnerability export...", file=sys.stderr)
             new_id = create_vulnerability_export(config)
 
@@ -207,8 +238,6 @@ def start_rapid7_export(
             )
 
         elif export_type == "policy":
-            from .export_manager import create_policy_export
-
             print("Creating new policy export...", file=sys.stderr)
             new_id = create_policy_export(config)
 
@@ -235,9 +264,6 @@ def start_rapid7_export(
             )
 
         elif export_type == "remediation":
-            import datetime as _dt
-            import re as _re
-
             if not start_date:
                 start_date = (_dt.date.today() - _dt.timedelta(days=30)).isoformat()
             if not end_date:
@@ -248,8 +274,6 @@ def start_rapid7_export(
                 return f"✗ Invalid start_date format: '{start_date}'. Expected YYYY-MM-DD (e.g. '2024-01-01')."
             if not _re.match(date_pattern, end_date):
                 return f"✗ Invalid end_date format: '{end_date}'. Expected YYYY-MM-DD (e.g. '2024-01-31')."
-
-            from .export_manager import build_remediation_date_chunks, create_remediation_export
 
             chunks = build_remediation_date_chunks(start_date, end_date)
 
@@ -310,9 +334,6 @@ def check_rapid7_export_status(export_id: str) -> str:
         Current export status and next steps.
     """
     try:
-        from .config import load_config
-        from .export_manager import get_export_status
-
         config = load_config()
         status_info = get_export_status(config, export_id)
         current_status = status_info["status"]
@@ -380,13 +401,6 @@ def download_rapid7_export(export_id: str, export_type: str = "vulnerability") -
         return f"✗ Invalid export_type: '{export_type}'. Valid values are: {', '.join(VALID_EXPORT_TYPES)}"
 
     try:
-        import shutil
-
-        from .config import load_config
-        from .download import download_all_files
-        from .export_manager import get_export_status
-        from .export_tracker import ExportTracker
-
         config = load_config()
 
         # Verify export is complete
@@ -418,42 +432,29 @@ def download_rapid7_export(export_id: str, export_type: str = "vulnerability") -
         temp_dir = tempfile.mkdtemp()
 
         try:
-            if export_type == "vulnerability":
-                # Schema-based detection approach
-                temp_parquet_paths = []
-                for i, data in enumerate(file_data):
-                    temp_path = Path(temp_dir) / f"export_{i}.parquet"
-                    temp_path.write_bytes(data)
-                    temp_parquet_paths.append(str(temp_path))
+            # All export types use prefix-based routing from the API response
+            result_list = status_info.get("result") or []
 
-                row_count = db.load_parquet_files(temp_parquet_paths)
-                row_info = f"Rows loaded: {row_count}"
+            url_to_prefix = {}
+            for item in result_list:
+                prefix = item.get("prefix", "")
+                for url in item.get("urls", []):
+                    url_to_prefix[url] = prefix
 
+            prefix_file_map = {}
+            for i, (url, data) in enumerate(zip(parquet_urls, file_data)):
+                temp_path = Path(temp_dir) / f"{export_type}_export_{i}.parquet"
+                temp_path.write_bytes(data)
+                prefix = url_to_prefix.get(url, "unknown")
+                prefix_file_map.setdefault(prefix, []).append(str(temp_path))
+
+            if export_type == "policy":
+                row_counts = db.load_parquet_files_by_prefix(prefix_file_map, skip_prefixes={"asset"})
             else:
-                # Prefix-based loading for policy and remediation
-                result_list = status_info.get("result") or []
+                row_counts = db.load_parquet_files_by_prefix(prefix_file_map)
 
-                url_to_prefix = {}
-                for item in result_list:
-                    prefix = item.get("prefix", "")
-                    for url in item.get("urls", []):
-                        url_to_prefix[url] = prefix
-
-                prefix_file_map = {}
-                for i, (url, data) in enumerate(zip(parquet_urls, file_data)):
-                    temp_path = Path(temp_dir) / f"{export_type}_export_{i}.parquet"
-                    temp_path.write_bytes(data)
-                    prefix = url_to_prefix.get(url, "unknown")
-                    prefix_file_map.setdefault(prefix, []).append(str(temp_path))
-
-                if export_type == "policy":
-                    row_counts = db.load_parquet_files_by_prefix(prefix_file_map, skip_prefixes={"asset"})
-                else:
-                    # remediation
-                    row_counts = db.load_parquet_files_by_prefix(prefix_file_map)
-
-                row_count = sum(row_counts.values())
-                row_info = f"Rows loaded: {row_count}\nPer-table row counts: {json.dumps(row_counts, default=str)}"
+            row_count = sum(row_counts.values())
+            row_info = f"Rows loaded: {row_count}\nPer-table row counts: {json.dumps(row_counts, default=str)}"
 
             # Save export metadata
             tracker = ExportTracker()
@@ -632,6 +633,53 @@ def get_rapid7_stats() -> str:
 
 @mcp.tool(
     annotations=ToolAnnotations(
+        title="Purge Rapid7 Data",
+        readOnlyHint=False,
+        destructiveHint=True,
+        idempotentHint=True,
+        openWorldHint=False,
+    )
+)
+def purge_rapid7_data() -> str:
+    """Permanently delete all local Rapid7 data and tracking databases.
+
+    This removes:
+    - The main vulnerability database (rapid7_bulk_export.db)
+    - The export tracking database (rapid7_bulk_export_tracking.db)
+    - Any associated WAL files
+
+    Use this when you are done with your analysis session, before handing
+    off a machine, or to free disk space. After purging, you will need to
+    run a new export to query data again.
+
+    Returns:
+        Confirmation of purged data.
+    """
+    global db
+
+    try:
+        # Purge main database
+        if db is not None:
+            db.purge()
+
+        # Purge tracking database
+        tracker = ExportTracker()
+        tracker.purge()
+
+        return (
+            "✓ All local Rapid7 data has been purged.\n\n"
+            "Deleted:\n"
+            "  - Vulnerability database (rapid7_bulk_export.db)\n"
+            "  - Export tracking database (rapid7_bulk_export_tracking.db)\n\n"
+            "To load new data, run start_rapid7_export() followed by download_rapid7_export()."
+        )
+
+    except Exception as e:
+        return f"✗ Error purging data: {str(e)}"
+
+
+@mcp.tool(
+    annotations=ToolAnnotations(
         title="List Rapid7 Exports",
         readOnlyHint=True,
         destructiveHint=False,
@@ -652,8 +700,6 @@ def list_rapid7_exports(limit: int = 10) -> str:
         Formatted list of recent exports
     """
     try:
-        from .export_tracker import ExportTracker
-
         tracker = ExportTracker()
         exports = tracker.list_exports(limit=limit)
         tracker.close()
@@ -787,14 +833,17 @@ def main():
         print("  database_path    Path to the DuckDB database file (optional, default: rapid7_bulk_export.db)")
         print()
         print("Environment Variables:")
-        print("  RAPID7_API_KEY   Your Rapid7 InsightVM API key (required)")
-        print("  RAPID7_REGION    Your Rapid7 region: us, eu, ca, au, or ap (required)")
+        print("  RAPID7_API_KEY    Your Rapid7 InsightVM API key (required)")
+        print("  RAPID7_REGION     Your Rapid7 region: us, eu, ca, au, or ap (required)")
+        print("  MCP_TRANSPORT     Transport protocol: 'stdio' (default) or 'http'")
+        print("  MCP_HOST          HTTP bind address (default: 0.0.0.0)")
+        print("  MCP_PORT          HTTP port (default: 8000)")
         print()
         print("Example:")
         print("  rapid7-mcp-server /path/to/rapid7_bulk_export.db")
         print()
-        print("The server communicates via stdio using the Model Context Protocol.")
-        print("It should be configured in your MCP client (e.g., Kiro, Claude Desktop).")
+        print("The server communicates via stdio by default, or streamable HTTP")
+        print("when MCP_TRANSPORT=http (for Docker / remote deployments).")
         print()
         print("See README.md for configuration details.")
         sys.exit(0)
@@ -810,8 +859,15 @@ def main():
         print(f"Warning: Could not initialize database: {e}", file=sys.stderr)
         print("Database will be created when data is loaded.", file=sys.stderr)
 
-    # Run the FastMCP server
-    mcp.run()
+    # Determine transport mode from environment
+    transport = os.environ.get("MCP_TRANSPORT", "stdio")
+    if transport == "http":
+        host = os.environ.get("MCP_HOST", "0.0.0.0")  # nosec B104 - intentional for Docker
+        port = int(os.environ.get("MCP_PORT", "8000"))
+        print(f"Starting HTTP transport on {host}:{port}", file=sys.stderr)
+        mcp.run(transport="http", host=host, port=port)
+    else:
+        mcp.run()
 
 
 if __name__ == "__main__":

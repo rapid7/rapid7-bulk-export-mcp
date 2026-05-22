@@ -5,6 +5,7 @@ This module handles loading Parquet files into DuckDB for efficient querying
 of vulnerability data.
 """
 
+import os
 import sys
 from typing import Any, Dict, List, Optional, Set, Tuple, Union
 
@@ -34,16 +35,13 @@ class VulnerabilityDatabase:
         Initialize the vulnerability database.
 
         Args:
-            db_path: Path to persistent database file. If None, uses in-memory database.
+            db_path: Path to persistent database file. Defaults to 'rapid7_bulk_export.db'.
         """
-        self.db_path = db_path or ":memory:"
+        self.db_path = db_path or "rapid7_bulk_export.db"
         self.conn = duckdb.connect(self.db_path)
-        # Restrict file permissions to owner-only for on-disk databases
-        # since they may contain sensitive vulnerability data
-        if self.db_path != ":memory:":
-            import os
-
-            os.chmod(self.db_path, 0o600)
+        self._locked_down = False
+        # Restrict file permissions to owner-only
+        os.chmod(self.db_path, 0o600)
         self._setup_database()
 
     def _setup_database(self):
@@ -52,92 +50,30 @@ class VulnerabilityDatabase:
         # DuckDB doesn't allow creating tables without columns
         pass
 
-    def load_parquet_files(self, parquet_paths: List[str]) -> int:
+    def _lockdown(self):
+        """Lock down the connection by disabling external filesystem access.
+
+        This is a one-way operation per connection — once disabled, external
+        access cannot be re-enabled. If more data needs to be loaded later,
+        the connection is reopened via _ensure_unlocked().
+
+        Blocks: read_csv, read_parquet, read_json, glob, and any other
+        filesystem or network access from user SQL queries.
         """
-        Load Parquet files into separate tables based on their schema.
+        if not self._locked_down:
+            self.conn.execute("SET enable_external_access = false")
+            self._locked_down = True
 
-        The Rapid7 Bulk Export API returns two types of files:
-        - Asset files: Contains asset information (prefix="asset")
-        - Asset-Vulnerability files: Contains vulnerability instances (prefix="asset_vulnerability")
+    def _ensure_unlocked(self):
+        """Ensure the connection allows external access for data loading.
 
-        This method detects the file type and loads them into appropriate tables.
-
-        Args:
-            parquet_paths: List of file paths to Parquet files
-
-        Returns:
-            int: Total number of rows loaded across all tables
+        If the connection was previously locked down, close and reopen it
+        since DuckDB doesn't allow re-enabling external access at runtime.
         """
-        if not parquet_paths:
-            raise ValueError("No Parquet files provided")
-
-        # Separate files by type based on their schema
-        asset_files = []
-        vuln_files = []
-
-        for path in parquet_paths:
-            # Peek at the schema to determine file type
-            try:
-                schema_query = f"SELECT * FROM read_parquet('{path}', filename=true) LIMIT 0"  # nosec B608 - path is an internal file path, not user input
-                result = self.conn.execute(schema_query)
-                columns = [desc[0] for desc in result.description]
-
-                # Asset files have columns like hostName, ip, mac, osFamily
-                # Vulnerability files have columns like vulnId, checkId, severity, cvssV3Score
-                if "vulnId" in columns or "checkId" in columns:
-                    vuln_files.append(path)
-                else:
-                    asset_files.append(path)
-            except Exception as e:
-                print(f"Warning: Could not determine type for {path}: {e}", file=sys.stderr)
-                continue
-
-        total_rows = 0
-
-        # Load asset files into 'assets' table
-        if asset_files:
-            self.conn.execute("DROP TABLE IF EXISTS assets")
-            if len(asset_files) == 1:
-                self.conn.execute(f"""
-                    CREATE TABLE assets AS
-                    SELECT * FROM read_parquet('{asset_files[0]}')
-                """)  # nosec B608 - file paths from local filesystem, not user input
-            else:
-                asset_list = ", ".join([f"'{p}'" for p in asset_files])
-                self.conn.execute(f"""
-                    CREATE TABLE assets AS
-                    SELECT * FROM read_parquet([{asset_list}], union_by_name=true)
-                """)  # nosec B608
-
-            result = self.conn.execute("SELECT COUNT(*) FROM assets").fetchone()
-            asset_count = result[0] if result else 0
-            total_rows += asset_count
-            print(f"Loaded {asset_count} assets into 'assets' table", file=sys.stderr)
-
-        # Load vulnerability files into 'vulnerabilities' table
-        if vuln_files:
-            self.conn.execute("DROP TABLE IF EXISTS vulnerabilities")
-            if len(vuln_files) == 1:
-                self.conn.execute(f"""
-                    CREATE TABLE vulnerabilities AS
-                    SELECT * FROM read_parquet('{vuln_files[0]}')
-                """)  # nosec B608 - file paths from local filesystem, not user input
-            else:
-                vuln_list = ", ".join([f"'{p}'" for p in vuln_files])
-                self.conn.execute(f"""
-                    CREATE TABLE vulnerabilities AS
-                    SELECT * FROM read_parquet([{vuln_list}], union_by_name=true)
-                """)  # nosec B608
-
-            result = self.conn.execute("SELECT COUNT(*) FROM vulnerabilities").fetchone()
-            vuln_count = result[0] if result else 0
-            total_rows += vuln_count
-            print(f"Loaded {vuln_count} vulnerability instances into 'vulnerabilities' table", file=sys.stderr)
-
-        # Create indexes for common query patterns
-        self._create_indexes()
-
-        return total_rows
+        if self._locked_down:
+            self.conn.close()
+            self.conn = duckdb.connect(self.db_path)
+            self._locked_down = False
 
     def load_parquet_files_by_prefix(
         self,
@@ -165,6 +101,9 @@ class VulnerabilityDatabase:
         if skip_prefixes is None:
             skip_prefixes = set()
 
+        # Reopen connection if previously locked down
+        self._ensure_unlocked()
+
         # Track which tables have been created fresh in this call
         tables_created: Set[str] = set()
         # Accumulate row counts per table
@@ -190,7 +129,10 @@ class VulnerabilityDatabase:
                 try:
                     # Try reading the parquet file
                     if source_value is not None:
-                        select_expr = f"SELECT *, '{source_value}' AS source FROM read_parquet('{file_path}')"  # nosec B608
+                        select_expr = (
+                            f"SELECT *, '{source_value}' AS source"
+                            f" FROM read_parquet('{file_path}')"  # nosec B608
+                        )
                     else:
                         select_expr = f"SELECT * FROM read_parquet('{file_path}')"  # nosec B608
 
@@ -213,6 +155,9 @@ class VulnerabilityDatabase:
         for table_name in tables_created:
             result = self.conn.execute(f"SELECT COUNT(*) FROM {table_name}").fetchone()  # nosec B608
             row_counts[table_name] = result[0] if result else 0
+
+        # Lock down external access now that loading is complete
+        self._lockdown()
 
         return row_counts
 
@@ -269,12 +214,20 @@ class VulnerabilityDatabase:
         """
         Execute a SQL query and return results as list of dictionaries.
 
+        The connection has external access disabled after data loading,
+        enforced at the DuckDB engine level. Filesystem reads (read_csv,
+        read_parquet, etc.) and network access are blocked regardless of
+        what SQL is submitted.
+
         Args:
             sql: SQL query string
             params: Optional parameters for parameterized queries
 
         Returns:
             List of dictionaries, one per row
+
+        Raises:
+            ValueError: If the query fails (e.g., blocked by external access restriction)
         """
         try:
             if params:
@@ -557,6 +510,28 @@ class VulnerabilityDatabase:
         """Close the database connection."""
         if self.conn:
             self.conn.close()
+
+    def purge(self):
+        """Purge all data by dropping all tables and deleting the database file.
+
+        Closes the connection, removes the database file and any associated
+        WAL file from disk, then reinitializes with a fresh connection.
+        """
+        # Close existing connection
+        if self.conn:
+            self.conn.close()
+            self.conn = None
+
+        # Delete database file and WAL
+        for suffix in ("", ".wal"):
+            path = self.db_path + suffix
+            if os.path.exists(path):
+                os.remove(path)
+
+        # Reinitialize fresh
+        self.conn = duckdb.connect(self.db_path)
+        self._locked_down = False
+        os.chmod(self.db_path, 0o600)
 
     def __enter__(self):
         """Context manager entry."""
