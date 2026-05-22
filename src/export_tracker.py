@@ -5,7 +5,6 @@ This module manages a separate DuckDB database to track Rapid7 export metadata,
 allowing reuse of exports from the same day instead of creating new ones.
 """
 import os
-
 from datetime import date, datetime
 from typing import Any, Dict, List, Optional
 
