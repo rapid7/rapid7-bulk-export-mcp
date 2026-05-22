@@ -219,9 +219,7 @@ def test_reload_after_lockdown(sample_parquet_file):
     db.load_parquet_files_by_prefix({"asset_vulnerability": [sample_parquet_file]})
 
     # Connection is now locked down — loading again should reopen it
-    row_counts = db.load_parquet_files_by_prefix(
-        {"asset_vulnerability": [sample_parquet_file]}
-    )
+    row_counts = db.load_parquet_files_by_prefix({"asset_vulnerability": [sample_parquet_file]})
     assert row_counts["vulnerabilities"] == 3
 
     # And queries should still work after re-lockdown

@@ -449,17 +449,12 @@ def download_rapid7_export(export_id: str, export_type: str = "vulnerability") -
                 prefix_file_map.setdefault(prefix, []).append(str(temp_path))
 
             if export_type == "policy":
-                row_counts = db.load_parquet_files_by_prefix(
-                    prefix_file_map, skip_prefixes={"asset"}
-                )
+                row_counts = db.load_parquet_files_by_prefix(prefix_file_map, skip_prefixes={"asset"})
             else:
                 row_counts = db.load_parquet_files_by_prefix(prefix_file_map)
 
             row_count = sum(row_counts.values())
-            row_info = (
-                f"Rows loaded: {row_count}\n"
-                f"Per-table row counts: {json.dumps(row_counts, default=str)}"
-            )
+            row_info = f"Rows loaded: {row_count}\nPer-table row counts: {json.dumps(row_counts, default=str)}"
 
             # Save export metadata
             tracker = ExportTracker()
@@ -867,7 +862,7 @@ def main():
     # Determine transport mode from environment
     transport = os.environ.get("MCP_TRANSPORT", "stdio")
     if transport == "http":
-        host = os.environ.get("MCP_HOST", "0.0.0.0")
+        host = os.environ.get("MCP_HOST", "0.0.0.0")  # nosec B104 - intentional for Docker
         port = int(os.environ.get("MCP_PORT", "8000"))
         print(f"Starting HTTP transport on {host}:{port}", file=sys.stderr)
         mcp.run(transport="http", host=host, port=port)
