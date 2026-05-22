@@ -283,6 +283,42 @@ Use the skill as a slash command: `/rapid7-bulk-export`.
 </details>
 
 <details>
+<summary><b>Azure + Microsoft Copilot Studio</b></summary>
+
+#### Deploy to Azure Container Apps
+
+Use the Azure Developer CLI to deploy the MCP server with persistent storage and Entra ID authentication:
+
+```bash
+cd deploy/azure
+azd auth login
+azd up
+```
+
+This provisions:
+- Azure Container Apps running the MCP server image
+- Azure Files share for persistent DuckDB storage
+- Entra ID app registration for OAuth 2.0 auth
+
+#### Connect to Copilot Studio
+
+1. In [Copilot Studio](https://copilotstudio.microsoft.com), create a new agent
+2. Add tool → MCP Server → enter your Container App `/mcp` URL
+3. Configure OAuth 2.0 (Manual mode) with the Client ID, Secret, and Tenant ID from `azd` outputs
+4. Set scopes to `api://<client-id>/mcp openid profile`
+5. Publish the agent to your users/groups
+
+For the full step-by-step guide including Entra ID setup, admin governance, and troubleshooting, see **[docs/copilot-studio-setup.md](./docs/copilot-studio-setup.md)**.
+
+#### Verify
+
+1. Confirm the container is running: `az containerapp show --name <app-name> --query "properties.runningStatus"`
+2. Test the endpoint: `curl https://<your-app-url>/mcp`
+3. In Copilot Studio, try: `Load the latest vulnerability data from Rapid7`
+
+</details>
+
+<details>
 <summary><b>Docker (remote / shared deployments)</b></summary>
 
 #### Build and Run

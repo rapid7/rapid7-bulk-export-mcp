@@ -1,0 +1,19 @@
+# Azure Developer CLI (azd) manifest for Rapid7 Bulk Export MCP
+# Deploy with: azd up
+
+name: rapid7-bulk-export-mcp
+metadata:
+  template: rapid7-bulk-export-mcp@0.4.0
+
+services:
+  rapid7-bulk-export:
+    host: containerapp
+    project: .
+    language: python
+    docker:
+      image: ghcr.io/rapid7/rapid7-bulk-export-mcp:latest
+
+infra:
+  provider: bicep
+  path: ./
+  module: main

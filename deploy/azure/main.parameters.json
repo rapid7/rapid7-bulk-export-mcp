@@ -1,0 +1,17 @@
+{
+  "contentVersion": "1.0.0.0",
+  "parameters": {
+    "environmentName": {
+      "value": "${AZURE_ENV_NAME}"
+    },
+    "location": {
+      "value": "${AZURE_LOCATION}"
+    },
+    "rapid7ApiKey": {
+      "value": "${RAPID7_API_KEY}"
+    },
+    "rapid7Region": {
+      "value": "${RAPID7_REGION}"
+    }
+  }
+}
