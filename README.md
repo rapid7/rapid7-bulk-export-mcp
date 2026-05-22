@@ -9,7 +9,7 @@ This tool is a best effort support, due to the bespoke and ever-changing nature 
 This tool exports data from Rapid7 Command Platform, via the [Rapid7 Bulk Export API](https://docs.rapid7.com/insightvm/bulk-export-api/) and makes it queryable in GenAI and Agentic workflows.
 
 - **MCP Server**: Embeds tools which allow the getting, processing and querying of data
-- **Agent Skill**: Gives additional context, schema knowledge and instructions on how to use the MCP tools
+- **Agent Skill / Kiro Power**: Gives additional context, schema knowledge and instructions on how to use the MCP tools
 - **DuckDB Database**: Local file-based database to allow structured rapid querying
 
 ## Features
@@ -120,7 +120,7 @@ Create or edit `.kiro/settings/mcp.json`:
       "args": [],
       "env": {
         "RAPID7_API_KEY": "your-api-key-here",
-        "RAPID7_REGION": "us"
+        "RAPID7_REGION": "your-region"
       }
     }
   }
@@ -163,7 +163,7 @@ Use the Claude Code CLI:
 ```bash
 claude mcp add --transport stdio \
   --env RAPID7_API_KEY=your-api-key-here \
-  --env RAPID7_REGION=us \
+  --env RAPID7_REGION=your-region \
   rapid7-bulk-export \
   -- rapid7-mcp-server
 ```
@@ -178,7 +178,7 @@ Or manually edit `~/.claude.json` (user scope) or `.mcp.json` (project scope):
       "args": [],
       "env": {
         "RAPID7_API_KEY": "your-api-key-here",
-        "RAPID7_REGION": "us"
+        "RAPID7_REGION": "your-region"
       }
     }
   }
@@ -245,7 +245,7 @@ Edit MCP settings in VS Code:
       "args": [],
       "env": {
         "RAPID7_API_KEY": "your-api-key-here",
-        "RAPID7_REGION": "us"
+        "RAPID7_REGION": "your-region"
       }
     }
   }
@@ -430,7 +430,7 @@ graph TB
 
     subgraph "Rapid7 Bulk Export MCP Tool"
         MCP[MCP Server<br/>rapid7-bulk-export]
-        Skill[Agent Skill<br/>rapid-bulk-export-skill]
+        Skill[Agent Skill / Power<br/>rapid7-bulk-export-skill]
     end
 
     subgraph "Data Layer"
@@ -483,7 +483,7 @@ Create or edit `.kiro/settings/mcp.json`:
       "cwd": "/absolute/path/to/rapid7-bulk-export-mcp",
       "env": {
         "RAPID7_API_KEY": "your-api-key-here",
-        "RAPID7_REGION": "us"
+        "RAPID7_REGION": "your-region"
       }
     }
   }

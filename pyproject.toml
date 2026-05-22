@@ -12,6 +12,8 @@ dependencies = [
     "pyarrow>=12.0.0",
     "duckdb>=0.9.0",
     "fastmcp>=0.2.0",
+    "python-multipart>=0.0.27",
+    "urllib3>=2.7.0",
 ]
 
 [project.optional-dependencies]
