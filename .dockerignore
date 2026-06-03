@@ -13,7 +13,6 @@ docs/
 *.zip
 .DS_Store
 .mcpbignore
-uv.lock
 Makefile
 LICENSE
 SECURITY.md
