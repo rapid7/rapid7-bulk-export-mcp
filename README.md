@@ -68,6 +68,8 @@ For more details, see:
 
 Choose your AI tool below. Each guide walks through installing the MCP server, adding the Agent Skill, and verifying the connection.
 
+> **Securing your API key:** Avoid storing your `RAPID7_API_KEY` in plaintext on disk. Use a secrets manager to inject the key at runtime — for example, 1Password CLI, Bitwarden CLI, macOS Keychain, Windows Credential Manager, or PowerShell SecretManagement. With 1Password you can set `"command": "op"` and `"args": ["run", "--", "rapid7-mcp-server"]` with `op://` secret references in the env block — the key is resolved from your vault and never written to config files. Adapt this pattern to whatever password manager you use.
+
 <details>
 <summary><b>Claude Desktop</b></summary>
 
@@ -279,6 +281,109 @@ Use the skill as a slash command: `/rapid7-bulk-export`.
 1. Reload VS Code window
 2. Check MCP status in the status bar or output panel
 3. Try: `Load the latest vulnerability data from Rapid7`
+
+</details>
+
+<details>
+<summary><b>OpenAI Codex CLI</b></summary>
+
+#### Install the MCP Server
+
+```bash
+# Using uv
+uv pip install git+https://github.com/rapid7/rapid7-bulk-export-mcp.git
+
+# Or using pip
+pip install git+https://github.com/rapid7/rapid7-bulk-export-mcp.git
+```
+
+#### Configure
+
+Add the server using the Codex CLI:
+
+```bash
+codex mcp add rapid7-bulk-export \
+  --env RAPID7_API_KEY=your-api-key-here \
+  --env RAPID7_REGION=your-region \
+  -- rapid7-mcp-server
+```
+
+Or manually edit `~/.codex/config.toml`:
+
+```toml
+[mcp_servers.rapid7-bulk-export]
+command = "rapid7-mcp-server"
+args = []
+enabled = true
+
+[mcp_servers.rapid7-bulk-export.env]
+RAPID7_API_KEY = "your-api-key-here"
+RAPID7_REGION = "your-region"
+```
+
+If using environment variables from your shell instead of hardcoding them:
+
+```toml
+[mcp_servers.rapid7-bulk-export]
+command = "rapid7-mcp-server"
+args = []
+enabled = true
+env_vars = ["RAPID7_API_KEY", "RAPID7_REGION"]
+```
+
+#### Verify
+
+1. List configured servers: `codex mcp list`
+2. Check server details: `codex mcp get rapid7-bulk-export`
+3. Try: `Load the latest vulnerability data from Rapid7`
+
+</details>
+
+<details>
+<summary><b>Google Antigravity CLI</b></summary>
+
+#### Install the MCP Server
+
+```bash
+# Using uv
+uv pip install git+https://github.com/rapid7/rapid7-bulk-export-mcp.git
+
+# Or using pip
+pip install git+https://github.com/rapid7/rapid7-bulk-export-mcp.git
+```
+
+#### Configure
+
+Edit your Antigravity MCP config file:
+
+- **macOS/Linux:** `~/.gemini/antigravity/mcp_config.json`
+- **Windows:** `C:\Users\<USERNAME>\.gemini\antigravity\mcp_config.json`
+
+You can also access this file from the Antigravity Agent panel → "..." → MCP Servers → Manage MCP Servers → View raw config.
+
+Add the following to `mcp_config.json`:
+
+```json
+{
+  "mcpServers": {
+    "rapid7-bulk-export": {
+      "command": "rapid7-mcp-server",
+      "args": [],
+      "env": {
+        "RAPID7_API_KEY": "your-api-key-here",
+        "RAPID7_REGION": "your-region"
+      }
+    }
+  }
+}
+```
+
+#### Verify
+
+1. Restart Antigravity for changes to take effect
+2. Open the MCP Servers panel ("..." menu → MCP Servers)
+3. Confirm "rapid7-bulk-export" appears with available tools
+4. Try: `Load the latest vulnerability data from Rapid7`
 
 </details>
 
