@@ -47,7 +47,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: make create-release
 
-  docker:
+  docker-release:
     runs-on: ubuntu-latest
     needs: release
     permissions:
