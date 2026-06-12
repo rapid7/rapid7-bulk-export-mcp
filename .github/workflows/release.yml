@@ -77,7 +77,7 @@ jobs:
           context: .
           push: true
           tags: |
-            rapid7/rapid7-bulk-export-mcp:latest
-            rapid7/rapid7-bulk-export-mcp:${{ steps.version.outputs.version }}
+            rapid7/bulk-export-mcp:latest
+            rapid7/bulk-export-mcp:${{ steps.version.outputs.version }}
           cache-from: type=gha
           cache-to: type=gha,mode=keep
