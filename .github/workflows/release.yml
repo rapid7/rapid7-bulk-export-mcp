@@ -3,6 +3,8 @@ name: Release
 on:
   push:
     branches: [main]
+  pull_request:
+    branches: [main]
 
 # Zero permissions by default -- broadened per-job below.
 permissions: {}
@@ -42,10 +44,10 @@ jobs:
             *.mcpb
             rapid7-bulk-export-skill-${{ steps.version.outputs.version }}.zip
 
-      - name: Create GitHub release
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: make create-release
+      #- name: Create GitHub release
+      #  env:
+      #    GH_TOKEN: ${{ github.token }}
+      #  run: make create-release
 
   docker:
     runs-on: ubuntu-latest
@@ -74,7 +76,7 @@ jobs:
         uses: docker/build-push-action@14487ce63c7a62a4a324b0bfb37086795e31c6c1 # v6.16.0
         with:
           context: .
-          push: true
+          push: false
           tags: |
             rapid7/rapid7-bulk-export-mcp:latest
             rapid7/rapid7-bulk-export-mcp:${{ steps.version.outputs.version }}
