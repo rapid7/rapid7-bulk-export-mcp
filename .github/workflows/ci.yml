@@ -115,6 +115,7 @@ jobs:
         run: uv run --python ${{ matrix.python-version }} pytest --tb=short
 
   docker-build:
+    name: Docker Build
     runs-on: ubuntu-latest
     permissions:
       contents: read
