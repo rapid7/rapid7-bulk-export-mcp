@@ -25,7 +25,7 @@ ENV MCP_PORT=8000
 EXPOSE 8000
 
 # Run as non-root user
-RUN useradd -r -s /bin/false mcpuser && chown -R mcpuser:mcpuser /app /data
+RUN useradd -r -m -s /bin/false mcpuser && chown -R mcpuser:mcpuser /app /data /home/mcpuser
 USER mcpuser
 
 ENTRYPOINT ["uv", "run", "run_server.py", "/data/rapid7_bulk_export.db"]
