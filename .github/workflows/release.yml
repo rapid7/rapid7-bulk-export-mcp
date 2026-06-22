@@ -2,7 +2,8 @@ name: Release
 
 on:
   push:
-    branches: [main]
+    tags:
+      - 'v*'
 
 # Zero permissions by default -- broadened per-job below.
 permissions: {}
@@ -20,6 +21,18 @@ jobs:
       - name: Extract version
         id: version
         run: echo "version=$(make version)" >> "$GITHUB_OUTPUT"
+
+      - name: Verify tag matches source version
+        run: |
+          TAG_VERSION="${GITHUB_REF_NAME#v}"
+          SOURCE_VERSION="$(make version)"
+          echo "Tag version:    $TAG_VERSION"
+          echo "Source version: $SOURCE_VERSION"
+          if [ "$TAG_VERSION" != "$SOURCE_VERSION" ]; then
+            echo "::error::Tag $GITHUB_REF_NAME does not match source version $SOURCE_VERSION."
+            echo "::error::Run 'make bump-version V=$TAG_VERSION' and push before tagging."
+            exit 1
+          fi
 
       - name: Verify versions are in sync
         run: make check-version
