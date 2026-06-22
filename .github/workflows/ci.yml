@@ -37,16 +37,27 @@ jobs:
             echo "release_code=false" >> "$GITHUB_OUTPUT"
           fi
 
-      - name: Check release does not already exist
+      - name: Check version is greater than latest release
         if: steps.changes.outputs.release_code == 'true'
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          TAG="v$(make version)"
-          if gh release view "$TAG" > /dev/null 2>&1; then
-            echo "::error::Release $TAG already exists. Bump the version with: make bump-version V=x.y.z"
+          CURRENT="$(make version)"
+          LATEST_TAG="$(git tag --sort=-v:refname | grep '^v' | head -1 | sed 's/^v//')"
+          echo "Current version: $CURRENT"
+          echo "Latest tag:      ${LATEST_TAG:-<none>}"
+          if [ -z "$LATEST_TAG" ]; then
+            echo "No existing tags — version check passes."
+            exit 0
+          fi
+          # sort -V puts the lower version first; if CURRENT is not strictly greater, fail
+          HIGHEST=$(printf '%s\n%s\n' "$LATEST_TAG" "$CURRENT" | sort -V | tail -1)
+          if [ "$HIGHEST" = "$LATEST_TAG" ]; then
+            echo "::error::Version $CURRENT is not greater than latest release v$LATEST_TAG."
+            echo "::error::Bump the version with: make bump-version V=x.y.z"
             exit 1
           fi
+          echo "Version $CURRENT > $LATEST_TAG — OK"
 
   lint:
     name: Lint
