@@ -21,6 +21,23 @@ PREFIX_TABLE_MAP: Dict[str, Union[str, Tuple[str, str]]] = {
 }
 
 
+def _normalize_prefix(prefix: str) -> str:
+    """Normalize API prefix to match PREFIX_TABLE_MAP keys.
+
+    The Rapid7 API sometimes returns prefixes with sub-path suffixes
+    (e.g., 'vulnerability_remediation/ivm' instead of 'vulnerability_remediation').
+    This strips those suffixes to match our routing map.
+    """
+    # Try exact match first
+    if prefix in PREFIX_TABLE_MAP:
+        return prefix
+    # Strip sub-path (e.g., 'vulnerability_remediation/ivm' -> 'vulnerability_remediation')
+    base_prefix = prefix.split("/")[0]
+    if base_prefix in PREFIX_TABLE_MAP:
+        return base_prefix
+    return prefix
+
+
 class VulnerabilityDatabase:
     """
     Manages a DuckDB database for vulnerability data.
@@ -174,7 +191,12 @@ class VulnerabilityDatabase:
             if prefix in skip_prefixes:
                 continue
 
-            mapping = PREFIX_TABLE_MAP.get(prefix)
+            # Normalize prefix to handle sub-path suffixes (e.g., 'vulnerability_remediation/ivm')
+            normalized_prefix = _normalize_prefix(prefix)
+            if normalized_prefix in skip_prefixes:
+                continue
+
+            mapping = PREFIX_TABLE_MAP.get(normalized_prefix)
             if mapping is None:
                 print(f"Warning: Unknown prefix '{prefix}', skipping", file=sys.stderr)
                 continue
