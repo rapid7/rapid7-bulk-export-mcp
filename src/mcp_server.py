@@ -450,7 +450,7 @@ def download_rapid7_export(export_id: str, export_type: str = "vulnerability") -
                 prefix_file_map.setdefault(prefix, []).append(str(temp_path))
                 # Validate file has content
                 if len(data) < 100:
-                    validation_warnings.append(f"File {i+1} (prefix={prefix}): unusually small ({len(data)} bytes)")
+                    validation_warnings.append(f"File {i + 1} (prefix={prefix}): unusually small ({len(data)} bytes)")
 
             if export_type == "policy":
                 row_counts = db.load_parquet_files_by_prefix(prefix_file_map, skip_prefixes={"asset"})
