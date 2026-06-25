@@ -430,6 +430,7 @@ def download_rapid7_export(export_id: str, export_type: str = "vulnerability") -
             initialize_database()
 
         temp_dir = tempfile.mkdtemp()
+        validation_warnings = []
 
         try:
             # All export types use prefix-based routing from the API response
@@ -447,6 +448,9 @@ def download_rapid7_export(export_id: str, export_type: str = "vulnerability") -
                 temp_path.write_bytes(data)
                 prefix = url_to_prefix.get(url, "unknown")
                 prefix_file_map.setdefault(prefix, []).append(str(temp_path))
+                # Validate file has content
+                if len(data) < 100:
+                    validation_warnings.append(f"File {i + 1} (prefix={prefix}): unusually small ({len(data)} bytes)")
 
             if export_type == "policy":
                 row_counts = db.load_parquet_files_by_prefix(prefix_file_map, skip_prefixes={"asset"})
@@ -455,6 +459,13 @@ def download_rapid7_export(export_id: str, export_type: str = "vulnerability") -
 
             row_count = sum(row_counts.values())
             row_info = f"Rows loaded: {row_count}\nPer-table row counts: {json.dumps(row_counts, default=str)}"
+
+            if row_count == 0 and len(file_data) > 0:
+                validation_warnings.append(
+                    f"⚠️  {len(file_data)} file(s) downloaded but 0 rows loaded. "
+                    f"Prefixes received: {list(prefix_file_map.keys())}. "
+                    f"Check that prefixes match expected routing."
+                )
 
             # Save export metadata
             tracker = ExportTracker()
@@ -474,11 +485,17 @@ def download_rapid7_export(export_id: str, export_type: str = "vulnerability") -
             # Clean up temp files
             shutil.rmtree(temp_dir)
 
+        # Build validation warnings section
+        warnings_section = ""
+        if validation_warnings:
+            warnings_section = "\nValidation Warnings:\n" + "\n".join(f"  {w}" for w in validation_warnings) + "\n"
+
         return (
             f"✓ {export_type.capitalize()} data loaded successfully.\n\n"
             f"Export ID: {export_id}\n"
             f"Files processed: {len(parquet_urls)}\n"
-            f"{row_info}\n\n"
+            f"{row_info}\n"
+            f"{warnings_section}\n"
             f"Statistics:\n"
             f"{json.dumps(stats, indent=2, default=str)}\n\n"
             f"Query the data with query_rapid7, "
