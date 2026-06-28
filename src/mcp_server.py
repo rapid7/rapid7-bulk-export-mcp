@@ -39,14 +39,19 @@ mcp = FastMCP("rapid7-bulk-export")
 # Global database instance
 db: Optional[VulnerabilityDatabase] = None
 
+# Data directory — resolved once at startup, used for all database paths.
+# Defaults to ~/.rapid7-mcp so relative-path writes never hit a read-only CWD.
+_DATA_DIR: Path = Path(os.environ.get("DATA_DIR", ".")).expanduser().resolve()
+
 VALID_EXPORT_TYPES = ("vulnerability", "policy", "remediation")
 
 
-def initialize_database(db_path: str = "rapid7_bulk_export.db") -> VulnerabilityDatabase:
+def initialize_database(db_path: Optional[str] = None) -> VulnerabilityDatabase:
     """Initialize the vulnerability database."""
     global db
     if db is None:
-        db = VulnerabilityDatabase(db_path)
+        resolved = db_path or str(_DATA_DIR / "rapid7_bulk_export.db")
+        db = VulnerabilityDatabase(resolved)
     return db
 
 
@@ -74,7 +79,7 @@ def load_rapid7_parquet(parquet_path: str) -> str:
     global db
 
     try:
-        ALLOWED_ROOT = (Path.home() / ".rapid7-mcp" / "imports").resolve()
+        ALLOWED_ROOT = (_DATA_DIR / "imports").resolve()
 
         # Resolve and validate path is within allowed root
         resolved = Path(parquet_path).resolve()
@@ -192,7 +197,7 @@ def start_rapid7_export(
         config = load_config()
 
         # Check if we already have a completed export from today
-        tracker = ExportTracker()
+        tracker = ExportTracker(str(_DATA_DIR / "rapid7_bulk_export_tracking.db"))
         today_export = tracker.get_today_export(export_type=export_type)
         tracker.close()
 
@@ -217,7 +222,7 @@ def start_rapid7_export(
 
             print(f"Created {export_type} export with ID: {new_id}", file=sys.stderr)
 
-            tracker = ExportTracker()
+            tracker = ExportTracker(str(_DATA_DIR / "rapid7_bulk_export_tracking.db"))
             tracker.save_export(
                 export_id=new_id,
                 status="PENDING",
@@ -243,7 +248,7 @@ def start_rapid7_export(
 
             print(f"Created {export_type} export with ID: {new_id}", file=sys.stderr)
 
-            tracker = ExportTracker()
+            tracker = ExportTracker(str(_DATA_DIR / "rapid7_bulk_export_tracking.db"))
             tracker.save_export(
                 export_id=new_id,
                 status="PENDING",
@@ -278,7 +283,7 @@ def start_rapid7_export(
             chunks = build_remediation_date_chunks(start_date, end_date)
 
             export_ids = []
-            tracker = ExportTracker()
+            tracker = ExportTracker(str(_DATA_DIR / "rapid7_bulk_export_tracking.db"))
             for chunk_start, chunk_end in chunks:
                 print(f"Creating remediation export: {chunk_start} → {chunk_end}", file=sys.stderr)
                 eid = create_remediation_export(config, chunk_start, chunk_end)
@@ -468,7 +473,7 @@ def download_rapid7_export(export_id: str, export_type: str = "vulnerability") -
                 )
 
             # Save export metadata
-            tracker = ExportTracker()
+            tracker = ExportTracker(str(_DATA_DIR / "rapid7_bulk_export_tracking.db"))
             tracker.save_export(
                 export_id=export_id,
                 status="COMPLETE",
@@ -680,7 +685,7 @@ def purge_rapid7_data() -> str:
             db.purge()
 
         # Purge tracking database
-        tracker = ExportTracker()
+        tracker = ExportTracker(str(_DATA_DIR / "rapid7_bulk_export_tracking.db"))
         tracker.purge()
 
         return (
@@ -717,7 +722,7 @@ def list_rapid7_exports(limit: int = 10) -> str:
         Formatted list of recent exports
     """
     try:
-        tracker = ExportTracker()
+        tracker = ExportTracker(str(_DATA_DIR / "rapid7_bulk_export_tracking.db"))
         exports = tracker.list_exports(limit=limit)
         tracker.close()
 
@@ -847,11 +852,12 @@ def main():
         print("Start the MCP server for Rapid7 vulnerability data.")
         print()
         print("Arguments:")
-        print("  database_path    Path to the DuckDB database file (optional, default: rapid7_bulk_export.db)")
+        print("  database_path    Path to the DuckDB database file (optional, overrides DATA_DIR default)")
         print()
         print("Environment Variables:")
         print("  RAPID7_API_KEY    Your Rapid7 InsightVM API key (required)")
         print("  RAPID7_REGION     Your Rapid7 region: us, eu, ca, au, or ap (required)")
+        print("  DATA_DIR          Directory for database files (default: current working directory)")
         print("  MCP_TRANSPORT     Transport protocol: 'stdio' (default) or 'http'")
         print("  MCP_HOST          HTTP bind address (default: 0.0.0.0)")
         print("  MCP_PORT          HTTP port (default: 8000)")
@@ -866,7 +872,7 @@ def main():
         sys.exit(0)
 
     # Get database path from args or use default
-    db_path = sys.argv[1] if len(sys.argv) > 1 else "rapid7_bulk_export.db"
+    db_path = sys.argv[1] if len(sys.argv) > 1 else str(_DATA_DIR / "rapid7_bulk_export.db")
 
     # Initialize database
     try:
@@ -882,9 +888,9 @@ def main():
         host = os.environ.get("MCP_HOST", "0.0.0.0")  # nosec B104 - intentional for Docker
         port = int(os.environ.get("MCP_PORT", "8000"))
         print(f"Starting HTTP transport on {host}:{port}", file=sys.stderr)
-        mcp.run(transport="http", host=host, port=port)
+        mcp.run(transport="http", host=host, port=port, show_banner=False)
     else:
-        mcp.run()
+        mcp.run(show_banner=False)
 
 
 if __name__ == "__main__":

@@ -583,17 +583,19 @@ Create or edit `.kiro/settings/mcp.json`:
 {
   "mcpServers": {
     "rapid7-bulk-export": {
-      "command": "uv",
-      "args": ["run", "rapid7-mcp-server"],
-      "cwd": "/absolute/path/to/rapid7-bulk-export-mcp",
+      "command": "/absolute/path/to/rapid7-bulk-export-mcp/.venv/bin/rapid7-mcp-server",
+      "args": [],
       "env": {
         "RAPID7_API_KEY": "your-api-key-here",
-        "RAPID7_REGION": "your-region"
+        "RAPID7_REGION": "your-region",
+        "DATA_DIR": "/Users/you/.rapid7-mcp"
       }
     }
   }
 }
 ```
+
+> **Note:** Point `command` directly at the venv entry point rather than using `uv run` with a `cwd`. Claude Desktop does not guarantee a working directory when launching MCP servers, so `uv run` may resolve to a cached or system-installed version of the package instead of your local source.
 
 ### Run Tests
 
@@ -607,6 +609,7 @@ uv run pytest
 |----------|----------|---------|-------------|
 | `RAPID7_API_KEY` | Yes | — | Rapid7 InsightVM API key |
 | `RAPID7_REGION` | Yes | `us` | API region: `us`, `us2`, `us3`, `eu`, `ca`, `au`, `ap` |
+| `DATA_DIR` | No | current working directory | Directory for database files; must be writable. Manual parquet imports must be placed in `$DATA_DIR/imports/` |
 | `MCP_TRANSPORT` | No | `stdio` | Transport protocol: `stdio` or `http` |
 | `MCP_HOST` | No | `0.0.0.0` | HTTP bind address (only when `MCP_TRANSPORT=http`) |
 | `MCP_PORT` | No | `8000` | HTTP port (only when `MCP_TRANSPORT=http`) |
