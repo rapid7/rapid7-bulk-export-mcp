@@ -477,10 +477,10 @@ Download and load export abc-123
 
 ### `load_rapid7_parquet`
 
-Loads existing Parquet files directly from disk (must be within `~/.rapid7-mcp/imports/`). Useful if you already have exported files and want to skip the API call.
+Loads existing Parquet files directly from disk (must be within `~/.rapid7_mcp/imports/`). Useful if you already have exported files and want to skip the API call.
 
 ```
-Load parquet files from ~/.rapid7-mcp/imports/my-export/
+Load parquet files from ~/.rapid7_mcp/imports/my-export/
 ```
 
 ### `query_rapid7`
@@ -609,7 +609,7 @@ uv run pytest
 |----------|----------|---------|-------------|
 | `RAPID7_API_KEY` | Yes | — | Rapid7 InsightVM API key |
 | `RAPID7_REGION` | Yes | `us` | API region: `us`, `us2`, `us3`, `eu`, `ca`, `au`, `ap` |
-| `DATA_DIR` | No | `~/.rapid7-mcp` | Directory for database files; must be writable. Manual parquet imports must be placed in `$DATA_DIR/imports/` |
+| `DATA_DIR` | No | `~/.rapid7_mcp` | Directory for database files; must be writable. Manual parquet imports must be placed in `$DATA_DIR/imports/` |
 | `MCP_TRANSPORT` | No | `stdio` | Transport protocol: `stdio` or `http` |
 | `MCP_HOST` | No | `0.0.0.0` | HTTP bind address (only when `MCP_TRANSPORT=http`) |
 | `MCP_PORT` | No | `8000` | HTTP port (only when `MCP_TRANSPORT=http`) |
