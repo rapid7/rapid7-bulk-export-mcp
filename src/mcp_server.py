@@ -10,7 +10,6 @@ import datetime as _dt
 import glob
 import json
 import os
-import re as _re
 import shutil
 import sys
 import tempfile
@@ -197,12 +196,12 @@ def start_rapid7_export(
     try:
         config = load_config()
 
-        # Check if we already have a completed export from today
         tracker = ExportTracker(str(_DATA_DIR / "rapid7_bulk_export_tracking.db"))
-        today_export = tracker.get_today_export(export_type=export_type)
-        tracker.close()
 
+        # Return a cached export from today unless it's remediation (which is date-range keyed)
+        today_export = tracker.get_today_export(export_type=export_type)
         if today_export and export_type != "remediation":
+            tracker.close()
             eid = today_export["export_id"]
             return (
                 f"♻️ A {export_type} export from today already exists.\n\n"
@@ -220,16 +219,8 @@ def start_rapid7_export(
         if export_type == "vulnerability":
             print("Creating new vulnerability export...", file=sys.stderr)
             new_id = create_vulnerability_export(config)
-
             print(f"Created {export_type} export with ID: {new_id}", file=sys.stderr)
-
-            tracker = ExportTracker(str(_DATA_DIR / "rapid7_bulk_export_tracking.db"))
-            tracker.save_export(
-                export_id=new_id,
-                status="PENDING",
-                parquet_urls=[],
-                export_type=export_type,
-            )
+            tracker.save_export(export_id=new_id, status="PENDING", parquet_urls=[], export_type=export_type)
             tracker.close()
 
             return (
@@ -246,16 +237,8 @@ def start_rapid7_export(
         elif export_type == "policy":
             print("Creating new policy export...", file=sys.stderr)
             new_id = create_policy_export(config)
-
             print(f"Created {export_type} export with ID: {new_id}", file=sys.stderr)
-
-            tracker = ExportTracker(str(_DATA_DIR / "rapid7_bulk_export_tracking.db"))
-            tracker.save_export(
-                export_id=new_id,
-                status="PENDING",
-                parquet_urls=[],
-                export_type=export_type,
-            )
+            tracker.save_export(export_id=new_id, status="PENDING", parquet_urls=[], export_type=export_type)
             tracker.close()
 
             return (
@@ -275,27 +258,14 @@ def start_rapid7_export(
             if not end_date:
                 end_date = _dt.date.today().isoformat()
 
-            date_pattern = r"^\d{4}-\d{2}-\d{2}$"
-            if not _re.match(date_pattern, start_date):
-                return f"✗ Invalid start_date format: '{start_date}'. Expected YYYY-MM-DD (e.g. '2024-01-01')."
-            if not _re.match(date_pattern, end_date):
-                return f"✗ Invalid end_date format: '{end_date}'. Expected YYYY-MM-DD (e.g. '2024-01-31')."
-
             chunks = build_remediation_date_chunks(start_date, end_date)
 
             export_ids = []
-            tracker = ExportTracker(str(_DATA_DIR / "rapid7_bulk_export_tracking.db"))
             for chunk_start, chunk_end in chunks:
                 print(f"Creating remediation export: {chunk_start} → {chunk_end}", file=sys.stderr)
                 eid = create_remediation_export(config, chunk_start, chunk_end)
                 export_ids.append({"id": eid, "start": chunk_start, "end": chunk_end})
-
-                tracker.save_export(
-                    export_id=eid,
-                    status="PENDING",
-                    parquet_urls=[],
-                    export_type="remediation",
-                )
+                tracker.save_export(export_id=eid, status="PENDING", parquet_urls=[], export_type="remediation")
             tracker.close()
 
             lines = [
@@ -317,14 +287,7 @@ def start_rapid7_export(
         elif export_type == "asset_software":
             new_id = create_asset_software_export(config)
             print(f"Created asset_software export with ID: {new_id}", file=sys.stderr)
-
-            tracker = ExportTracker(str(_DATA_DIR / "rapid7_bulk_export_tracking.db"))
-            tracker.save_export(
-                export_id=new_id,
-                status="PENDING",
-                parquet_urls=[],
-                export_type="asset_software",
-            )
+            tracker.save_export(export_id=new_id, status="PENDING", parquet_urls=[], export_type="asset_software")
             tracker.close()
 
             return (
@@ -770,104 +733,6 @@ def list_rapid7_exports(limit: int = 10) -> str:
 
     except Exception as e:
         return f"✗ Error listing exports: {str(e)}"
-
-
-def suggest_query(task: str = "") -> str:
-    """Get SQL query suggestions for common vulnerability analysis tasks.
-
-    Provides example queries for common use cases like finding critical vulnerabilities,
-    analyzing trends, identifying affected assets, etc. All queries use the actual
-    Rapid7 Bulk Export API Parquet schema fields.
-
-    Args:
-        task: Description of what you want to analyze (optional)
-
-    Returns:
-        SQL query suggestions
-    """
-    suggestions = """
-Common SQL Query Patterns for Vulnerability Analysis:
-
-1. Find Critical Vulnerabilities with High Exploitation Risk:
-   SELECT assetId, hostName, vulnId, title, cvssV3Score, epssscore, hasExploits
-   FROM vulnerabilities
-   WHERE severity = 'Critical' AND epssscore > 0.5
-   ORDER BY epssscore DESC, cvssV3Score DESC
-   LIMIT 20;
-
-2. Severity Distribution:
-   SELECT severity, COUNT(*) as count, AVG(cvssV3Score) as avg_cvss
-   FROM vulnerabilities
-   GROUP BY severity
-   ORDER BY count DESC;
-
-3. High CVSS Score Vulnerabilities with Exploits:
-   SELECT vulnId, title, cvssV3Score, cvssV3Severity, hasExploits, epssscore
-   FROM vulnerabilities
-   WHERE cvssV3Score >= 9.0
-   ORDER BY cvssV3Score DESC;
-
-4. Recently Discovered Vulnerabilities:
-   SELECT assetId, hostName, vulnId, title, severity, firstFoundTimestamp
-   FROM vulnerabilities
-   ORDER BY firstFoundTimestamp DESC
-   LIMIT 20;
-
-5. Vulnerabilities by Asset:
-   SELECT assetId, hostName, ip, osDescription,
-          COUNT(*) as vuln_count,
-          SUM(CASE WHEN severity = 'Critical' THEN 1 ELSE 0 END) as critical_count
-   FROM vulnerabilities
-   GROUP BY assetId, hostName, ip, osDescription
-   ORDER BY critical_count DESC, vuln_count DESC
-   LIMIT 10;
-
-6. Search by CVE:
-   SELECT assetId, hostName, vulnId, title, cvssV3Score, cves
-   FROM vulnerabilities
-   WHERE EXISTS (SELECT 1 FROM unnest(cves) AS cve WHERE cve LIKE '%CVE-2024%');
-
-7. Cloud Asset Vulnerabilities:
-   SELECT
-     CASE
-       WHEN awsInstanceId IS NOT NULL THEN 'AWS'
-       WHEN azureResourceId IS NOT NULL THEN 'Azure'
-       WHEN gcpObjectId IS NOT NULL THEN 'GCP'
-       ELSE 'On-Premise'
-     END as cloud_provider,
-     COUNT(*) as vuln_count,
-     COUNT(DISTINCT assetId) as asset_count
-   FROM vulnerabilities
-   GROUP BY cloud_provider;
-
-8. EPSS-Based Prioritization:
-   SELECT vulnId, title, cvssV3Score, epssscore, epsspercentile,
-          COUNT(DISTINCT assetId) as affected_assets
-   FROM vulnerabilities
-   WHERE epssscore > 0.1
-   GROUP BY vulnId, title, cvssV3Score, epssscore, epsspercentile
-   HAVING COUNT(DISTINCT assetId) > 5
-   ORDER BY epssscore DESC;
-
-9. Reintroduced Vulnerabilities:
-   SELECT assetId, hostName, vulnId, title,
-          firstFoundTimestamp, reintroducedTimestamp
-   FROM vulnerabilities
-   WHERE reintroducedTimestamp IS NOT NULL
-   ORDER BY reintroducedTimestamp DESC;
-
-10. PCI Compliance Status:
-    SELECT pciSeverity, pciCompliant, COUNT(*) as count
-    FROM vulnerabilities
-    WHERE pciSeverity IS NOT NULL
-    GROUP BY pciSeverity, pciCompliant
-    ORDER BY pciSeverity DESC;
-"""
-
-    if task:
-        suggestions = f"Query suggestions for: {task}\n\n" + suggestions
-
-    return suggestions
 
 
 def main():

@@ -33,11 +33,6 @@ def download_parquet_file(url: str, api_key: str) -> bytes:
         requests.HTTPError: If the download fails with a non-200 status code
         requests.RequestException: If the network request fails
 
-    Requirements:
-        - 4.1: Download Parquet files from provided URLs
-        - 4.2: Include API key in request header for authorization
-        - 4.4: Raise HTTPError for failed downloads
-
     Example:
         >>> url = "https://example.com/export.parquet"
         >>> api_key = "my-api-key"
@@ -77,10 +72,6 @@ def download_all_files(urls: List[str], api_key: str) -> List[bytes]:
     Raises:
         requests.HTTPError: If any download fails with a non-200 status code
         requests.RequestException: If any network request fails
-
-    Requirements:
-        - 4.1: Download each Parquet file from provided URLs
-        - 4.5: Handle multiple Parquet file URLs
 
     Example:
         >>> urls = ["https://example.com/file1.parquet", "https://example.com/file2.parquet"]
