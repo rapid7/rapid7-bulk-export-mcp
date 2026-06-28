@@ -97,6 +97,7 @@ class VulnerabilityDatabase:
         self,
         prefix_file_map: Dict[str, List[str]],
         skip_prefixes: Set[str] = None,
+        append: bool = False,
     ) -> Dict[str, int]:
         """
         Load Parquet files into tables based on prefix routing.
@@ -112,6 +113,9 @@ class VulnerabilityDatabase:
             prefix_file_map: Mapping of prefixes to lists of local Parquet file paths.
             skip_prefixes: Optional set of prefixes to skip (e.g., {'asset'} during
                 policy-only loads to avoid duplicating asset data).
+            append: When True, insert rows into existing tables rather than dropping
+                and recreating them. Use for additive loads (e.g. remediation chunks).
+                Default False preserves snapshot-replace behavior.
 
         Returns:
             Dict mapping table names to total row counts loaded.
@@ -159,14 +163,22 @@ class VulnerabilityDatabase:
                     else:
                         select_expr = f"SELECT * FROM read_parquet('{file_path}')"  # nosec B608
 
-                    if table_name not in tables_created:
+                    if table_name not in tables_created and not append:
                         # First load for this table in this call — drop and create
                         self.conn.execute(f"DROP TABLE IF EXISTS {table_name}")  # nosec B608
                         self.conn.execute(f"CREATE TABLE {table_name} AS {select_expr}")  # nosec B608
                         tables_created.add(table_name)
                     else:
-                        # Subsequent load — insert into existing table
-                        self.conn.execute(f"INSERT INTO {table_name} {select_expr}")  # nosec B608
+                        # Append mode or subsequent file — insert, creating table if needed
+                        table_exists = self.conn.execute(
+                            "SELECT COUNT(*) FROM information_schema.tables WHERE table_name = ?",
+                            [table_name],
+                        ).fetchone()[0]
+                        if table_exists:
+                            self.conn.execute(f"INSERT INTO {table_name} {select_expr}")  # nosec B608
+                        else:
+                            self.conn.execute(f"CREATE TABLE {table_name} AS {select_expr}")  # nosec B608
+                        tables_created.add(table_name)
                 except Exception as e:
                     print(
                         f"Warning: Failed to read Parquet file '{file_path}': {e}",

@@ -484,6 +484,8 @@ def download_rapid7_export(export_id: str, export_type: str = "vulnerability") -
 
             if export_type == "policy":
                 row_counts = db.load_parquet_files_by_prefix(prefix_file_map, skip_prefixes={"asset"})
+            elif export_type == "remediation":
+                row_counts = db.load_parquet_files_by_prefix(prefix_file_map, append=True)
             else:
                 row_counts = db.load_parquet_files_by_prefix(prefix_file_map)
 
