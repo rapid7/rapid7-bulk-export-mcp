@@ -271,6 +271,51 @@ def create_remediation_export(config: Dict[str, str], start_date: str, end_date:
         raise
 
 
+def create_asset_software_export(config: Dict[str, str]) -> str:
+    """
+    Create an asset software export job and return the export ID.
+
+    Sends a GraphQL CreateAssetSoftwareExport mutation to initiate an export
+    of installed software packages for all IVM-managed assets.
+
+    Args:
+        config: Configuration dictionary containing:
+            - endpoint (str): The GraphQL API endpoint URL
+            - api_key (str): The API key for authentication
+
+    Returns:
+        str: The export ID that can be used to query export status
+
+    Raises:
+        requests.HTTPError: If the HTTP response status code is not 200
+        ValueError: If the response contains GraphQL errors (except in-progress)
+        requests.RequestException: If the network request fails
+    """
+    mutation = """
+    mutation CreateAssetSoftwareExport($input: AssetSoftwareExportConfiguration!) {
+        createAssetSoftwareExport(input: $input) {
+            id
+        }
+    }
+    """
+    variables = {"input": {"source": "IVM", "format": "PARQUET"}}
+
+    try:
+        response = send_graphql_request(
+            endpoint=config["endpoint"], api_key=config["api_key"], query=mutation, variables=variables
+        )
+        export_id = response["data"]["createAssetSoftwareExport"]["id"]
+        return export_id
+
+    except ValueError as e:
+        error_msg = str(e)
+        if "already in-progress" in error_msg and "exportId:" in error_msg:
+            match = re.search(r"exportId:\s*([A-Za-z0-9+/=]+)", error_msg)
+            if match:
+                return match.group(1)
+        raise
+
+
 def get_export_status(config: Dict[str, str], export_id: str) -> Dict[str, Any]:
     """
     Query the status of a vulnerability export job.

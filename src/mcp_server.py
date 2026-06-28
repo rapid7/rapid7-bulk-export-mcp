@@ -26,6 +26,7 @@ from .download import download_all_files
 from .duckdb_loader import VulnerabilityDatabase
 from .export_manager import (
     build_remediation_date_chunks,
+    create_asset_software_export,
     create_policy_export,
     create_remediation_export,
     create_vulnerability_export,
@@ -43,7 +44,7 @@ db: Optional[VulnerabilityDatabase] = None
 # Defaults to ~/.rapid7-mcp so relative-path writes never hit a read-only CWD.
 _DATA_DIR: Path = Path(os.environ.get("DATA_DIR", ".")).expanduser().resolve()
 
-VALID_EXPORT_TYPES = ("vulnerability", "policy", "remediation")
+VALID_EXPORT_TYPES = ("vulnerability", "policy", "remediation", "asset_software")
 
 
 def initialize_database(db_path: Optional[str] = None) -> VulnerabilityDatabase:
@@ -312,6 +313,30 @@ def start_rapid7_export(
             lines.append("All chunks load into the same vulnerability_remediation table.")
 
             return "\n".join(lines)
+
+        elif export_type == "asset_software":
+            new_id = create_asset_software_export(config)
+            print(f"Created asset_software export with ID: {new_id}", file=sys.stderr)
+
+            tracker = ExportTracker(str(_DATA_DIR / "rapid7_bulk_export_tracking.db"))
+            tracker.save_export(
+                export_id=new_id,
+                status="PENDING",
+                parquet_urls=[],
+                export_type="asset_software",
+            )
+            tracker.close()
+
+            return (
+                f"✓ Asset software export job created.\n\n"
+                f"Export ID: {new_id}\n"
+                f"Status: PENDING\n\n"
+                f"The export is now processing on Rapid7's servers "
+                f"(typically 3-5 minutes).\n"
+                f'Check progress: check_rapid7_export_status(export_id="{new_id}")\n'
+                f"Once COMPLETE, load with: "
+                f'download_rapid7_export(export_id="{new_id}", export_type="asset_software")'
+            )
 
     except Exception as e:
         return f"✗ Error starting {export_type} export: {str(e)}"

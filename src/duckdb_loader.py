@@ -19,6 +19,7 @@ PREFIX_TABLE_MAP: Dict[str, Union[str, Tuple[str, str]]] = {
     "asset_policy": ("policies", "agent"),
     "asset_scan_policy": ("policies", "scan"),
     "vulnerability_remediation": "vulnerability_remediation",
+    "asset_software": "asset_software",
 }
 
 
@@ -282,7 +283,7 @@ class VulnerabilityDatabase:
             Dictionary keyed by table name, each value is a list of
             dictionaries with column_name and data_type.
         """
-        known_tables = ["assets", "vulnerabilities", "policies", "vulnerability_remediation"]
+        known_tables = ["assets", "vulnerabilities", "policies", "vulnerability_remediation", "asset_software"]
         schemas: Dict[str, List[Dict[str, str]]] = {}
 
         for table_name in known_tables:
@@ -336,6 +337,11 @@ class VulnerabilityDatabase:
         remediation_stats = self._get_remediation_stats()
         if remediation_stats is not None:
             all_stats["vulnerability_remediation"] = remediation_stats
+
+        # --- asset_software ---
+        software_stats = self._get_asset_software_stats()
+        if software_stats is not None:
+            all_stats["asset_software"] = software_stats
 
         return all_stats
 
@@ -523,6 +529,27 @@ class VulnerabilityDatabase:
             """).fetchall()
             if severity_dist:
                 stats["severity_distribution"] = {row[0]: row[1] for row in severity_dist}
+        except Exception:
+            pass
+
+        return stats
+
+    def _get_asset_software_stats(self) -> Optional[Dict[str, Any]]:
+        """Gather statistics for the asset_software table. Returns None if table doesn't exist."""
+        try:
+            result = self.conn.execute("SELECT COUNT(*) FROM asset_software").fetchone()
+        except Exception:
+            return None
+
+        stats: Dict[str, Any] = {}
+        stats["total_rows"] = result[0] if result else 0
+
+        try:
+            counts = self.conn.execute("""
+                SELECT COUNT(DISTINCT assetId) FROM asset_software
+            """).fetchone()
+            if counts:
+                stats["unique_assets"] = counts[0]
         except Exception:
             pass
 
