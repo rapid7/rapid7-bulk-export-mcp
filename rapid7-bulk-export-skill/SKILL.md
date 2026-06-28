@@ -12,7 +12,7 @@ tags: [security, vulnerabilities, rapid7, insightvm, bulk-export, analysis, poli
 1. The Rapid7 MCP server MUST be installed and configured
 2. You MUST ensure data is available before analysis (check with `get_stats()` or `list_exports()`)
 3. Without these, you CANNOT help with analysis
-4. For a complete dataset, all three export types (vulnerability, policy, remediation) MUST be loaded
+4. For a complete dataset, all four export types (vulnerability, policy, remediation, asset_software) MUST be loaded
 
 ## Prerequisites - MANDATORY
 
@@ -47,13 +47,14 @@ This skill ONLY works with the Rapid7 MCP server. You must:
 ## Data Source
 
 The data comes from Rapid7 InsightVM's Bulk Export API, which exports three types of data:
-- **Asset & Vulnerability data**: All assets with agent-based scanning (including cloud identifiers for AWS, Azure, GCP) and all vulnerabilities found on assets (including CVSS v2/v3 scores, EPSS scores, exploit information)
+- **Asset & Vulnerability data**: All assets with agent-based scanning (including cloud identifiers for AWS, Azure, GCP) and all vulnerabilities found on assets (including CVSS v2/v3 scores, EPSS scores, exploit information, and best solution data if enabled for your org)
 - **Policy compliance data**: Agent-based and scan-based policy assessment results, including benchmark compliance status, rule pass/fail results, and remediation guidance
 - **Vulnerability remediation data**: Tracks vulnerability lifecycle — when vulnerabilities were first found, last detected, and last removed — for a specified date range
+- **Asset software data**: Installed software packages across all IVM-managed assets — use for software inventory, license tracking, and identifying vulnerable software versions
 - **Export format**: Parquet files downloaded and loaded into DuckDB for SQL querying
 - **Data freshness**: Refreshed once daily by Rapid7; exports are retained for 30 days
 - **Schema**: Based on Rapid7's official Bulk Export API Parquet schema (see docs.rapid7.com/insightvm/bulk-export-api)
-- **Database tables**: Data is loaded into four separate tables: `assets`, `vulnerabilities`, `policies`, and `vulnerability_remediation`
+- **Database tables**: Data is loaded into five tables: `assets`, `vulnerabilities`, `policies`, `vulnerability_remediation`, and `asset_software`
 - **Export tracking**: The system tracks exports by type in `rapid7_bulk_export_tracking.db` to avoid redundant downloads
 
 ## Workflow - INTELLIGENT DATA LOADING
@@ -68,7 +69,7 @@ You should:
 - If data exists and is from today, skip to Step 4 (analysis)
 - If no data or stale (>1 day old), proceed to Step 2
 - Check which export types have been loaded — for a complete dataset,
-  you need vulnerability, policy, AND remediation data
+  you need vulnerability, policy, remediation, AND asset_software data
 ```
 
 ### Step 2: Start Exports (If Needed)
@@ -85,7 +86,10 @@ To load a complete dataset, kick off all three exports, then poll and load each:
    → Save the remediation export_id
    → Default to last 30 days if user doesn't specify dates
 
-All three calls return instantly with export IDs. Inform the user:
+4. Call start_export(export_type="asset_software")
+   → Save the asset_software export_id
+
+All four calls return instantly with export IDs. Inform the user:
    "Starting Rapid7 exports. Each takes 3-5 minutes on Rapid7's
     servers. I'll check on them shortly."
 ```
@@ -101,10 +105,11 @@ All three calls return instantly with export IDs. Inform the user:
    - download_and_load_export(export_id, export_type="vulnerability")
    - download_and_load_export(export_id, export_type="policy")
    - download_and_load_export(export_id, export_type="remediation")
+   - download_and_load_export(export_id, export_type="asset_software")
 
 6. Inform the user:
    - "All exports loaded. X assets, Y vulnerabilities, Z policies,
-      W remediation records."
+      W remediation records, V software packages."
 ```
 
 ### Step 4: Proceed with Analysis
@@ -223,6 +228,16 @@ The `vulnerabilities` table contains detailed vulnerability information. Each ro
 - `cves` (List) - Array of CVE IDs
 - `tags` (List) - Associated tags
 
+**Best Solution** *(present only if your org is enabled for this feature)*:
+- `bestSolutionType` (String) - Classification of the recommended fix. Five possible values:
+  - `PATCH` — a direct patch exists with an explicit download URL
+  - `ROLLUP` — a cumulative/rollup update addresses it (common for Adobe and Windows)
+  - `WORKAROUND` — Rapid7's classification; in practice the fix text often describes a standard package upgrade; do **not** surface this label to end users as "no patch available"
+  - `UNKNOWN` — Rapid7 has no solution classified yet; `bestSolutionFix` is always null for this type
+  - `null` — solution data is missing; treat identically to `UNKNOWN`
+- `bestSolutionSummary` (String) - Short human-readable description of the recommended action (e.g. "Upgrade Apache Log4j Core to 2.25.4"). Always plain text, safe to display directly. Null when `bestSolutionType` is `UNKNOWN` or null.
+- `bestSolutionFix` (String) - Detailed actionable fix instructions. **May contain HTML markup** (anchor tags, `<p>` tags) — strip or render HTML before displaying as plain text. Always null when `bestSolutionType` is `UNKNOWN` or null.
+
 ### 3. Policies Table (`policies`)
 
 The `policies` table contains policy compliance assessment results. It combines both agent-based and scan-based policy data into a single table, distinguished by the `source` column.
@@ -303,6 +318,21 @@ The `vulnerability_remediation` table tracks the lifecycle of vulnerabilities �
 - `epssscore` (Double) - EPSS score (0-1, probability of exploitation in 30 days)
 - `epsspercentile` (Double) - EPSS percentile (0-1)
 
+### 5. Asset Software Table (`asset_software`)
+
+The `asset_software` table contains the installed software inventory for all IVM-managed assets. Each row represents one software package on one asset.
+
+**Identification:**
+- `assetId` (String) - Asset identifier (join with `assets` table for asset details)
+- `orgId` (String) - Organization ID
+
+**Software Details:**
+- The exact column names for software name, version, vendor, and install date are schema-dependent — always call `get_schema()` to discover the current columns before querying this table.
+
+**Notes:**
+- This table is independent of the `vulnerabilities` table — it lists all installed software, not just software with known vulnerabilities.
+- Join on `assetId` to correlate software inventory with asset metadata or vulnerability findings.
+
 ## Common Analysis Patterns
 
 ### Asset Analysis
@@ -364,6 +394,20 @@ Use EPSS (Exploit Prediction Scoring System) metrics:
 - Generate severity distributions using severity and severityRank
 - Track PCI compliance with pciCompliant and pciSeverity
 - Calculate vulnerability age from firstFoundTimestamp
+
+#### 6. Best Solution Analysis *(if org is enabled)*
+- Check whether best solution data is present: `SELECT COUNT(*) FROM vulnerabilities WHERE bestSolutionType IS NOT NULL`
+- Prioritize actionable vulnerabilities: filter where `bestSolutionType IN ('PATCH', 'ROLLUP', 'WORKAROUND')` and `bestSolutionSummary IS NOT NULL`
+- Do not display `bestSolutionFix` raw — strip HTML tags before presenting to users
+- Group by `bestSolutionType` to understand the remediation landscape; note that `WORKAROUND` does not mean "no patch" — always show `bestSolutionSummary` as the primary label
+- Skip rows where `bestSolutionType IN ('UNKNOWN', NULL)` when generating actionable fix reports
+
+### Software Inventory Analysis
+
+#### 1. Asset Software Inventory
+- Call `get_schema()` to discover current column names — the schema may evolve
+- Join `asset_software` with `assets` on `assetId` to correlate software with asset metadata
+- Use for software license auditing, end-of-life software identification, and cross-referencing installed packages against vulnerability findings
 
 ### Policy Compliance Analysis
 
@@ -596,6 +640,74 @@ GROUP BY vulnId, title, cvssV3Score, epssscore, epsspercentile, hasExploits
 HAVING COUNT(DISTINCT assetId) > 5  -- Affects multiple assets
 ORDER BY epssscore DESC, affected_assets DESC
 LIMIT 25;
+```
+
+### Best Solution Queries *(if org is enabled)*
+
+#### Check Whether Best Solution Data Is Available
+```sql
+SELECT
+    bestSolutionType,
+    COUNT(*) as count
+FROM vulnerabilities
+GROUP BY bestSolutionType
+ORDER BY count DESC;
+```
+
+#### Actionable Vulnerabilities with Fix Guidance
+```sql
+SELECT
+    assetId,
+    hostName,
+    vulnId,
+    title,
+    severity,
+    cvssV3Score,
+    bestSolutionType,
+    bestSolutionSummary
+    -- Note: bestSolutionFix may contain HTML — strip tags before displaying
+FROM vulnerabilities
+WHERE bestSolutionType IN ('PATCH', 'ROLLUP', 'WORKAROUND')
+  AND bestSolutionSummary IS NOT NULL
+ORDER BY cvssV3Score DESC
+LIMIT 50;
+```
+
+#### Critical Vulnerabilities Grouped by Recommended Fix
+```sql
+SELECT
+    bestSolutionSummary,
+    bestSolutionType,
+    COUNT(DISTINCT vulnId) as distinct_vulns,
+    COUNT(DISTINCT assetId) as affected_assets,
+    MAX(cvssV3Score) as max_cvss,
+    SUM(CASE WHEN hasExploits = true THEN 1 ELSE 0 END) as with_exploits
+FROM vulnerabilities
+WHERE severity = 'Critical'
+  AND bestSolutionType IN ('PATCH', 'ROLLUP', 'WORKAROUND')
+GROUP BY bestSolutionSummary, bestSolutionType
+ORDER BY affected_assets DESC
+LIMIT 25;
+```
+
+### Asset Software Queries
+
+> Always call `get_schema()` first — column names for the `asset_software` table may differ from examples below.
+
+#### Software Inventory by Asset
+```sql
+-- Adjust column names based on get_schema() output
+SELECT
+    s.assetId,
+    a.hostName,
+    a.ip,
+    a.osFamily,
+    COUNT(*) as software_count
+FROM asset_software s
+LEFT JOIN assets a ON s.assetId = a.assetId
+GROUP BY s.assetId, a.hostName, a.ip, a.osFamily
+ORDER BY software_count DESC
+LIMIT 50;
 ```
 
 ### Policy Queries
@@ -931,10 +1043,10 @@ ORDER BY pciSeverity DESC;
 
 ## Best Practices
 
-1. **Always check the schema first** - Use `get_schema()` to see available columns in all tables
-2. **Start with statistics** - Use `get_stats()` to understand the data distribution across all tables
-3. **Know your tables** - There are four tables: `assets`, `vulnerabilities`, `policies`, and `vulnerability_remediation`
-4. **Load all data types** - For comprehensive analysis, use the unified non-blocking tools: `start_export(export_type="vulnerability")`, `start_export(export_type="policy")`, and `start_export(export_type="remediation")` to kick off all three, then `check_export_status()` → `download_and_load_export()` for each.
+1. **Always check the schema first** - Use `get_schema()` to see available columns in all tables — especially important for `asset_software` and for confirming whether `bestSolution*` columns are present
+2. **Start with statistics** - Use `get_stats()` to understand the data distribution across all tables and confirm which tables are loaded
+3. **Know your tables** - Five tables: `assets`, `vulnerabilities`, `policies`, `vulnerability_remediation`, `asset_software`
+4. **Load all data types** - For comprehensive analysis, kick off all four exports: `start_export(export_type="vulnerability")`, `start_export(export_type="policy")`, `start_export(export_type="remediation")`, and `start_export(export_type="asset_software")`, then `check_export_status()` → `download_and_load_export()` for each.
 5. **Join when needed** - Use JOIN queries to correlate asset information with vulnerabilities, policies, or remediation data (all join on `assetId`)
 6. **Limit large queries** - Add `LIMIT` clauses when exploring data
 7. **Use appropriate filters** - Filter by severity, cvssV3Score, osFamily, cloud provider, finalStatus, source, etc.
@@ -949,13 +1061,15 @@ ORDER BY pciSeverity DESC;
 16. **Policy source awareness** - Use the `source` column in the `policies` table to distinguish between agent-based (`'agent'`) and scan-based (`'scan'`) assessments. Compare results from both sources to identify coverage gaps.
 17. **Remediation date ranges** - The `vulnerability_remediation` table contains data for a specific date range. Check which range was exported using `list_exports()` to understand the scope of your remediation data.
 18. **Track remediation velocity** - Use `firstFoundTimestamp` and `lastRemoved` in the `vulnerability_remediation` table to calculate mean time to remediate (MTTR) and track improvement over time.
+19. **Best solution awareness** - `bestSolution*` columns in `vulnerabilities` are only present if your org is enabled for this feature. Always check `bestSolutionType IS NOT NULL` before using them. `UNKNOWN`/null types have no fix data — skip them in actionable reports. `WORKAROUND` does not mean "no patch" — show `bestSolutionSummary` instead of the type label. Strip HTML from `bestSolutionFix` before displaying.
+20. **Asset software schema** - The `asset_software` table schema may evolve. Always call `get_schema()` to discover current column names before querying — don't assume column names from examples.
 
 ## Integration with MCP - REQUIRED
 
 The MCP server provides these tools:
 
 **Export Tools (non-blocking):**
-- `start_export(export_type, start_date, end_date)` — Kick off any export type (instant). `export_type` is one of `"vulnerability"`, `"policy"`, or `"remediation"`. `start_date` and `end_date` are only used for remediation exports (YYYY-MM-DD format, defaults to last 30 days).
+- `start_export(export_type, start_date, end_date)` — Kick off any export type (instant). `export_type` is one of `"vulnerability"`, `"policy"`, `"remediation"`, or `"asset_software"`. `start_date` and `end_date` are only used for remediation exports (YYYY-MM-DD format, defaults to last 30 days).
 - `check_export_status(export_id)` — Check if an export is done (instant)
 - `download_and_load_export(export_id, export_type)` — Download completed export and load into DB (~1 min). Pass the same `export_type` used in `start_export`.
 
@@ -965,18 +1079,19 @@ The MCP server provides these tools:
 - `load_from_parquet(parquet_path)` - Load from existing Parquet files (advanced use)
 
 **Query Tools:**
-- `query(sql="...")` - Execute SQL queries against all tables (`assets`, `vulnerabilities`, `policies`, `vulnerability_remediation`)
+- `query(sql="...")` - Execute SQL queries against all tables (`assets`, `vulnerabilities`, `policies`, `vulnerability_remediation`, `asset_software`)
 - `get_schema()` - Get table schema for all existing tables
 
 **Recommended Workflow:**
-1. Call `list_exports()` — do we have data from today for all export types?
+1. Call `list_exports()` — do we have data from today for all needed export types?
 2. Call `get_stats()` — is data loaded in the database for all tables?
 3. If no data or stale:
    a. `start_export(export_type="vulnerability")` → save export_id
    b. `start_export(export_type="policy")` → save export_id
    c. `start_export(export_type="remediation", start_date="...", end_date="...")` → save export_id
-   d. Wait 30s, then `check_export_status(export_id)` for each
-   e. Once COMPLETE: `download_and_load_export(export_id, export_type="...")` for each
+   d. `start_export(export_type="asset_software")` → save export_id
+   e. Wait 30s, then `check_export_status(export_id)` for each
+   f. Once COMPLETE: `download_and_load_export(export_id, export_type="...")` for each
 4. Proceed with `query()`, `get_schema()`, `get_stats()`
 
 ## Error Handling
@@ -994,6 +1109,7 @@ If get_stats() shows no data:
    a. Call start_export(export_type="vulnerability") for vulnerability data
    b. Call start_export(export_type="policy") for policy data
    c. Call start_export(export_type="remediation", start_date="...", end_date="...") for remediation data
+   d. Call start_export(export_type="asset_software") for software inventory data
 4. Inform user: "No data available. Starting exports — each takes 3-5 minutes."
 
 If start_export() fails:
@@ -1026,7 +1142,7 @@ If data seems stale:
 - **Check data freshness first**: Always call list_exports() and get_stats() before analysis
 - **Inform about data age**: Tell users which export date is being used
 - **Start with assets**: Understand your asset inventory before diving into vulnerabilities or policies
-- **Use all four tables**: Join `assets`, `vulnerabilities`, `policies`, and `vulnerability_remediation` tables for comprehensive analysis
+- **Use all five tables**: Join `assets`, `vulnerabilities`, `policies`, `vulnerability_remediation`, and `asset_software` tables for comprehensive analysis
 - **Prioritize by risk**: Combine cvssV3Score, severity, hasExploits, and epssscore for comprehensive risk assessment
 - **Consider context**: Asset criticality (from tags, assetGroups, riskScore) matters more than raw vulnerability count
 - **Track trends**: Compare current state to historical data using temporal fields
