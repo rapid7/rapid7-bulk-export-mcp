@@ -601,8 +601,8 @@ def query_rapid7(sql: str) -> str:
     """
     global db
 
-    if db is None:
-        return "Error: Database not initialized. Please run start_rapid7_export and download_rapid7_export first."
+    if db is None or not db.has_data():
+        return "Error: No data loaded. Please run start_rapid7_export and download_rapid7_export first."
 
     try:
         results = db.query(sql)
@@ -635,8 +635,8 @@ def get_rapid7_schema() -> str:
     """
     global db
 
-    if db is None:
-        return "Error: Database not initialized. Please run start_rapid7_export and download_rapid7_export first."
+    if db is None or not db.has_data():
+        return "Error: No data loaded. Please run start_rapid7_export and download_rapid7_export first."
 
     try:
         schema = db.get_schema()
@@ -669,8 +669,8 @@ def get_rapid7_stats() -> str:
     """
     global db
 
-    if db is None:
-        return "Error: Database not initialized. Please run start_rapid7_export and download_rapid7_export first."
+    if db is None or not db.has_data():
+        return "Error: No data loaded. Please run start_rapid7_export and download_rapid7_export first."
 
     try:
         stats = db.get_stats()

@@ -9,7 +9,7 @@ import os
 from datetime import date, datetime
 from typing import Any, Dict, List, Optional
 
-import duckdb
+from .db_utils import connect_with_retry
 
 
 class ExportTracker:
@@ -23,18 +23,17 @@ class ExportTracker:
             db_path: Path to the DuckDB database file for tracking exports
         """
         self.db_path = db_path
-        self.conn = None
         self._initialize_db()
 
     def _initialize_db(self):
         """Initialize the export tracking database and create schema."""
-        self.conn = duckdb.connect(self.db_path)
+        conn = connect_with_retry(self.db_path)
 
         # Restrict file permissions
         os.chmod(self.db_path, 0o600)
 
         # Create exports table to track export metadata
-        self.conn.execute("""
+        conn.execute("""
             CREATE TABLE IF NOT EXISTS exports (
                 export_id VARCHAR PRIMARY KEY,
                 export_date DATE NOT NULL,
@@ -49,7 +48,7 @@ class ExportTracker:
 
         # Migrate schema: add export_type column for existing databases
         try:
-            self.conn.execute("""
+            conn.execute("""
                 ALTER TABLE exports ADD COLUMN export_type VARCHAR DEFAULT 'vulnerability'
             """)
         except Exception:
@@ -57,10 +56,11 @@ class ExportTracker:
             pass  # nosec B110
 
         # Create index on export_date and export_type for fast lookups
-        self.conn.execute("""
+        conn.execute("""
             CREATE INDEX IF NOT EXISTS idx_export_date_type
             ON exports(export_date, export_type)
         """)
+        conn.close()
 
     def get_today_export(self, export_type: str = "vulnerability") -> Optional[Dict[str, Any]]:
         """
@@ -74,27 +74,31 @@ class ExportTracker:
         """
         today = date.today()
 
-        result = self.conn.execute(
-            """
-            SELECT
-                export_id,
-                export_date,
-                created_at,
-                status,
-                file_count,
-                row_count,
-                parquet_urls,
-                local_files,
-                export_type
-            FROM exports
-            WHERE export_date = ?
-              AND status = 'COMPLETE'
-              AND export_type = ?
-            ORDER BY created_at DESC
-            LIMIT 1
-        """,
-            [today, export_type],
-        ).fetchone()
+        conn = connect_with_retry(self.db_path, read_only=True)
+        try:
+            result = conn.execute(
+                """
+                SELECT
+                    export_id,
+                    export_date,
+                    created_at,
+                    status,
+                    file_count,
+                    row_count,
+                    parquet_urls,
+                    local_files,
+                    export_type
+                FROM exports
+                WHERE export_date = ?
+                  AND status = 'COMPLETE'
+                  AND export_type = ?
+                ORDER BY created_at DESC
+                LIMIT 1
+            """,
+                [today, export_type],
+            ).fetchone()
+        finally:
+            conn.close()
 
         if result:
             return {
@@ -134,39 +138,43 @@ class ExportTracker:
         today = date.today()
         now = datetime.now()
 
-        self.conn.execute(
-            """
-            INSERT INTO exports (
-                export_id,
-                export_date,
-                created_at,
-                status,
-                file_count,
-                row_count,
-                parquet_urls,
-                local_files,
-                export_type
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-            ON CONFLICT (export_id) DO UPDATE SET
-                status = EXCLUDED.status,
-                file_count = EXCLUDED.file_count,
-                row_count = EXCLUDED.row_count,
-                parquet_urls = EXCLUDED.parquet_urls,
-                local_files = EXCLUDED.local_files,
-                export_type = EXCLUDED.export_type
-        """,
-            [
-                export_id,
-                today,
-                now,
-                status,
-                len(parquet_urls) if parquet_urls else 0,
-                row_count,
-                parquet_urls,
-                local_files,
-                export_type,
-            ],
-        )
+        conn = connect_with_retry(self.db_path)
+        try:
+            conn.execute(
+                """
+                INSERT INTO exports (
+                    export_id,
+                    export_date,
+                    created_at,
+                    status,
+                    file_count,
+                    row_count,
+                    parquet_urls,
+                    local_files,
+                    export_type
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT (export_id) DO UPDATE SET
+                    status = EXCLUDED.status,
+                    file_count = EXCLUDED.file_count,
+                    row_count = EXCLUDED.row_count,
+                    parquet_urls = EXCLUDED.parquet_urls,
+                    local_files = EXCLUDED.local_files,
+                    export_type = EXCLUDED.export_type
+            """,
+                [
+                    export_id,
+                    today,
+                    now,
+                    status,
+                    len(parquet_urls) if parquet_urls else 0,
+                    row_count,
+                    parquet_urls,
+                    local_files,
+                    export_type,
+                ],
+            )
+        finally:
+            conn.close()
 
     def get_export_by_id(self, export_id: str) -> Optional[Dict[str, Any]]:
         """
@@ -178,22 +186,26 @@ class ExportTracker:
         Returns:
             Dictionary with export metadata if found, None otherwise
         """
-        result = self.conn.execute(
-            """
-            SELECT
-                export_id,
-                export_date,
-                created_at,
-                status,
-                file_count,
-                row_count,
-                parquet_urls,
-                local_files
-            FROM exports
-            WHERE export_id = ?
-        """,
-            [export_id],
-        ).fetchone()
+        conn = connect_with_retry(self.db_path, read_only=True)
+        try:
+            result = conn.execute(
+                """
+                SELECT
+                    export_id,
+                    export_date,
+                    created_at,
+                    status,
+                    file_count,
+                    row_count,
+                    parquet_urls,
+                    local_files
+                FROM exports
+                WHERE export_id = ?
+            """,
+                [export_id],
+            ).fetchone()
+        finally:
+            conn.close()
 
         if result:
             return {
@@ -220,41 +232,45 @@ class ExportTracker:
         Returns:
             List of export metadata dictionaries
         """
-        if export_type is not None:
-            results = self.conn.execute(
-                """
-                SELECT
-                    export_id,
-                    export_date,
-                    created_at,
-                    status,
-                    file_count,
-                    row_count,
-                    export_type
-                FROM exports
-                WHERE export_type = ?
-                ORDER BY created_at DESC
-                LIMIT ?
-            """,
-                [export_type, limit],
-            ).fetchall()
-        else:
-            results = self.conn.execute(
-                """
-                SELECT
-                    export_id,
-                    export_date,
-                    created_at,
-                    status,
-                    file_count,
-                    row_count,
-                    export_type
-                FROM exports
-                ORDER BY created_at DESC
-                LIMIT ?
-            """,
-                [limit],
-            ).fetchall()
+        conn = connect_with_retry(self.db_path, read_only=True)
+        try:
+            if export_type is not None:
+                results = conn.execute(
+                    """
+                    SELECT
+                        export_id,
+                        export_date,
+                        created_at,
+                        status,
+                        file_count,
+                        row_count,
+                        export_type
+                    FROM exports
+                    WHERE export_type = ?
+                    ORDER BY created_at DESC
+                    LIMIT ?
+                """,
+                    [export_type, limit],
+                ).fetchall()
+            else:
+                results = conn.execute(
+                    """
+                    SELECT
+                        export_id,
+                        export_date,
+                        created_at,
+                        status,
+                        file_count,
+                        row_count,
+                        export_type
+                    FROM exports
+                    ORDER BY created_at DESC
+                    LIMIT ?
+                """,
+                    [limit],
+                ).fetchall()
+        finally:
+            conn.close()
 
         return [
             {
@@ -270,29 +286,19 @@ class ExportTracker:
         ]
 
     def close(self):
-        """Close the database connection."""
-        if self.conn:
-            self.conn.close()
-            self.conn = None
+        """No-op — connections are short-lived and released per-operation."""
 
     def purge(self):
         """Purge all tracking data by deleting the database file.
 
-        Closes the connection, removes the database file and any associated
-        WAL file from disk, then reinitializes with a fresh connection.
+        Removes the database file and any associated WAL file from disk,
+        then reinitializes with a fresh schema.
         """
-        # Close existing connection
-        if self.conn:
-            self.conn.close()
-            self.conn = None
-
-        # Delete database file and WAL
         for suffix in ("", ".wal"):
             path = self.db_path + suffix
             if os.path.exists(path):
                 os.remove(path)
 
-        # Reinitialize fresh
         self._initialize_db()
 
     def __enter__(self):
