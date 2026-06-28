@@ -42,7 +42,7 @@ db: Optional[VulnerabilityDatabase] = None
 
 # Data directory — resolved once at startup, used for all database paths.
 # Defaults to ~/.rapid7-mcp so relative-path writes never hit a read-only CWD.
-_DATA_DIR: Path = Path(os.environ.get("DATA_DIR", ".")).expanduser().resolve()
+_DATA_DIR: Path = Path(os.environ.get("DATA_DIR", "~/.rapid7-mcp")).expanduser().resolve()
 
 VALID_EXPORT_TYPES = ("vulnerability", "policy", "remediation", "asset_software")
 
@@ -884,7 +884,7 @@ def main():
         print("Environment Variables:")
         print("  RAPID7_API_KEY    Your Rapid7 InsightVM API key (required)")
         print("  RAPID7_REGION     Your Rapid7 region: us, eu, ca, au, or ap (required)")
-        print("  DATA_DIR          Directory for database files (default: current working directory)")
+        print("  DATA_DIR          Directory for database files (default: ~/.rapid7-mcp)")
         print("  MCP_TRANSPORT     Transport protocol: 'stdio' (default) or 'http'")
         print("  MCP_HOST          HTTP bind address (default: 0.0.0.0)")
         print("  MCP_PORT          HTTP port (default: 8000)")
@@ -897,6 +897,9 @@ def main():
         print()
         print("See README.md for configuration details.")
         sys.exit(0)
+
+    # Ensure data directory exists
+    _DATA_DIR.mkdir(parents=True, exist_ok=True)
 
     # Get database path from args or use default
     db_path = sys.argv[1] if len(sys.argv) > 1 else str(_DATA_DIR / "rapid7_bulk_export.db")
