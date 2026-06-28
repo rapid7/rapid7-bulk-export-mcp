@@ -202,7 +202,7 @@ def start_rapid7_export(
         today_export = tracker.get_today_export(export_type=export_type)
         tracker.close()
 
-        if today_export:
+        if today_export and export_type != "remediation":
             eid = today_export["export_id"]
             return (
                 f"♻️ A {export_type} export from today already exists.\n\n"
