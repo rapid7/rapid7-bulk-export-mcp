@@ -11,6 +11,8 @@ from typing import Any, Dict, List, Optional, Set, Tuple, Union
 
 from .db_utils import connect_with_retry, duckdb_connection
 
+KNOWN_TABLES = ["assets", "vulnerabilities", "policies", "vulnerability_remediation", "asset_software"]
+
 # Maps Rapid7 API result prefixes to target DuckDB tables.
 # Tuple values indicate (table_name, source_column_value) for policy prefixes.
 PREFIX_TABLE_MAP: Dict[str, Union[str, Tuple[str, str]]] = {
@@ -67,19 +69,13 @@ class VulnerabilityDatabase:
 
     def has_data(self) -> bool:
         """Return True if at least one known table has been loaded."""
-        known_tables = ["assets", "vulnerabilities", "policies", "vulnerability_remediation", "asset_software"]
+        placeholders = ", ".join("?" * len(KNOWN_TABLES))
         with duckdb_connection(self.db_path, read_only=True) as conn:
-            for table in known_tables:
-                try:
-                    result = conn.execute(
-                        "SELECT COUNT(*) FROM information_schema.tables WHERE table_name = ?",
-                        [table],
-                    ).fetchone()
-                    if result and result[0] > 0:
-                        return True
-                except Exception:
-                    continue
-        return False
+            result = conn.execute(
+                f"SELECT COUNT(*) FROM information_schema.tables WHERE table_name IN ({placeholders})",  # nosec B608
+                KNOWN_TABLES,
+            ).fetchone()
+        return result is not None and result[0] > 0
 
     def load_parquet_files_by_prefix(
         self,
@@ -114,12 +110,17 @@ class VulnerabilityDatabase:
         if skip_prefixes is None:
             skip_prefixes = set()
 
-        # Track which tables have been created fresh in this call
-        tables_created: Set[str] = set()
         # Accumulate row counts per table
         row_counts: Dict[str, int] = {}
 
         with duckdb_connection(self.db_path) as conn:
+            # Tables already in the DB before this load — needed for append-mode existence checks.
+            preexisting: Set[str] = {
+                row[0] for row in conn.execute("SELECT table_name FROM information_schema.tables").fetchall()
+            }
+            # Tables we write to in this call (drives snapshot drop-vs-insert and row count collection).
+            tables_touched: Set[str] = set()
+
             for prefix, file_paths in prefix_file_map.items():
                 if prefix in skip_prefixes:
                     continue
@@ -151,22 +152,17 @@ class VulnerabilityDatabase:
                         else:
                             select_expr = f"SELECT * FROM read_parquet('{file_path}')"  # nosec B608
 
-                        if table_name not in tables_created and not append:
-                            # First load for this table in this call — drop and create
+                        if table_name not in tables_touched and not append:
+                            # First file for this table in a snapshot load — drop and create
                             conn.execute(f"DROP TABLE IF EXISTS {table_name}")  # nosec B608
                             conn.execute(f"CREATE TABLE {table_name} AS {select_expr}")  # nosec B608
-                            tables_created.add(table_name)
+                        elif table_name in tables_touched or table_name in preexisting:
+                            # Already written in this call, or pre-existing from a prior load — insert
+                            conn.execute(f"INSERT INTO {table_name} {select_expr}")  # nosec B608
                         else:
-                            # Append mode or subsequent file — insert, creating table if needed
-                            table_exists = conn.execute(
-                                "SELECT COUNT(*) FROM information_schema.tables WHERE table_name = ?",
-                                [table_name],
-                            ).fetchone()[0]
-                            if table_exists:
-                                conn.execute(f"INSERT INTO {table_name} {select_expr}")  # nosec B608
-                            else:
-                                conn.execute(f"CREATE TABLE {table_name} AS {select_expr}")  # nosec B608
-                            tables_created.add(table_name)
+                            # Append mode, first file, table doesn't exist yet — create
+                            conn.execute(f"CREATE TABLE {table_name} AS {select_expr}")  # nosec B608
+                        tables_touched.add(table_name)
                     except Exception as e:
                         print(
                             f"Warning: Failed to read Parquet file '{file_path}': {e}",
@@ -174,8 +170,8 @@ class VulnerabilityDatabase:
                         )
                         continue
 
-            # Collect row counts for all tables that were loaded
-            for table_name in tables_created:
+            # Collect row counts only for tables we actually touched
+            for table_name in tables_touched:
                 result = conn.execute(f"SELECT COUNT(*) FROM {table_name}").fetchone()  # nosec B608
                 row_counts[table_name] = result[0] if result else 0
 
@@ -227,11 +223,10 @@ class VulnerabilityDatabase:
             Dictionary keyed by table name, each value is a list of
             dictionaries with column_name and data_type.
         """
-        known_tables = ["assets", "vulnerabilities", "policies", "vulnerability_remediation", "asset_software"]
         schemas: Dict[str, List[Dict[str, str]]] = {}
 
         with duckdb_connection(self.db_path, read_only=True) as conn:
-            for table_name in known_tables:
+            for table_name in KNOWN_TABLES:
                 try:
                     result = conn.execute(
                         """

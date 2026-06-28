@@ -9,7 +9,7 @@ import os
 from datetime import date, datetime
 from typing import Any, Dict, List, Optional
 
-from .db_utils import connect_with_retry
+from .db_utils import duckdb_connection
 
 
 class ExportTracker:
@@ -23,44 +23,41 @@ class ExportTracker:
             db_path: Path to the DuckDB database file for tracking exports
         """
         self.db_path = db_path
+        new_file = not os.path.exists(db_path)
         self._initialize_db()
+        if new_file:
+            os.chmod(self.db_path, 0o600)
 
     def _initialize_db(self):
         """Initialize the export tracking database and create schema."""
-        conn = connect_with_retry(self.db_path)
-
-        # Restrict file permissions
-        os.chmod(self.db_path, 0o600)
-
-        # Create exports table to track export metadata
-        conn.execute("""
-            CREATE TABLE IF NOT EXISTS exports (
-                export_id VARCHAR PRIMARY KEY,
-                export_date DATE NOT NULL,
-                created_at TIMESTAMP NOT NULL,
-                status VARCHAR NOT NULL,
-                file_count INTEGER,
-                row_count INTEGER,
-                parquet_urls VARCHAR[],
-                local_files VARCHAR[]
-            )
-        """)
-
-        # Migrate schema: add export_type column for existing databases
-        try:
+        with duckdb_connection(self.db_path) as conn:
             conn.execute("""
-                ALTER TABLE exports ADD COLUMN export_type VARCHAR DEFAULT 'vulnerability'
+                CREATE TABLE IF NOT EXISTS exports (
+                    export_id VARCHAR PRIMARY KEY,
+                    export_date DATE NOT NULL,
+                    created_at TIMESTAMP NOT NULL,
+                    status VARCHAR NOT NULL,
+                    file_count INTEGER,
+                    row_count INTEGER,
+                    parquet_urls VARCHAR[],
+                    local_files VARCHAR[]
+                )
             """)
-        except Exception:
-            # Column already exists, ignore
-            pass  # nosec B110
 
-        # Create index on export_date and export_type for fast lookups
-        conn.execute("""
-            CREATE INDEX IF NOT EXISTS idx_export_date_type
-            ON exports(export_date, export_type)
-        """)
-        conn.close()
+            # Migrate schema: add export_type column for existing databases
+            try:
+                conn.execute("""
+                    ALTER TABLE exports ADD COLUMN export_type VARCHAR DEFAULT 'vulnerability'
+                """)
+            except Exception:
+                # Column already exists, ignore
+                pass  # nosec B110
+
+            # Create index on export_date and export_type for fast lookups
+            conn.execute("""
+                CREATE INDEX IF NOT EXISTS idx_export_date_type
+                ON exports(export_date, export_type)
+            """)
 
     def get_today_export(self, export_type: str = "vulnerability") -> Optional[Dict[str, Any]]:
         """
@@ -74,8 +71,7 @@ class ExportTracker:
         """
         today = date.today()
 
-        conn = connect_with_retry(self.db_path, read_only=True)
-        try:
+        with duckdb_connection(self.db_path, read_only=True) as conn:
             result = conn.execute(
                 """
                 SELECT
@@ -97,8 +93,6 @@ class ExportTracker:
             """,
                 [today, export_type],
             ).fetchone()
-        finally:
-            conn.close()
 
         if result:
             return {
@@ -138,8 +132,7 @@ class ExportTracker:
         today = date.today()
         now = datetime.now()
 
-        conn = connect_with_retry(self.db_path)
-        try:
+        with duckdb_connection(self.db_path) as conn:
             conn.execute(
                 """
                 INSERT INTO exports (
@@ -173,8 +166,6 @@ class ExportTracker:
                     export_type,
                 ],
             )
-        finally:
-            conn.close()
 
     def get_export_by_id(self, export_id: str) -> Optional[Dict[str, Any]]:
         """
@@ -186,8 +177,7 @@ class ExportTracker:
         Returns:
             Dictionary with export metadata if found, None otherwise
         """
-        conn = connect_with_retry(self.db_path, read_only=True)
-        try:
+        with duckdb_connection(self.db_path, read_only=True) as conn:
             result = conn.execute(
                 """
                 SELECT
@@ -204,8 +194,6 @@ class ExportTracker:
             """,
                 [export_id],
             ).fetchone()
-        finally:
-            conn.close()
 
         if result:
             return {
@@ -232,45 +220,19 @@ class ExportTracker:
         Returns:
             List of export metadata dictionaries
         """
-        conn = connect_with_retry(self.db_path, read_only=True)
-        try:
-            if export_type is not None:
-                results = conn.execute(
-                    """
-                    SELECT
-                        export_id,
-                        export_date,
-                        created_at,
-                        status,
-                        file_count,
-                        row_count,
-                        export_type
-                    FROM exports
-                    WHERE export_type = ?
-                    ORDER BY created_at DESC
-                    LIMIT ?
-                """,
-                    [export_type, limit],
-                ).fetchall()
-            else:
-                results = conn.execute(
-                    """
-                    SELECT
-                        export_id,
-                        export_date,
-                        created_at,
-                        status,
-                        file_count,
-                        row_count,
-                        export_type
-                    FROM exports
-                    ORDER BY created_at DESC
-                    LIMIT ?
-                """,
-                    [limit],
-                ).fetchall()
-        finally:
-            conn.close()
+        sql = """
+            SELECT export_id, export_date, created_at, status, file_count, row_count, export_type
+            FROM exports
+        """
+        params: list = []
+        if export_type is not None:
+            sql += " WHERE export_type = ?"
+            params.append(export_type)
+        sql += " ORDER BY created_at DESC LIMIT ?"
+        params.append(limit)
+
+        with duckdb_connection(self.db_path, read_only=True) as conn:
+            results = conn.execute(sql, params).fetchall()
 
         return [
             {
