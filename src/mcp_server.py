@@ -10,7 +10,6 @@ import datetime as _dt
 import glob
 import json
 import os
-import re as _re
 import shutil
 import sys
 import tempfile
@@ -26,6 +25,7 @@ from .download import download_all_files
 from .duckdb_loader import VulnerabilityDatabase
 from .export_manager import (
     build_remediation_date_chunks,
+    create_asset_software_export,
     create_policy_export,
     create_remediation_export,
     create_vulnerability_export,
@@ -39,14 +39,19 @@ mcp = FastMCP("rapid7-bulk-export")
 # Global database instance
 db: Optional[VulnerabilityDatabase] = None
 
-VALID_EXPORT_TYPES = ("vulnerability", "policy", "remediation")
+# Data directory — resolved once at startup, used for all database paths.
+# Defaults to ~/.rapid7_mcp so relative-path writes never hit a read-only CWD.
+_DATA_DIR: Path = Path(os.environ.get("DATA_DIR", "~/.rapid7_mcp")).expanduser().resolve()
+
+VALID_EXPORT_TYPES = ("vulnerability", "policy", "remediation", "asset_software")
 
 
-def initialize_database(db_path: str = "rapid7_bulk_export.db") -> VulnerabilityDatabase:
+def initialize_database(db_path: Optional[str] = None) -> VulnerabilityDatabase:
     """Initialize the vulnerability database."""
     global db
     if db is None:
-        db = VulnerabilityDatabase(db_path)
+        resolved = db_path or str(_DATA_DIR / "rapid7_bulk_export.db")
+        db = VulnerabilityDatabase(resolved)
     return db
 
 
@@ -74,7 +79,7 @@ def load_rapid7_parquet(parquet_path: str) -> str:
     global db
 
     try:
-        ALLOWED_ROOT = (Path.home() / ".rapid7-mcp" / "imports").resolve()
+        ALLOWED_ROOT = (_DATA_DIR / "imports").resolve()
 
         # Resolve and validate path is within allowed root
         resolved = Path(parquet_path).resolve()
@@ -191,12 +196,12 @@ def start_rapid7_export(
     try:
         config = load_config()
 
-        # Check if we already have a completed export from today
-        tracker = ExportTracker()
-        today_export = tracker.get_today_export(export_type=export_type)
-        tracker.close()
+        tracker = ExportTracker(str(_DATA_DIR / "rapid7_bulk_export_tracking.db"))
 
-        if today_export:
+        # Return a cached export from today unless it's remediation (which is date-range keyed)
+        today_export = tracker.get_today_export(export_type=export_type)
+        if today_export and export_type != "remediation":
+            tracker.close()
             eid = today_export["export_id"]
             return (
                 f"♻️ A {export_type} export from today already exists.\n\n"
@@ -214,16 +219,8 @@ def start_rapid7_export(
         if export_type == "vulnerability":
             print("Creating new vulnerability export...", file=sys.stderr)
             new_id = create_vulnerability_export(config)
-
             print(f"Created {export_type} export with ID: {new_id}", file=sys.stderr)
-
-            tracker = ExportTracker()
-            tracker.save_export(
-                export_id=new_id,
-                status="PENDING",
-                parquet_urls=[],
-                export_type=export_type,
-            )
+            tracker.save_export(export_id=new_id, status="PENDING", parquet_urls=[], export_type=export_type)
             tracker.close()
 
             return (
@@ -240,16 +237,8 @@ def start_rapid7_export(
         elif export_type == "policy":
             print("Creating new policy export...", file=sys.stderr)
             new_id = create_policy_export(config)
-
             print(f"Created {export_type} export with ID: {new_id}", file=sys.stderr)
-
-            tracker = ExportTracker()
-            tracker.save_export(
-                export_id=new_id,
-                status="PENDING",
-                parquet_urls=[],
-                export_type=export_type,
-            )
+            tracker.save_export(export_id=new_id, status="PENDING", parquet_urls=[], export_type=export_type)
             tracker.close()
 
             return (
@@ -269,27 +258,14 @@ def start_rapid7_export(
             if not end_date:
                 end_date = _dt.date.today().isoformat()
 
-            date_pattern = r"^\d{4}-\d{2}-\d{2}$"
-            if not _re.match(date_pattern, start_date):
-                return f"✗ Invalid start_date format: '{start_date}'. Expected YYYY-MM-DD (e.g. '2024-01-01')."
-            if not _re.match(date_pattern, end_date):
-                return f"✗ Invalid end_date format: '{end_date}'. Expected YYYY-MM-DD (e.g. '2024-01-31')."
-
             chunks = build_remediation_date_chunks(start_date, end_date)
 
             export_ids = []
-            tracker = ExportTracker()
             for chunk_start, chunk_end in chunks:
                 print(f"Creating remediation export: {chunk_start} → {chunk_end}", file=sys.stderr)
                 eid = create_remediation_export(config, chunk_start, chunk_end)
                 export_ids.append({"id": eid, "start": chunk_start, "end": chunk_end})
-
-                tracker.save_export(
-                    export_id=eid,
-                    status="PENDING",
-                    parquet_urls=[],
-                    export_type="remediation",
-                )
+                tracker.save_export(export_id=eid, status="PENDING", parquet_urls=[], export_type="remediation")
             tracker.close()
 
             lines = [
@@ -307,6 +283,23 @@ def start_rapid7_export(
             lines.append("All chunks load into the same vulnerability_remediation table.")
 
             return "\n".join(lines)
+
+        elif export_type == "asset_software":
+            new_id = create_asset_software_export(config)
+            print(f"Created asset_software export with ID: {new_id}", file=sys.stderr)
+            tracker.save_export(export_id=new_id, status="PENDING", parquet_urls=[], export_type="asset_software")
+            tracker.close()
+
+            return (
+                f"✓ Asset software export job created.\n\n"
+                f"Export ID: {new_id}\n"
+                f"Status: PENDING\n\n"
+                f"The export is now processing on Rapid7's servers "
+                f"(typically 3-5 minutes).\n"
+                f'Check progress: check_rapid7_export_status(export_id="{new_id}")\n'
+                f"Once COMPLETE, load with: "
+                f'download_rapid7_export(export_id="{new_id}", export_type="asset_software")'
+            )
 
     except Exception as e:
         return f"✗ Error starting {export_type} export: {str(e)}"
@@ -454,6 +447,8 @@ def download_rapid7_export(export_id: str, export_type: str = "vulnerability") -
 
             if export_type == "policy":
                 row_counts = db.load_parquet_files_by_prefix(prefix_file_map, skip_prefixes={"asset"})
+            elif export_type == "remediation":
+                row_counts = db.load_parquet_files_by_prefix(prefix_file_map, append=True)
             else:
                 row_counts = db.load_parquet_files_by_prefix(prefix_file_map)
 
@@ -468,7 +463,7 @@ def download_rapid7_export(export_id: str, export_type: str = "vulnerability") -
                 )
 
             # Save export metadata
-            tracker = ExportTracker()
+            tracker = ExportTracker(str(_DATA_DIR / "rapid7_bulk_export_tracking.db"))
             tracker.save_export(
                 export_id=export_id,
                 status="COMPLETE",
@@ -569,8 +564,8 @@ def query_rapid7(sql: str) -> str:
     """
     global db
 
-    if db is None:
-        return "Error: Database not initialized. Please run start_rapid7_export and download_rapid7_export first."
+    if db is None or not db.has_data():
+        return "Error: No data loaded. Please run start_rapid7_export and download_rapid7_export first."
 
     try:
         results = db.query(sql)
@@ -603,8 +598,8 @@ def get_rapid7_schema() -> str:
     """
     global db
 
-    if db is None:
-        return "Error: Database not initialized. Please run start_rapid7_export and download_rapid7_export first."
+    if db is None or not db.has_data():
+        return "Error: No data loaded. Please run start_rapid7_export and download_rapid7_export first."
 
     try:
         schema = db.get_schema()
@@ -637,8 +632,8 @@ def get_rapid7_stats() -> str:
     """
     global db
 
-    if db is None:
-        return "Error: Database not initialized. Please run start_rapid7_export and download_rapid7_export first."
+    if db is None or not db.has_data():
+        return "Error: No data loaded. Please run start_rapid7_export and download_rapid7_export first."
 
     try:
         stats = db.get_stats()
@@ -680,7 +675,7 @@ def purge_rapid7_data() -> str:
             db.purge()
 
         # Purge tracking database
-        tracker = ExportTracker()
+        tracker = ExportTracker(str(_DATA_DIR / "rapid7_bulk_export_tracking.db"))
         tracker.purge()
 
         return (
@@ -717,7 +712,7 @@ def list_rapid7_exports(limit: int = 10) -> str:
         Formatted list of recent exports
     """
     try:
-        tracker = ExportTracker()
+        tracker = ExportTracker(str(_DATA_DIR / "rapid7_bulk_export_tracking.db"))
         exports = tracker.list_exports(limit=limit)
         tracker.close()
 
@@ -740,104 +735,6 @@ def list_rapid7_exports(limit: int = 10) -> str:
         return f"✗ Error listing exports: {str(e)}"
 
 
-def suggest_query(task: str = "") -> str:
-    """Get SQL query suggestions for common vulnerability analysis tasks.
-
-    Provides example queries for common use cases like finding critical vulnerabilities,
-    analyzing trends, identifying affected assets, etc. All queries use the actual
-    Rapid7 Bulk Export API Parquet schema fields.
-
-    Args:
-        task: Description of what you want to analyze (optional)
-
-    Returns:
-        SQL query suggestions
-    """
-    suggestions = """
-Common SQL Query Patterns for Vulnerability Analysis:
-
-1. Find Critical Vulnerabilities with High Exploitation Risk:
-   SELECT assetId, hostName, vulnId, title, cvssV3Score, epssscore, hasExploits
-   FROM vulnerabilities
-   WHERE severity = 'Critical' AND epssscore > 0.5
-   ORDER BY epssscore DESC, cvssV3Score DESC
-   LIMIT 20;
-
-2. Severity Distribution:
-   SELECT severity, COUNT(*) as count, AVG(cvssV3Score) as avg_cvss
-   FROM vulnerabilities
-   GROUP BY severity
-   ORDER BY count DESC;
-
-3. High CVSS Score Vulnerabilities with Exploits:
-   SELECT vulnId, title, cvssV3Score, cvssV3Severity, hasExploits, epssscore
-   FROM vulnerabilities
-   WHERE cvssV3Score >= 9.0
-   ORDER BY cvssV3Score DESC;
-
-4. Recently Discovered Vulnerabilities:
-   SELECT assetId, hostName, vulnId, title, severity, firstFoundTimestamp
-   FROM vulnerabilities
-   ORDER BY firstFoundTimestamp DESC
-   LIMIT 20;
-
-5. Vulnerabilities by Asset:
-   SELECT assetId, hostName, ip, osDescription,
-          COUNT(*) as vuln_count,
-          SUM(CASE WHEN severity = 'Critical' THEN 1 ELSE 0 END) as critical_count
-   FROM vulnerabilities
-   GROUP BY assetId, hostName, ip, osDescription
-   ORDER BY critical_count DESC, vuln_count DESC
-   LIMIT 10;
-
-6. Search by CVE:
-   SELECT assetId, hostName, vulnId, title, cvssV3Score, cves
-   FROM vulnerabilities
-   WHERE EXISTS (SELECT 1 FROM unnest(cves) AS cve WHERE cve LIKE '%CVE-2024%');
-
-7. Cloud Asset Vulnerabilities:
-   SELECT
-     CASE
-       WHEN awsInstanceId IS NOT NULL THEN 'AWS'
-       WHEN azureResourceId IS NOT NULL THEN 'Azure'
-       WHEN gcpObjectId IS NOT NULL THEN 'GCP'
-       ELSE 'On-Premise'
-     END as cloud_provider,
-     COUNT(*) as vuln_count,
-     COUNT(DISTINCT assetId) as asset_count
-   FROM vulnerabilities
-   GROUP BY cloud_provider;
-
-8. EPSS-Based Prioritization:
-   SELECT vulnId, title, cvssV3Score, epssscore, epsspercentile,
-          COUNT(DISTINCT assetId) as affected_assets
-   FROM vulnerabilities
-   WHERE epssscore > 0.1
-   GROUP BY vulnId, title, cvssV3Score, epssscore, epsspercentile
-   HAVING COUNT(DISTINCT assetId) > 5
-   ORDER BY epssscore DESC;
-
-9. Reintroduced Vulnerabilities:
-   SELECT assetId, hostName, vulnId, title,
-          firstFoundTimestamp, reintroducedTimestamp
-   FROM vulnerabilities
-   WHERE reintroducedTimestamp IS NOT NULL
-   ORDER BY reintroducedTimestamp DESC;
-
-10. PCI Compliance Status:
-    SELECT pciSeverity, pciCompliant, COUNT(*) as count
-    FROM vulnerabilities
-    WHERE pciSeverity IS NOT NULL
-    GROUP BY pciSeverity, pciCompliant
-    ORDER BY pciSeverity DESC;
-"""
-
-    if task:
-        suggestions = f"Query suggestions for: {task}\n\n" + suggestions
-
-    return suggestions
-
-
 def main():
     """Entry point for the MCP server command."""
     # Handle help flag
@@ -847,11 +744,12 @@ def main():
         print("Start the MCP server for Rapid7 vulnerability data.")
         print()
         print("Arguments:")
-        print("  database_path    Path to the DuckDB database file (optional, default: rapid7_bulk_export.db)")
+        print("  database_path    Path to the DuckDB database file (optional, overrides DATA_DIR default)")
         print()
         print("Environment Variables:")
         print("  RAPID7_API_KEY    Your Rapid7 InsightVM API key (required)")
         print("  RAPID7_REGION     Your Rapid7 region: us, eu, ca, au, or ap (required)")
+        print("  DATA_DIR          Directory for database files (default: ~/.rapid7_mcp)")
         print("  MCP_TRANSPORT     Transport protocol: 'stdio' (default) or 'http'")
         print("  MCP_HOST          HTTP bind address (default: 0.0.0.0)")
         print("  MCP_PORT          HTTP port (default: 8000)")
@@ -865,8 +763,11 @@ def main():
         print("See README.md for configuration details.")
         sys.exit(0)
 
+    # Ensure data directory exists
+    _DATA_DIR.mkdir(parents=True, exist_ok=True)
+
     # Get database path from args or use default
-    db_path = sys.argv[1] if len(sys.argv) > 1 else "rapid7_bulk_export.db"
+    db_path = sys.argv[1] if len(sys.argv) > 1 else str(_DATA_DIR / "rapid7_bulk_export.db")
 
     # Initialize database
     try:
@@ -882,9 +783,9 @@ def main():
         host = os.environ.get("MCP_HOST", "0.0.0.0")  # nosec B104 - intentional for Docker
         port = int(os.environ.get("MCP_PORT", "8000"))
         print(f"Starting HTTP transport on {host}:{port}", file=sys.stderr)
-        mcp.run(transport="http", host=host, port=port)
+        mcp.run(transport="http", host=host, port=port, show_banner=False)
     else:
-        mcp.run()
+        mcp.run(show_banner=False)
 
 
 if __name__ == "__main__":

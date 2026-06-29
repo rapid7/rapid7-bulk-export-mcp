@@ -1283,7 +1283,7 @@ wheels = [
 
 [[package]]
 name = "rapid7-vulnerability-export"
-version = "0.4.3"
+version = "0.5.0"
 source = { editable = "." }
 dependencies = [
     { name = "authlib" },
