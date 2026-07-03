@@ -390,25 +390,37 @@ Add the following to `mcp_config.json`:
 <details>
 <summary><b>Docker (remote / shared deployments)</b></summary>
 
+#### Docker Image
+
+Uses Red Hat UBI 10 Python 3.12 Minimal base image with Python 3.12.13 pre-installed. Supports read-only filesystem operation. No Red Hat subscription required.
+
 #### Build and Run
+
+**Using docker compose (recommended):**
+
+```bash
+RAPID7_API_KEY=your-key RAPID7_REGION=us docker compose up -d
+```
+
+**Using docker run:**
 
 ```bash
 # Build
 docker build -t rapid7-bulk-export-mcp .
 
-# Run
+# Run with read-only filesystem
 docker run -d \
   -p 8000:8000 \
   -e RAPID7_API_KEY=your-api-key-here \
   -e RAPID7_REGION=us \
+  -e DATA_DIR=/data \
+  -e TMPDIR=/tmp \
+  -v rapid7-data:/data \
+  --tmpfs /tmp \
+  --read-only \
+  --security-opt no-new-privileges:true \
   --name rapid7-bulk-export-mcp \
   rapid7-bulk-export-mcp
-```
-
-Or with docker compose:
-
-```bash
-RAPID7_API_KEY=your-key RAPID7_REGION=us docker compose up -d
 ```
 
 #### Configure Your MCP Client

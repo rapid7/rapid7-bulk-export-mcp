@@ -1,5 +1,7 @@
 .PHONY: help version check-version bump-version lint lint-fix security test build \
-       package-mcpb package-skill package clean create-release release
+       docker-build docker-build-slim docker-build-distroless docker-test docker-test-slim \
+       docker-test-distroless docker-clean package-mcpb package-skill package clean \
+       create-release release
 
 SHELL := /usr/bin/env bash
 VERSION := $(shell jq -r '.version' manifest.json)
@@ -58,8 +60,59 @@ lint-fix: ## Auto-fix lint and format issues
 	uv run ruff check --fix src/ tests/
 	uv run ruff format src/ tests/
 
-test: ## Run the test suite
-	uv run pytest --tb=short
+test: ## Run the full test suite (unit + Docker integration test)
+	@echo "Running unit tests..."
+	@uv run pytest --tb=short
+	@echo ""
+	@echo "Running Docker integration test..."
+	@$(MAKE) docker-test
+
+# ---------------------------------------------------------------------------
+# Docker
+# ---------------------------------------------------------------------------
+
+docker-build: ## Build the Docker image (UBI Minimal)
+	docker build -t rapid7-bulk-export-mcp:$(VERSION) -t rapid7-bulk-export-mcp:latest .
+
+docker-test: ## Test the Docker image (build, run, verify MCP endpoint)
+	@echo "Testing UBI Minimal image..."
+	@docker build -t rapid7-bulk-export-mcp:test . >/dev/null
+	@CONTAINER_ID=$$(docker run -d \
+		-p 8001:8000 \
+		-e RAPID7_API_KEY=test-key \
+		-e RAPID7_REGION=us \
+		-v rapid7-test-data:/data \
+		--tmpfs /tmp \
+		--read-only \
+		--security-opt no-new-privileges:true \
+		rapid7-bulk-export-mcp:test); \
+	echo "Started container: $$CONTAINER_ID"; \
+	echo "Waiting for MCP endpoint..."; \
+	READY=0; \
+	for i in 1 2 3 4 5 6 7 8 9 10; do \
+		if curl -s http://localhost:8001/mcp -H "Content-Type: application/json" -H "Accept: application/json, text/event-stream" -d '{"jsonrpc":"2.0","method":"tools/list","id":1}' 2>/dev/null | grep -q '"jsonrpc"'; then \
+			READY=1; \
+			break; \
+		fi; \
+		sleep 1; \
+	done; \
+	if [ $$READY -eq 1 ]; then \
+		echo "✓ UBI Minimal MCP endpoint responding"; \
+		docker stop $$CONTAINER_ID >/dev/null 2>&1; \
+		docker rm $$CONTAINER_ID >/dev/null 2>&1; \
+		exit 0; \
+	else \
+		echo "✗ UBI Minimal MCP endpoint not responding after 10 attempts"; \
+		docker logs $$CONTAINER_ID; \
+		docker stop $$CONTAINER_ID >/dev/null 2>&1; \
+		docker rm $$CONTAINER_ID >/dev/null 2>&1; \
+		exit 1; \
+	fi
+
+
+docker-clean: ## Remove test Docker images and volumes
+	docker rmi rapid7-bulk-export-mcp:test 2>/dev/null || true
+	docker volume rm rapid7-test-data 2>/dev/null || true
 
 # ---------------------------------------------------------------------------
 # Packaging

@@ -1,31 +1,32 @@
-FROM python:3.12-slim
+FROM registry.access.redhat.com/ubi10/python-312-minimal:latest
 
 WORKDIR /app
 
 # Install uv
 COPY --from=ghcr.io/astral-sh/uv:latest /uv /usr/local/bin/uv
 
-# Install dependencies first for better layer caching
+# Install dependencies
 COPY pyproject.toml uv.lock ./
 RUN uv sync --frozen --no-dev --no-install-project
 
-# Copy application code
+# Copy application code and install
 COPY src/ ./src/
 COPY run_server.py ./
-RUN uv sync --frozen --no-dev
-
-# Data directory for the DuckDB files (mountable volume)
-RUN mkdir -p /data && chmod 700 /data
+RUN uv sync --frozen --no-dev --no-editable --compile-bytecode
 
 # Default environment for containerized HTTP mode
 ENV MCP_TRANSPORT=http
 ENV MCP_HOST=0.0.0.0
 ENV MCP_PORT=8000
 
+# Read-only filesystem hardening
+ENV DATA_DIR=/data
+ENV TMPDIR=/tmp
+ENV UV_NO_CACHE=1
+ENV PYTHONDONTWRITEBYTECODE=1
+
 EXPOSE 8000
 
-# Run as non-root user
-RUN useradd -r -m -s /bin/false mcpuser && chown -R mcpuser:mcpuser /app /data /home/mcpuser
-USER mcpuser
+# Image already runs as non-root user (UID 1001)
 
-ENTRYPOINT ["uv", "run", "run_server.py", "/data/rapid7_bulk_export.db"]
+ENTRYPOINT ["uv", "run", "--no-sync", "run_server.py", "/data/rapid7_bulk_export.db"]
