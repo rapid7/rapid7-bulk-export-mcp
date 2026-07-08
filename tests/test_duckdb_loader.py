@@ -57,7 +57,7 @@ def sample_asset_parquet_file():
 def test_database_initialization():
     """Test that database can be initialized."""
     db = VulnerabilityDatabase()
-    assert db.conn is not None
+    assert db.db_path is not None
     db.close()
 
 

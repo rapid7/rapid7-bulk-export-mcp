@@ -23,7 +23,7 @@ def temp_db():
 def test_initialize_tracker(temp_db):
     """Test that the tracker initializes correctly."""
     tracker = ExportTracker(temp_db)
-    assert tracker.conn is not None
+    assert tracker.db_path == temp_db
     tracker.close()
 
 

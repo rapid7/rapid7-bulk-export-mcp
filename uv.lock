@@ -516,35 +516,65 @@ wheels = [
 
 [[package]]
 name = "fastmcp"
-version = "3.2.4"
+version = "3.4.3"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
+    { name = "fastmcp-slim", extra = ["client", "server"] },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/f2/92/cf0e921675af66534eb6dfffffa1871b5062f01650bcea63b62005a12f50/fastmcp-3.4.3.tar.gz", hash = "sha256:31e212ae9ff223876c6d7af2082e73f90bc692460e7a054568dfa88719f075ff", size = 28789252, upload-time = "2026-07-05T23:27:55.153Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/e4/79/64000c2792743877baae152499a951c06a9c14b793309ac4ac06135f1ae7/fastmcp-3.4.3-py3-none-any.whl", hash = "sha256:bdf15277800586a033a6e1e95d20301cd508aaa872df3d508c956a2195de6c72", size = 8019, upload-time = "2026-07-05T23:27:53.241Z" },
+]
+
+[[package]]
+name = "fastmcp-slim"
+version = "3.4.3"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "platformdirs" },
+    { name = "pydantic", extra = ["email"] },
+    { name = "pydantic-settings" },
+    { name = "python-dotenv" },
+    { name = "rich" },
+    { name = "typing-extensions" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/89/fa/500f6362016c34fba01c6412bbfd53435dc75900abd1266d88e111e2e9c2/fastmcp_slim-3.4.3.tar.gz", hash = "sha256:e3e12ac1e87c5195fa59a1c3cd2d31b487a463c269089fb4020b7571cbb57b29", size = 588086, upload-time = "2026-07-05T23:27:33.884Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/4e/4f/66765dfe4fe65b45e134e54ca46118d93189fb10cd8ecb635cf504b68552/fastmcp_slim-3.4.3-py3-none-any.whl", hash = "sha256:21ad50465494edb141eed76b177dc788e00e705a5df09b53a31efebeb4432a95", size = 761455, upload-time = "2026-07-05T23:27:32.547Z" },
+]
+
+[package.optional-dependencies]
+client = [
+    { name = "authlib" },
+    { name = "exceptiongroup" },
+    { name = "httpx" },
+    { name = "mcp" },
+    { name = "opentelemetry-api" },
+    { name = "py-key-value-aio", extra = ["filetree", "keyring", "memory"] },
+    { name = "starlette" },
+]
+server = [
     { name = "authlib" },
     { name = "cyclopts" },
     { name = "exceptiongroup" },
     { name = "griffelib" },
     { name = "httpx" },
+    { name = "joserfc" },
     { name = "jsonref" },
     { name = "jsonschema-path" },
     { name = "mcp" },
     { name = "openapi-pydantic" },
     { name = "opentelemetry-api" },
     { name = "packaging" },
-    { name = "platformdirs" },
     { name = "py-key-value-aio", extra = ["filetree", "keyring", "memory"] },
-    { name = "pydantic", extra = ["email"] },
     { name = "pyperclip" },
-    { name = "python-dotenv" },
+    { name = "python-multipart" },
     { name = "pyyaml" },
-    { name = "rich" },
+    { name = "starlette" },
     { name = "uncalled-for" },
     { name = "uvicorn" },
     { name = "watchfiles" },
     { name = "websockets" },
-]
-sdist = { url = "https://files.pythonhosted.org/packages/9c/13/29544fbc6dfe45ea38046af0067311e0bad7acc7d1f2ad38bb08f2409fe2/fastmcp-3.2.4.tar.gz", hash = "sha256:083ecb75b44a4169e7fc0f632f94b781bdb0ff877c6b35b9877cbb566fd4d4d1", size = 28746127, upload-time = "2026-04-14T01:42:24.174Z" }
-wheels = [
-    { url = "https://files.pythonhosted.org/packages/cf/76/b310d52fa0e30d39bd937eb58ec2c1f1ea1b5f519f0575e9dd9612f01deb/fastmcp-3.2.4-py3-none-any.whl", hash = "sha256:e6c9c429171041455e47ab94bb3f83c4657622a0ec28922f6940053959bd58a9", size = 728599, upload-time = "2026-04-14T01:42:26.85Z" },
 ]
 
 [[package]]
@@ -688,6 +718,18 @@ source = { registry = "https://pypi.org/simple" }
 sdist = { url = "https://files.pythonhosted.org/packages/7b/6f/357efd7602486741aa73ffc0617fb310a29b588ed0fd69c2399acbb85b0c/jeepney-0.9.0.tar.gz", hash = "sha256:cf0e9e845622b81e4a28df94c40345400256ec608d0e55bb8a3feaa9163f5732", size = 106758, upload-time = "2025-02-27T18:51:01.684Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/b2/a3/e137168c9c44d18eff0376253da9f1e9234d0239e0ee230d2fee6cea8e55/jeepney-0.9.0-py3-none-any.whl", hash = "sha256:97e5714520c16fc0a45695e5365a2e11b81ea79bba796e26f9f1d178cb182683", size = 49010, upload-time = "2025-02-27T18:51:00.104Z" },
+]
+
+[[package]]
+name = "joserfc"
+version = "1.7.2"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "cryptography" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/f1/26/abe1ad855eb334b5ebc9c6495d4798e12bee70e5e8e815d54570710b8312/joserfc-1.7.2.tar.gz", hash = "sha256:537ffb8888b2df039cb5b6d017d7cff6f09d521ce65d89cc9b8ab752b1cff947", size = 233183, upload-time = "2026-06-29T09:03:10.868Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/13/80/d1b30336582cced4dce0dae776508a6011723e32f907bc7a702c0b25890a/joserfc-1.7.2-py3-none-any.whl", hash = "sha256:ddd818c0ca9b4f17bbc2d72cb3966e6ded7502be089316c62c3cc64ae86132b5", size = 70426, upload-time = "2026-06-29T09:03:09.393Z" },
 ]
 
 [[package]]
@@ -1283,7 +1325,7 @@ wheels = [
 
 [[package]]
 name = "rapid7-vulnerability-export"
-version = "0.4.3"
+version = "0.5.0"
 source = { editable = "." }
 dependencies = [
     { name = "authlib" },
@@ -1322,7 +1364,7 @@ requires-dist = [
     { name = "authlib", specifier = ">=1.6.12" },
     { name = "cryptography", specifier = ">=48.0.1" },
     { name = "duckdb", specifier = ">=0.9.0" },
-    { name = "fastmcp", specifier = ">=0.2.0" },
+    { name = "fastmcp", specifier = ">=3.4.3" },
     { name = "hypothesis", marker = "extra == 'dev'", specifier = ">=6.82.0" },
     { name = "idna", specifier = ">=3.15" },
     { name = "pyarrow", specifier = ">=12.0.0" },

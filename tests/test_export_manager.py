@@ -8,7 +8,7 @@ querying status, and polling for completion.
 import pytest
 import responses
 
-from src.export_manager import create_vulnerability_export, get_export_status
+from src.export_manager import create_asset_software_export, create_vulnerability_export, get_export_status
 
 
 class TestCreateVulnerabilityExport:
@@ -676,3 +676,83 @@ class TestPollUntilComplete:
 
         assert urls == []
         assert len(responses.calls) == 1
+
+
+class TestCreateAssetSoftwareExport:
+    """Tests for the create_asset_software_export function."""
+
+    @responses.activate
+    def test_create_asset_software_export_returns_export_id(self):
+        """Test that create_asset_software_export returns the export ID from the response."""
+        responses.add(
+            responses.POST,
+            "https://us.api.insight.rapid7.com/export/graphql",
+            json={"data": {"createAssetSoftwareExport": {"id": "software-export-id-123"}}},
+            status=200,
+        )
+
+        config = {"endpoint": "https://us.api.insight.rapid7.com/export/graphql", "api_key": "test-api-key"}
+
+        export_id = create_asset_software_export(config)
+
+        assert export_id == "software-export-id-123"
+
+    @responses.activate
+    def test_create_asset_software_export_sends_correct_mutation(self):
+        """Test that create_asset_software_export sends the correct GraphQL mutation and variables."""
+        responses.add(
+            responses.POST,
+            "https://us.api.insight.rapid7.com/export/graphql",
+            json={"data": {"createAssetSoftwareExport": {"id": "software-export-id"}}},
+            status=200,
+        )
+
+        config = {"endpoint": "https://us.api.insight.rapid7.com/export/graphql", "api_key": "test-key"}
+
+        create_asset_software_export(config)
+
+        import json
+
+        assert len(responses.calls) == 1
+        body = json.loads(responses.calls[0].request.body)
+        assert "createAssetSoftwareExport" in body["query"]
+        assert body["variables"]["input"]["source"] == "IVM"
+        assert body["variables"]["input"]["format"] == "PARQUET"
+
+    @responses.activate
+    def test_create_asset_software_export_handles_in_progress(self):
+        """Test that an already-in-progress error returns the existing export ID."""
+        responses.add(
+            responses.POST,
+            "https://us.api.insight.rapid7.com/export/graphql",
+            json={
+                "errors": [
+                    {
+                        "message": "Export already in-progress exportId: abc123XYZ==",
+                        "extensions": {"code": "CONFLICT"},
+                    }
+                ]
+            },
+            status=200,
+        )
+
+        config = {"endpoint": "https://us.api.insight.rapid7.com/export/graphql", "api_key": "test-key"}
+
+        export_id = create_asset_software_export(config)
+
+        assert export_id == "abc123XYZ=="
+
+    @responses.activate
+    def test_create_asset_software_export_raises_on_graphql_error(self):
+        """Test that non-in-progress GraphQL errors are re-raised."""
+        responses.add(
+            responses.POST,
+            "https://us.api.insight.rapid7.com/export/graphql",
+            json={"errors": [{"message": "Unauthorized", "extensions": {"code": "UNAUTHENTICATED"}}]},
+            status=200,
+        )
+
+        config = {"endpoint": "https://us.api.insight.rapid7.com/export/graphql", "api_key": "bad-key"}
+
+        with pytest.raises(ValueError, match="GraphQL errors.*Unauthorized"):
+            create_asset_software_export(config)

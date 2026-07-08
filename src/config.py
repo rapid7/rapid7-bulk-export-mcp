@@ -37,13 +37,6 @@ def load_config() -> Dict[str, str]:
         ValueError: If RAPID7_API_KEY is not set
         ValueError: If RAPID7_REGION is not set
         ValueError: If region is not in the valid list
-
-    Requirements:
-        - 1.1: Read API key from RAPID7_API_KEY environment variable
-        - 1.2: Read region from RAPID7_REGION environment variable
-        - 1.3: Terminate with error if RAPID7_API_KEY is not set
-        - 1.4: Terminate with error if RAPID7_REGION is not set
-        - 1.5: Construct API endpoint URL based on region value
     """
     # Read API key from environment
     api_key = os.environ.get("RAPID7_API_KEY")
