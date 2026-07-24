@@ -7,6 +7,7 @@ of vulnerability data.
 
 import os
 import sys
+import tempfile
 from typing import Any, Dict, List, Optional, Set, Tuple, Union
 
 from .db_utils import connect_with_retry, duckdb_connection
@@ -23,6 +24,33 @@ PREFIX_TABLE_MAP: Dict[str, Union[str, Tuple[str, str]]] = {
     "vulnerability_remediation": "vulnerability_remediation",
     "asset_software": "asset_software",
 }
+
+
+def _export_remediation_to_temp(db_path: str) -> Optional[str]:
+    """Export vulnerability_remediation to a temp Parquet file, returning its path.
+
+    Returns None if the table does not exist or is empty. The caller is
+    responsible for deleting the file after use.
+    """
+    try:
+        with duckdb_connection(db_path) as conn:
+            row = conn.execute("SELECT COUNT(*) FROM vulnerability_remediation").fetchone()
+            if not row or row[0] == 0:
+                return None
+            fd, tmp_path = tempfile.mkstemp(suffix=".parquet")
+            os.close(fd)
+            conn.execute(f"COPY vulnerability_remediation TO '{tmp_path}' (FORMAT PARQUET)")  # nosec B608
+            return tmp_path
+    except Exception:
+        return None
+
+
+def _delete_db_files(db_path: str) -> None:
+    """Delete the database file and its WAL so the next write starts from zero."""
+    for suffix in ("", ".wal"):
+        path = db_path + suffix
+        if os.path.exists(path):
+            os.remove(path)
 
 
 def _normalize_prefix(prefix: str) -> str:
@@ -110,70 +138,100 @@ class VulnerabilityDatabase:
         if skip_prefixes is None:
             skip_prefixes = set()
 
+        # Snapshot loads replace the entire database. To prevent unbounded file
+        # growth (DuckDB never reclaims space from dropped tables), we rescue any
+        # existing remediation data to a temp Parquet file, delete the DB from
+        # disk, then reload everything into the fresh empty file.
+        remediation_rescue: Optional[str] = None
+        if not append:
+            remediation_rescue = _export_remediation_to_temp(self.db_path)
+            _delete_db_files(self.db_path)
+            # Recreate an empty DB file with correct permissions.
+            conn = connect_with_retry(self.db_path)
+            conn.close()
+            os.chmod(self.db_path, 0o600)
+
         # Accumulate row counts per table
         row_counts: Dict[str, int] = {}
 
-        with duckdb_connection(self.db_path) as conn:
-            # Tables already in the DB before this load — needed for append-mode existence checks.
-            preexisting: Set[str] = {
-                row[0] for row in conn.execute("SELECT table_name FROM information_schema.tables").fetchall()
-            }
-            # Tables we write to in this call (drives snapshot drop-vs-insert and row count collection).
-            tables_touched: Set[str] = set()
+        try:
+            with duckdb_connection(self.db_path) as conn:
+                # Tables already in the DB before this load — needed for append-mode existence checks.
+                preexisting: Set[str] = {
+                    row[0] for row in conn.execute("SELECT table_name FROM information_schema.tables").fetchall()
+                }
+                # Tables we write to in this call (drives snapshot drop-vs-insert and row count collection).
+                tables_touched: Set[str] = set()
 
-            for prefix, file_paths in prefix_file_map.items():
-                if prefix in skip_prefixes:
-                    continue
-
-                # Normalize prefix to handle sub-path suffixes (e.g., 'vulnerability_remediation/ivm')
-                normalized_prefix = _normalize_prefix(prefix)
-                if normalized_prefix in skip_prefixes:
-                    continue
-
-                mapping = PREFIX_TABLE_MAP.get(normalized_prefix)
-                if mapping is None:
-                    print(f"Warning: Unknown prefix '{prefix}', skipping", file=sys.stderr)
-                    continue
-
-                # Determine target table and optional source value
-                if isinstance(mapping, tuple):
-                    table_name, source_value = mapping
-                else:
-                    table_name = mapping
-                    source_value = None
-
-                for file_path in file_paths:
-                    try:
-                        if source_value is not None:
-                            select_expr = (
-                                f"SELECT *, '{source_value}' AS source"
-                                f" FROM read_parquet('{file_path}')"  # nosec B608
-                            )
-                        else:
-                            select_expr = f"SELECT * FROM read_parquet('{file_path}')"  # nosec B608
-
-                        if table_name not in tables_touched and not append:
-                            # First file for this table in a snapshot load — drop and create
-                            conn.execute(f"DROP TABLE IF EXISTS {table_name}")  # nosec B608
-                            conn.execute(f"CREATE TABLE {table_name} AS {select_expr}")  # nosec B608
-                        elif table_name in tables_touched or table_name in preexisting:
-                            # Already written in this call, or pre-existing from a prior load — insert
-                            conn.execute(f"INSERT INTO {table_name} {select_expr}")  # nosec B608
-                        else:
-                            # Append mode, first file, table doesn't exist yet — create
-                            conn.execute(f"CREATE TABLE {table_name} AS {select_expr}")  # nosec B608
-                        tables_touched.add(table_name)
-                    except Exception as e:
-                        print(
-                            f"Warning: Failed to read Parquet file '{file_path}': {e}",
-                            file=sys.stderr,
-                        )
+                for prefix, file_paths in prefix_file_map.items():
+                    if prefix in skip_prefixes:
                         continue
 
-            # Collect row counts only for tables we actually touched
-            for table_name in tables_touched:
-                result = conn.execute(f"SELECT COUNT(*) FROM {table_name}").fetchone()  # nosec B608
-                row_counts[table_name] = result[0] if result else 0
+                    # Normalize prefix to handle sub-path suffixes (e.g., 'vulnerability_remediation/ivm')
+                    normalized_prefix = _normalize_prefix(prefix)
+                    if normalized_prefix in skip_prefixes:
+                        continue
+
+                    mapping = PREFIX_TABLE_MAP.get(normalized_prefix)
+                    if mapping is None:
+                        print(f"Warning: Unknown prefix '{prefix}', skipping", file=sys.stderr)
+                        continue
+
+                    # Determine target table and optional source value
+                    if isinstance(mapping, tuple):
+                        table_name, source_value = mapping
+                    else:
+                        table_name = mapping
+                        source_value = None
+
+                    for file_path in file_paths:
+                        try:
+                            if source_value is not None:
+                                select_expr = (
+                                    f"SELECT *, '{source_value}' AS source"
+                                    f" FROM read_parquet('{file_path}')"  # nosec B608
+                                )
+                            else:
+                                select_expr = f"SELECT * FROM read_parquet('{file_path}')"  # nosec B608
+
+                            if table_name not in tables_touched and not append:
+                                # First file for this table in a fresh DB — create
+                                conn.execute(f"CREATE TABLE {table_name} AS {select_expr}")  # nosec B608
+                            elif table_name in tables_touched or table_name in preexisting:
+                                # Already written in this call, or pre-existing — insert
+                                conn.execute(f"INSERT INTO {table_name} {select_expr}")  # nosec B608
+                            else:
+                                # Append mode, first file, table doesn't exist yet — create
+                                conn.execute(f"CREATE TABLE {table_name} AS {select_expr}")  # nosec B608
+                            tables_touched.add(table_name)
+                        except Exception as e:
+                            print(
+                                f"Warning: Failed to read Parquet file '{file_path}': {e}",
+                                file=sys.stderr,
+                            )
+                            continue
+
+                # Restore rescued remediation data into the fresh DB
+                if remediation_rescue:
+                    try:
+                        select_expr = f"SELECT * FROM read_parquet('{remediation_rescue}')"  # nosec B608
+                        if "vulnerability_remediation" in tables_touched:
+                            conn.execute(f"INSERT INTO vulnerability_remediation {select_expr}")  # nosec B608
+                        else:
+                            conn.execute(f"CREATE TABLE vulnerability_remediation AS {select_expr}")  # nosec B608
+                        tables_touched.add("vulnerability_remediation")
+                        print("Restored vulnerability_remediation from previous load.", file=sys.stderr)
+                    except Exception as e:
+                        print(f"Warning: Failed to restore remediation data: {e}", file=sys.stderr)
+
+                # Collect row counts only for tables we actually touched
+                for table_name in tables_touched:
+                    result = conn.execute(f"SELECT COUNT(*) FROM {table_name}").fetchone()  # nosec B608
+                    row_counts[table_name] = result[0] if result else 0
+
+        finally:
+            if remediation_rescue and os.path.exists(remediation_rescue):
+                os.remove(remediation_rescue)
 
         return row_counts
 
@@ -490,11 +548,7 @@ class VulnerabilityDatabase:
         Removes the database file and any associated WAL file, then
         recreates the file so subsequent operations don't hit a missing path.
         """
-        for suffix in ("", ".wal"):
-            path = self.db_path + suffix
-            if os.path.exists(path):
-                os.remove(path)
-
+        _delete_db_files(self.db_path)
         conn = connect_with_retry(self.db_path)
         conn.close()
         os.chmod(self.db_path, 0o600)
