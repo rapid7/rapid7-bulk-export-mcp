@@ -67,6 +67,26 @@ test: ## Run the full test suite (unit + Docker integration test)
 	@echo "Running Docker integration test..."
 	@$(MAKE) docker-test
 
+local-test: ## Run end-to-end live test against the real Rapid7 API (requires RAPID7_API_KEY)
+	@if [ -z "$$RAPID7_API_KEY" ]; then \
+		echo ""; \
+		echo "RAPID7_API_KEY is not set."; \
+		echo ""; \
+		echo "Set it directly:"; \
+		echo "  export RAPID7_API_KEY=<your-key>"; \
+		echo "  make local-test"; \
+		echo ""; \
+		echo "Or via 1Password CLI:"; \
+		echo "  op run --env-file=.env.1password -- make local-test"; \
+		echo ""; \
+		echo "  (.env.1password example:)"; \
+		echo "  RAPID7_API_KEY=op://vault/Rapid7 API/credential"; \
+		echo "  RAPID7_REGION=us"; \
+		exit 1; \
+	fi
+	@echo "Running live end-to-end test against Rapid7 API (region: $${RAPID7_REGION:-us})..."
+	uv run pytest tests/test_local_e2e.py -v -s --tb=short
+
 # ---------------------------------------------------------------------------
 # Docker
 # ---------------------------------------------------------------------------
