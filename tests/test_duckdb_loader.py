@@ -13,6 +13,23 @@ from src.duckdb_loader import VulnerabilityDatabase
 
 
 @pytest.fixture
+def sample_remediation_parquet_file():
+    """Create a sample remediation Parquet file for testing."""
+    table = pa.table(
+        {
+            "assetId": ["ASSET-A", "ASSET-B"],
+            "cveId": ["CVE-2024-0001", "CVE-2024-0002"],
+            "cvssV3Severity": ["Critical", "High"],
+            "title": ["Remote Code Execution", "Privilege Escalation"],
+        }
+    )
+    with tempfile.NamedTemporaryFile(suffix=".parquet", delete=False) as f:
+        pq.write_table(table, f.name)
+        yield f.name
+    Path(f.name).unlink(missing_ok=True)
+
+
+@pytest.fixture
 def sample_parquet_file():
     """Create a sample Parquet file for testing."""
     # Create sample data using PyArrow
@@ -261,5 +278,85 @@ def test_purge(sample_parquet_file):
         # After purge, table should not exist
         with pytest.raises(ValueError, match="Query execution failed"):
             db.query("SELECT * FROM vulnerabilities")
+
+        db.close()
+
+
+def test_VulnerabilityDatabase_RepeatedSnapshotLoadsDoNotGrow(sample_parquet_file):
+    """Repeated snapshot loads must not cause unbounded file growth.
+
+    Each load drops and recreates tables. Without VACUUM+CHECKPOINT the dead
+    pages accumulate and the file grows monotonically. This asserts the file
+    size after N reloads is no larger than after the first load plus a small
+    tolerance.
+    """
+    with tempfile.TemporaryDirectory() as tmpdir:
+        db_path = str(Path(tmpdir) / "growth_test.db")
+        db = VulnerabilityDatabase(db_path)
+
+        prefix_map = {"asset_vulnerability": [sample_parquet_file]}
+        db.load_parquet_files_by_prefix(prefix_map)
+        size_after_first = Path(db_path).stat().st_size
+
+        for _ in range(4):
+            db.load_parquet_files_by_prefix(prefix_map)
+
+        size_after_five = Path(db_path).stat().st_size
+        db.close()
+
+        # Allow a 2x headroom for minor DuckDB metadata overhead, but the
+        # file must not grow proportionally to the number of reloads.
+        assert size_after_five <= size_after_first * 2, (
+            f"DB file grew from {size_after_first} bytes to {size_after_five} bytes "
+            f"over 5 identical snapshot loads — file-reset not working"
+        )
+
+
+def test_VulnerabilityDatabase_SnapshotLoadPreservesRemediation(sample_parquet_file, sample_remediation_parquet_file):
+    """Remediation data survives a snapshot reload of vulnerability data.
+
+    The snapshot load deletes the DB file and rewrites it from scratch.
+    Any existing vulnerability_remediation rows must be rescued to a temp
+    Parquet and restored into the new DB.
+    """
+    with tempfile.TemporaryDirectory() as tmpdir:
+        db_path = str(Path(tmpdir) / "remediation_rescue.db")
+        db = VulnerabilityDatabase(db_path)
+
+        # Load remediation data first
+        db.load_parquet_files_by_prefix({"vulnerability_remediation": [sample_remediation_parquet_file]})
+        remediation_rows = db.query("SELECT COUNT(*) AS cnt FROM vulnerability_remediation")[0]["cnt"]
+        assert remediation_rows == 2
+
+        # Now snapshot-load vulnerability data — should rescue and restore remediation
+        db.load_parquet_files_by_prefix({"asset_vulnerability": [sample_parquet_file]})
+
+        # Vulnerability data must be present
+        vuln_rows = db.query("SELECT COUNT(*) AS cnt FROM vulnerabilities")[0]["cnt"]
+        assert vuln_rows == 3
+
+        # Remediation data must still be present
+        remediation_rows_after = db.query("SELECT COUNT(*) AS cnt FROM vulnerability_remediation")[0]["cnt"]
+        assert remediation_rows_after == 2, (
+            f"Remediation rows lost after snapshot reload: expected 2, got {remediation_rows_after}"
+        )
+
+        db.close()
+
+
+def test_VulnerabilityDatabase_RemediationNotDuplicatedOnReload(sample_parquet_file, sample_remediation_parquet_file):
+    """Remediation rows are not duplicated when the same snapshot is reloaded twice."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        db_path = str(Path(tmpdir) / "no_dupes.db")
+        db = VulnerabilityDatabase(db_path)
+
+        db.load_parquet_files_by_prefix({"vulnerability_remediation": [sample_remediation_parquet_file]})
+
+        # Two consecutive snapshot reloads
+        db.load_parquet_files_by_prefix({"asset_vulnerability": [sample_parquet_file]})
+        db.load_parquet_files_by_prefix({"asset_vulnerability": [sample_parquet_file]})
+
+        remediation_rows = db.query("SELECT COUNT(*) AS cnt FROM vulnerability_remediation")[0]["cnt"]
+        assert remediation_rows == 2, f"Remediation rows duplicated: expected 2, got {remediation_rows}"
 
         db.close()

@@ -4,14 +4,16 @@ build-backend = "hatchling.build"
 
 [project]
 name = "rapid7-vulnerability-export"
-version = "0.5.0"
+version = "0.5.1"
 description = "Python script to export vulnerability data from Rapid7 InsightVM using the Bulk Export API"
 requires-python = ">=3.10"
 dependencies = [
     "requests>=2.31.0",
     "pyarrow>=12.0.0",
     "duckdb>=0.9.0",
-    "fastmcp>=3.4.3",
+    "fastmcp>=3.4.4",
+    "mcp>=1.28.1",
+    "click>=8.3.3",
     "python-multipart>=0.0.31",
     "urllib3>=2.7.0",
     "cryptography>=48.0.1",
@@ -59,6 +61,7 @@ markers = [
     "property: Property-based tests using hypothesis",
     "unit: Unit tests for specific functionality",
     "integration: Integration tests for complete workflows",
+    "live: End-to-end tests against the real Rapid7 API (requires RAPID7_API_KEY)",
 ]
 
 [tool.hypothesis]
