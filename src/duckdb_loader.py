@@ -11,13 +11,21 @@ from typing import Any, Dict, List, Optional, Set, Tuple, Union
 
 from .db_utils import connect_with_retry, duckdb_connection
 
-KNOWN_TABLES = ["assets", "vulnerabilities", "policies", "vulnerability_remediation", "asset_software"]
+KNOWN_TABLES = [
+    "assets",
+    "vulnerabilities",
+    "vulnerability_exceptions",
+    "policies",
+    "vulnerability_remediation",
+    "asset_software",
+]
 
 # Maps Rapid7 API result prefixes to target DuckDB tables.
 # Tuple values indicate (table_name, source_column_value) for policy prefixes.
 PREFIX_TABLE_MAP: Dict[str, Union[str, Tuple[str, str]]] = {
     "asset": "assets",
     "asset_vulnerability": "vulnerabilities",
+    "vulnerability_exception": "vulnerability_exceptions",
     "asset_policy": ("policies", "agent"),
     "asset_scan_policy": ("policies", "scan"),
     "vulnerability_remediation": "vulnerability_remediation",
