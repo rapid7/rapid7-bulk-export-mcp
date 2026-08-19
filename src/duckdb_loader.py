@@ -206,7 +206,37 @@ class VulnerabilityDatabase:
                 result = conn.execute(f"SELECT COUNT(*) FROM {table_name}").fetchone()  # nosec B608
                 row_counts[table_name] = result[0] if result else 0
 
+        # Reclaim disk space from dropped tables. DuckDB does not shrink the file
+        # on DROP TABLE or VACUUM — the only way is to copy to a fresh database.
+        if not append and tables_to_replace:
+            self._compact()
+
         return row_counts
+
+    def _compact(self) -> None:
+        """Compact the database file by copying all data to a fresh file.
+
+        DuckDB's storage engine never releases pages from dropped tables, so
+        repeated snapshot reloads cause unbounded file growth. This method
+        creates a clean copy via COPY FROM DATABASE and atomically replaces
+        the original, keeping the file size proportional to actual data.
+        """
+        compact_path = self.db_path + ".compact"
+        try:
+            with duckdb_connection(self.db_path) as conn:
+                # DuckDB names the default catalog after the file stem, not "main"
+                db_name = conn.execute("SELECT current_database()").fetchone()[0]
+                conn.execute("CHECKPOINT")
+                conn.execute(f"ATTACH '{compact_path}' AS compact_db")  # nosec B608
+                conn.execute(f'COPY FROM DATABASE "{db_name}" TO compact_db')  # nosec B608
+            # Atomic swap — replaces the bloated original with the compact copy
+            os.replace(compact_path, self.db_path)
+            os.chmod(self.db_path, 0o600)
+        except Exception as e:
+            # If compaction fails, the original DB is still intact — just log and continue
+            print(f"Warning: Database compaction failed (non-fatal): {e}", file=sys.stderr)
+            if os.path.exists(compact_path):
+                os.remove(compact_path)
 
     def query(self, sql: str, params: Optional[Dict[str, Any]] = None) -> List[Dict[str, Any]]:
         """

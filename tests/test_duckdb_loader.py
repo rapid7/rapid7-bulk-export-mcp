@@ -303,10 +303,10 @@ def test_VulnerabilityDatabase_RepeatedSnapshotLoadsDoNotGrow(sample_parquet_fil
         size_after_five = Path(db_path).stat().st_size
         db.close()
 
-        # Allow a 3x headroom for DuckDB metadata overhead from repeated
+        # Allow a 1.5x headroom for DuckDB metadata overhead from repeated
         # drop/recreate cycles, but the file must not grow proportionally
         # to the number of reloads.
-        assert size_after_five <= size_after_first * 3, (
+        assert size_after_five <= size_after_first * 1.5, (
             f"DB file grew from {size_after_first} bytes to {size_after_five} bytes "
             f"over 5 identical snapshot loads — targeted table replacement not working"
         )
