@@ -7,42 +7,30 @@ of vulnerability data.
 
 import os
 import sys
-import tempfile
 from typing import Any, Dict, List, Optional, Set, Tuple, Union
 
 from .db_utils import connect_with_retry, duckdb_connection
 
-KNOWN_TABLES = ["assets", "vulnerabilities", "policies", "vulnerability_remediation", "asset_software"]
+KNOWN_TABLES = [
+    "assets",
+    "vulnerabilities",
+    "vulnerability_exceptions",
+    "policies",
+    "vulnerability_remediation",
+    "asset_software",
+]
 
 # Maps Rapid7 API result prefixes to target DuckDB tables.
 # Tuple values indicate (table_name, source_column_value) for policy prefixes.
 PREFIX_TABLE_MAP: Dict[str, Union[str, Tuple[str, str]]] = {
     "asset": "assets",
     "asset_vulnerability": "vulnerabilities",
+    "vulnerability_exception": "vulnerability_exceptions",
     "asset_policy": ("policies", "agent"),
     "asset_scan_policy": ("policies", "scan"),
     "vulnerability_remediation": "vulnerability_remediation",
     "asset_software": "asset_software",
 }
-
-
-def _export_remediation_to_temp(db_path: str) -> Optional[str]:
-    """Export vulnerability_remediation to a temp Parquet file, returning its path.
-
-    Returns None if the table does not exist or is empty. The caller is
-    responsible for deleting the file after use.
-    """
-    try:
-        with duckdb_connection(db_path) as conn:
-            row = conn.execute("SELECT COUNT(*) FROM vulnerability_remediation").fetchone()
-            if not row or row[0] == 0:
-                return None
-            fd, tmp_path = tempfile.mkstemp(suffix=".parquet")
-            os.close(fd)
-            conn.execute(f"COPY vulnerability_remediation TO '{tmp_path}' (FORMAT PARQUET)")  # nosec B608
-            return tmp_path
-    except Exception:
-        return None
 
 
 def _delete_db_files(db_path: str) -> None:
@@ -120,9 +108,15 @@ class VulnerabilityDatabase:
           'asset_policy'             → policies table (source='agent')
           'asset_scan_policy'        → policies table (source='scan')
           'vulnerability_remediation'→ vulnerability_remediation table
+          'asset_software'           → asset_software table
 
         Opens a short-lived read-write connection for the duration of the load,
         then releases it so concurrent readers can proceed unblocked.
+
+        In snapshot mode (append=False), only the tables targeted by the incoming
+        prefixes are dropped and recreated. All other tables are preserved. This
+        allows loading vulnerability and policy exports independently without
+        one overwriting the other.
 
         Args:
             prefix_file_map: Mapping of prefixes to lists of local Parquet file paths.
@@ -138,102 +132,119 @@ class VulnerabilityDatabase:
         if skip_prefixes is None:
             skip_prefixes = set()
 
-        # Snapshot loads replace the entire database. To prevent unbounded file
-        # growth (DuckDB never reclaims space from dropped tables), we rescue any
-        # existing remediation data to a temp Parquet file, delete the DB from
-        # disk, then reload everything into the fresh empty file.
-        remediation_rescue: Optional[str] = None
-        if not append:
-            remediation_rescue = _export_remediation_to_temp(self.db_path)
-            _delete_db_files(self.db_path)
-            # Recreate an empty DB file with correct permissions.
-            conn = connect_with_retry(self.db_path)
-            conn.close()
-            os.chmod(self.db_path, 0o600)
-
         # Accumulate row counts per table
         row_counts: Dict[str, int] = {}
 
-        try:
-            with duckdb_connection(self.db_path) as conn:
-                # Tables already in the DB before this load — needed for append-mode existence checks.
-                preexisting: Set[str] = {
-                    row[0] for row in conn.execute("SELECT table_name FROM information_schema.tables").fetchall()
-                }
-                # Tables we write to in this call (drives snapshot drop-vs-insert and row count collection).
-                tables_touched: Set[str] = set()
-
-                for prefix, file_paths in prefix_file_map.items():
+        with duckdb_connection(self.db_path) as conn:
+            # Determine which tables this load will write to, so we can drop
+            # only those in snapshot mode (preserving unrelated tables).
+            tables_to_replace: Set[str] = set()
+            if not append:
+                for prefix in prefix_file_map:
                     if prefix in skip_prefixes:
                         continue
-
-                    # Normalize prefix to handle sub-path suffixes (e.g., 'vulnerability_remediation/ivm')
-                    normalized_prefix = _normalize_prefix(prefix)
-                    if normalized_prefix in skip_prefixes:
+                    normalized = _normalize_prefix(prefix)
+                    if normalized in skip_prefixes:
                         continue
-
-                    mapping = PREFIX_TABLE_MAP.get(normalized_prefix)
+                    mapping = PREFIX_TABLE_MAP.get(normalized)
                     if mapping is None:
-                        print(f"Warning: Unknown prefix '{prefix}', skipping", file=sys.stderr)
+                        continue
+                    table_name = mapping[0] if isinstance(mapping, tuple) else mapping
+                    tables_to_replace.add(table_name)
+
+                # Drop only the targeted tables before recreating them
+                for table_name in tables_to_replace:
+                    conn.execute(f"DROP TABLE IF EXISTS {table_name}")  # nosec B608
+
+            # Tables we write to in this call (tracks CREATE vs INSERT decisions).
+            tables_touched: Set[str] = set()
+
+            # Pre-existing tables (after any drops above) for append-mode decisions.
+            preexisting: Set[str] = {
+                row[0] for row in conn.execute("SELECT table_name FROM information_schema.tables").fetchall()
+            }
+
+            for prefix, file_paths in prefix_file_map.items():
+                if prefix in skip_prefixes:
+                    continue
+
+                # Normalize prefix to handle sub-path suffixes (e.g., 'vulnerability_remediation/ivm')
+                normalized_prefix = _normalize_prefix(prefix)
+                if normalized_prefix in skip_prefixes:
+                    continue
+
+                mapping = PREFIX_TABLE_MAP.get(normalized_prefix)
+                if mapping is None:
+                    print(f"Warning: Unknown prefix '{prefix}', skipping", file=sys.stderr)
+                    continue
+
+                # Determine target table and optional source value
+                if isinstance(mapping, tuple):
+                    table_name, source_value = mapping
+                else:
+                    table_name = mapping
+                    source_value = None
+
+                for file_path in file_paths:
+                    try:
+                        if source_value is not None:
+                            select_expr = (
+                                f"SELECT *, '{source_value}' AS source"
+                                f" FROM read_parquet('{file_path}')"  # nosec B608
+                            )
+                        else:
+                            select_expr = f"SELECT * FROM read_parquet('{file_path}')"  # nosec B608
+
+                        if table_name not in tables_touched and table_name not in preexisting:
+                            # Table doesn't exist — create it
+                            conn.execute(f"CREATE TABLE {table_name} AS {select_expr}")  # nosec B608
+                        else:
+                            # Table exists (from earlier file in this call, or pre-existing in append mode)
+                            conn.execute(f"INSERT INTO {table_name} {select_expr}")  # nosec B608
+                        tables_touched.add(table_name)
+                    except Exception as e:
+                        print(
+                            f"Warning: Failed to read Parquet file '{file_path}': {e}",
+                            file=sys.stderr,
+                        )
                         continue
 
-                    # Determine target table and optional source value
-                    if isinstance(mapping, tuple):
-                        table_name, source_value = mapping
-                    else:
-                        table_name = mapping
-                        source_value = None
+            # Collect row counts only for tables we actually touched
+            for table_name in tables_touched:
+                result = conn.execute(f"SELECT COUNT(*) FROM {table_name}").fetchone()  # nosec B608
+                row_counts[table_name] = result[0] if result else 0
 
-                    for file_path in file_paths:
-                        try:
-                            if source_value is not None:
-                                select_expr = (
-                                    f"SELECT *, '{source_value}' AS source"
-                                    f" FROM read_parquet('{file_path}')"  # nosec B608
-                                )
-                            else:
-                                select_expr = f"SELECT * FROM read_parquet('{file_path}')"  # nosec B608
-
-                            if table_name not in tables_touched and not append:
-                                # First file for this table in a fresh DB — create
-                                conn.execute(f"CREATE TABLE {table_name} AS {select_expr}")  # nosec B608
-                            elif table_name in tables_touched or table_name in preexisting:
-                                # Already written in this call, or pre-existing — insert
-                                conn.execute(f"INSERT INTO {table_name} {select_expr}")  # nosec B608
-                            else:
-                                # Append mode, first file, table doesn't exist yet — create
-                                conn.execute(f"CREATE TABLE {table_name} AS {select_expr}")  # nosec B608
-                            tables_touched.add(table_name)
-                        except Exception as e:
-                            print(
-                                f"Warning: Failed to read Parquet file '{file_path}': {e}",
-                                file=sys.stderr,
-                            )
-                            continue
-
-                # Restore rescued remediation data into the fresh DB
-                if remediation_rescue:
-                    try:
-                        select_expr = f"SELECT * FROM read_parquet('{remediation_rescue}')"  # nosec B608
-                        if "vulnerability_remediation" in tables_touched:
-                            conn.execute(f"INSERT INTO vulnerability_remediation {select_expr}")  # nosec B608
-                        else:
-                            conn.execute(f"CREATE TABLE vulnerability_remediation AS {select_expr}")  # nosec B608
-                        tables_touched.add("vulnerability_remediation")
-                        print("Restored vulnerability_remediation from previous load.", file=sys.stderr)
-                    except Exception as e:
-                        print(f"Warning: Failed to restore remediation data: {e}", file=sys.stderr)
-
-                # Collect row counts only for tables we actually touched
-                for table_name in tables_touched:
-                    result = conn.execute(f"SELECT COUNT(*) FROM {table_name}").fetchone()  # nosec B608
-                    row_counts[table_name] = result[0] if result else 0
-
-        finally:
-            if remediation_rescue and os.path.exists(remediation_rescue):
-                os.remove(remediation_rescue)
+        # Reclaim disk space from dropped tables. DuckDB does not shrink the file
+        # on DROP TABLE or VACUUM — the only way is to copy to a fresh database.
+        if not append and tables_to_replace:
+            self._compact()
 
         return row_counts
+
+    def _compact(self) -> None:
+        """Compact the database file by copying all data to a fresh file.
+
+        DuckDB's storage engine never releases pages from dropped tables, so
+        repeated snapshot reloads cause unbounded file growth. This method
+        creates a clean copy via COPY FROM DATABASE and atomically replaces
+        the original, keeping the file size proportional to actual data.
+        """
+        compact_path = self.db_path + ".compact"
+        try:
+            with duckdb_connection(self.db_path) as conn:
+                # DuckDB names the default catalog after the file stem, not "main"
+                db_name = conn.execute("SELECT current_database()").fetchone()[0]
+                conn.execute("CHECKPOINT")
+                conn.execute(f"ATTACH '{compact_path}' AS compact_db")  # nosec B608
+                conn.execute(f'COPY FROM DATABASE "{db_name}" TO compact_db')  # nosec B608
+            # Atomic swap — replaces the bloated original with the compact copy
+            os.replace(compact_path, self.db_path)
+            os.chmod(self.db_path, 0o600)
+        except Exception as e:
+            # If compaction fails, the original DB is still intact — just log and continue
+            print(f"Warning: Database compaction failed (non-fatal): {e}", file=sys.stderr)
+            if os.path.exists(compact_path):
+                os.remove(compact_path)
 
     def query(self, sql: str, params: Optional[Dict[str, Any]] = None) -> List[Dict[str, Any]]:
         """

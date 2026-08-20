@@ -534,6 +534,10 @@ def query_rapid7(sql: str) -> str:
       cves, firstFoundTimestamp, reintroducedTimestamp, dateAdded,
       dateModified, datePublished, pciCompliant, pciSeverity
 
+    **vulnerability_exceptions** — Vulnerability exceptions (waived/accepted risk):
+      Key fields: orgId, assetId, vulnId, checkId, key, port, protocol,
+      nic, proof, firstFoundTimestamp, reintroducedTimestamp, exceptionDetails
+
     **policies** — Policy compliance results (agent and scan based):
       Key fields: orgId, assetId, benchmarkNaturalId, profileNaturalId,
       benchmarkVersion, ruleNaturalId, ruleTitle, finalStatus, proof,

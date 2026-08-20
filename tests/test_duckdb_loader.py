@@ -285,9 +285,8 @@ def test_purge(sample_parquet_file):
 def test_VulnerabilityDatabase_RepeatedSnapshotLoadsDoNotGrow(sample_parquet_file):
     """Repeated snapshot loads must not cause unbounded file growth.
 
-    Each load drops and recreates tables. Without VACUUM+CHECKPOINT the dead
-    pages accumulate and the file grows monotonically. This asserts the file
-    size after N reloads is no larger than after the first load plus a small
+    Each load drops and recreates the targeted tables. This asserts the file
+    size after N reloads is no larger than after the first load plus a generous
     tolerance.
     """
     with tempfile.TemporaryDirectory() as tmpdir:
@@ -304,20 +303,21 @@ def test_VulnerabilityDatabase_RepeatedSnapshotLoadsDoNotGrow(sample_parquet_fil
         size_after_five = Path(db_path).stat().st_size
         db.close()
 
-        # Allow a 2x headroom for minor DuckDB metadata overhead, but the
-        # file must not grow proportionally to the number of reloads.
-        assert size_after_five <= size_after_first * 2, (
+        # Allow a 1.5x headroom for DuckDB metadata overhead from repeated
+        # drop/recreate cycles, but the file must not grow proportionally
+        # to the number of reloads.
+        assert size_after_five <= size_after_first * 1.5, (
             f"DB file grew from {size_after_first} bytes to {size_after_five} bytes "
-            f"over 5 identical snapshot loads — file-reset not working"
+            f"over 5 identical snapshot loads — targeted table replacement not working"
         )
 
 
 def test_VulnerabilityDatabase_SnapshotLoadPreservesRemediation(sample_parquet_file, sample_remediation_parquet_file):
     """Remediation data survives a snapshot reload of vulnerability data.
 
-    The snapshot load deletes the DB file and rewrites it from scratch.
-    Any existing vulnerability_remediation rows must be rescued to a temp
-    Parquet and restored into the new DB.
+    A vulnerability snapshot only drops the 'vulnerabilities' table (and 'assets'
+    if present). The 'vulnerability_remediation' table is untouched because it is
+    not targeted by the incoming prefix map.
     """
     with tempfile.TemporaryDirectory() as tmpdir:
         db_path = str(Path(tmpdir) / "remediation_rescue.db")
@@ -358,5 +358,97 @@ def test_VulnerabilityDatabase_RemediationNotDuplicatedOnReload(sample_parquet_f
 
         remediation_rows = db.query("SELECT COUNT(*) AS cnt FROM vulnerability_remediation")[0]["cnt"]
         assert remediation_rows == 2, f"Remediation rows duplicated: expected 2, got {remediation_rows}"
+
+        db.close()
+
+
+@pytest.fixture
+def sample_policy_parquet_file():
+    """Create a sample policy Parquet file for testing."""
+    table = pa.table(
+        {
+            "assetId": ["ASSET-A", "ASSET-B"],
+            "benchmarkNaturalId": ["CIS-1", "CIS-2"],
+            "ruleTitle": ["Ensure SSH access is restricted", "Ensure MFA is enabled"],
+            "finalStatus": ["pass", "fail"],
+        }
+    )
+    with tempfile.NamedTemporaryFile(suffix=".parquet", delete=False) as f:
+        pq.write_table(table, f.name)
+        yield f.name
+    Path(f.name).unlink(missing_ok=True)
+
+
+def test_VulnerabilityDatabase_PolicyLoadPreservesVulnData(sample_parquet_file, sample_policy_parquet_file):
+    """Loading policy data must not wipe previously loaded vulnerability data.
+
+    This is the primary bug scenario: loading a policy export after a
+    vulnerability export would previously delete the entire DB, losing
+    the vulnerability and asset tables.
+    """
+    with tempfile.TemporaryDirectory() as tmpdir:
+        db_path = str(Path(tmpdir) / "policy_preserves_vuln.db")
+        db = VulnerabilityDatabase(db_path)
+
+        # Step 1: Load vulnerability data (creates assets + vulnerabilities tables)
+        db.load_parquet_files_by_prefix(
+            {
+                "asset_vulnerability": [sample_parquet_file],
+            }
+        )
+        vuln_rows = db.query("SELECT COUNT(*) AS cnt FROM vulnerabilities")[0]["cnt"]
+        assert vuln_rows == 3
+
+        # Step 2: Load policy data (should only touch policies table)
+        db.load_parquet_files_by_prefix(
+            {"asset_policy": [sample_policy_parquet_file]},
+            skip_prefixes={"asset"},
+        )
+
+        # Policies must be loaded
+        policy_rows = db.query("SELECT COUNT(*) AS cnt FROM policies")[0]["cnt"]
+        assert policy_rows == 2
+
+        # Vulnerability data must still be intact
+        vuln_rows_after = db.query("SELECT COUNT(*) AS cnt FROM vulnerabilities")[0]["cnt"]
+        assert vuln_rows_after == 3, f"Vulnerability rows lost after policy load: expected 3, got {vuln_rows_after}"
+
+        db.close()
+
+
+def test_VulnerabilityDatabase_VulnLoadPreservesPolicyData(
+    sample_parquet_file, sample_asset_parquet_file, sample_policy_parquet_file
+):
+    """Loading vulnerability data must not wipe previously loaded policy data.
+
+    The reverse scenario: a vulnerability snapshot should only replace
+    assets + vulnerabilities tables, leaving policies intact.
+    """
+    with tempfile.TemporaryDirectory() as tmpdir:
+        db_path = str(Path(tmpdir) / "vuln_preserves_policy.db")
+        db = VulnerabilityDatabase(db_path)
+
+        # Step 1: Load policy data
+        db.load_parquet_files_by_prefix({"asset_policy": [sample_policy_parquet_file]})
+        policy_rows = db.query("SELECT COUNT(*) AS cnt FROM policies")[0]["cnt"]
+        assert policy_rows == 2
+
+        # Step 2: Load vulnerability data (replaces assets + vulnerabilities)
+        db.load_parquet_files_by_prefix(
+            {
+                "asset": [sample_asset_parquet_file],
+                "asset_vulnerability": [sample_parquet_file],
+            }
+        )
+
+        # Vulnerability + asset data must be present
+        vuln_rows = db.query("SELECT COUNT(*) AS cnt FROM vulnerabilities")[0]["cnt"]
+        assert vuln_rows == 3
+        asset_rows = db.query("SELECT COUNT(*) AS cnt FROM assets")[0]["cnt"]
+        assert asset_rows == 2
+
+        # Policy data must still be intact
+        policy_rows_after = db.query("SELECT COUNT(*) AS cnt FROM policies")[0]["cnt"]
+        assert policy_rows_after == 2, f"Policy rows lost after vulnerability load: expected 2, got {policy_rows_after}"
 
         db.close()
