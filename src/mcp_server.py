@@ -13,8 +13,10 @@ import os
 import shutil
 import sys
 import tempfile
+import threading
+import traceback
 from pathlib import Path
-from typing import Optional
+from typing import Any, Dict, Optional
 
 import duckdb as _duckdb
 from fastmcp import FastMCP
@@ -44,6 +46,46 @@ db: Optional[VulnerabilityDatabase] = None
 _DATA_DIR: Path = Path(os.environ.get("DATA_DIR", "~/.rapid7_mcp")).expanduser().resolve()
 
 VALID_EXPORT_TYPES = ("vulnerability", "policy", "remediation", "asset_software")
+
+# ---------------------------------------------------------------------------
+# Background download/load job tracking
+#
+# Loading a full export (potentially millions of rows) can take much longer
+# than an MCP client's tool-call timeout — Claude Desktop, for example,
+# hard-cancels a tool call after ~4 minutes. Running the download+load
+# synchronously inside a single tool call means the client gives up and
+# cancels while the server keeps working, and when the server later tries
+# to respond to that already-cancelled request, some MCP client/session
+# implementations raise on a duplicate response and crash the whole stdio
+# server process.
+#
+# To avoid this, download_rapid7_export() only *starts* the work in a
+# background thread and returns immediately. Progress and results are
+# tracked here and can be polled with check_download_status().
+# ---------------------------------------------------------------------------
+
+# export_id -> job info dict. Guarded by _jobs_lock.
+_download_jobs: Dict[str, Dict[str, Any]] = {}
+_jobs_lock = threading.Lock()
+
+# Guards all access to the shared `db` connection (both the background
+# load and the read tools below) so a query can never run concurrently
+# with a table being dropped/recreated mid-load.
+_db_lock = threading.Lock()
+
+
+def _set_job(export_id: str, **fields: Any) -> None:
+    """Create or update a job's tracked state."""
+    with _jobs_lock:
+        job = _download_jobs.setdefault(export_id, {})
+        job.update(fields)
+        job["updated_at"] = _dt.datetime.now().isoformat(timespec="seconds")
+
+
+def _get_job(export_id: str) -> Optional[Dict[str, Any]]:
+    with _jobs_lock:
+        job = _download_jobs.get(export_id)
+        return dict(job) if job is not None else None
 
 
 def initialize_database(db_path: Optional[str] = None) -> VulnerabilityDatabase:
@@ -105,37 +147,46 @@ def load_rapid7_parquet(parquet_path: str) -> str:
         if not parquet_files:
             return f"✗ Error: No Parquet files found at: {resolved}"
 
-        # Initialize database if needed
-        if db is None:
-            initialize_database()
+        if not _db_lock.acquire(blocking=False):
+            return (
+                "⏳ A background download/load is currently in progress. "
+                "Try again shortly, or check "
+                "check_download_status(export_id=...) for progress."
+            )
+        try:
+            # Initialize database if needed
+            if db is None:
+                initialize_database()
 
-        # Detect file types by peeking at schema and build prefix map
-        prefix_file_map: dict = {}
-        for pf in parquet_files:
-            try:
-                cols = [
-                    desc[0]
-                    for desc in _duckdb.execute(
-                        f"SELECT * FROM read_parquet('{pf}') LIMIT 0"  # nosec B608
-                    ).description
-                ]
-                if "vulnId" in cols or "checkId" in cols:
-                    prefix_file_map.setdefault("asset_vulnerability", []).append(pf)
-                else:
-                    prefix_file_map.setdefault("asset", []).append(pf)
-            except Exception:
-                # If we can't determine type, skip the file
-                continue
+            # Detect file types by peeking at schema and build prefix map
+            prefix_file_map: dict = {}
+            for pf in parquet_files:
+                try:
+                    cols = [
+                        desc[0]
+                        for desc in _duckdb.execute(
+                            f"SELECT * FROM read_parquet('{pf}') LIMIT 0"  # nosec B608
+                        ).description
+                    ]
+                    if "vulnId" in cols or "checkId" in cols:
+                        prefix_file_map.setdefault("asset_vulnerability", []).append(pf)
+                    else:
+                        prefix_file_map.setdefault("asset", []).append(pf)
+                except Exception:
+                    # If we can't determine type, skip the file
+                    continue
 
-        if not prefix_file_map:
-            return f"✗ Error: Could not determine schema for any Parquet files at: {resolved}"
+            if not prefix_file_map:
+                return f"✗ Error: Could not determine schema for any Parquet files at: {resolved}"
 
-        # Load into database
-        row_counts = db.load_parquet_files_by_prefix(prefix_file_map)
-        row_count = sum(row_counts.values())
+            # Load into database
+            row_counts = db.load_parquet_files_by_prefix(prefix_file_map)
+            row_count = sum(row_counts.values())
 
-        # Get statistics
-        stats = db.get_stats()
+            # Get statistics
+            stats = db.get_stats()
+        finally:
+            _db_lock.release()
 
         return (
             f"✓ Successfully loaded {row_count} rows from {len(parquet_files)} file(s).\n\n"
@@ -364,6 +415,116 @@ def check_rapid7_export_status(export_id: str) -> str:
         return f"✗ Error checking export status: {str(e)}"
 
 
+def _run_download_and_load(export_id: str, export_type: str) -> None:
+    """Background worker: download parquet files and load them into DuckDB.
+
+    Runs in its own thread. All progress/results are written to
+    _download_jobs[export_id] rather than returned, since nothing is
+    waiting on a function return here. Any exception is caught and stored
+    so check_download_status() can report it, instead of the process
+    crashing on a late/duplicate response the way the synchronous version
+    could when a client had already timed out and cancelled the request.
+    """
+    global db
+
+    try:
+        config = load_config()
+        status_info = get_export_status(config, export_id)
+        parquet_urls = status_info["parquetFiles"]
+
+        _set_job(export_id, state="downloading", files_total=len(parquet_urls), files_done=0)
+        print(f"Downloading {len(parquet_urls)} {export_type} files...", file=sys.stderr)
+        file_data = download_all_files(parquet_urls, config["api_key"])
+        _set_job(export_id, files_done=len(parquet_urls))
+
+        _set_job(export_id, state="loading")
+
+        temp_dir = tempfile.mkdtemp()
+        validation_warnings = []
+
+        try:
+            with _db_lock:
+                if db is None:
+                    initialize_database()
+
+                result_list = status_info.get("result") or []
+
+                url_to_prefix = {}
+                for item in result_list:
+                    prefix = item.get("prefix", "")
+                    for url in item.get("urls", []):
+                        url_to_prefix[url] = prefix
+
+                prefix_file_map = {}
+                for i, (url, data) in enumerate(zip(parquet_urls, file_data)):
+                    temp_path = Path(temp_dir) / f"{export_type}_export_{i}.parquet"
+                    temp_path.write_bytes(data)
+                    prefix = url_to_prefix.get(url, "unknown")
+                    prefix_file_map.setdefault(prefix, []).append(str(temp_path))
+                    if len(data) < 100:
+                        validation_warnings.append(
+                            f"File {i + 1} (prefix={prefix}): unusually small ({len(data)} bytes)"
+                        )
+
+                if export_type == "policy":
+                    row_counts = db.load_parquet_files_by_prefix(prefix_file_map, skip_prefixes={"asset"})
+                elif export_type == "remediation":
+                    row_counts = db.load_parquet_files_by_prefix(prefix_file_map, append=True)
+                else:
+                    row_counts = db.load_parquet_files_by_prefix(prefix_file_map)
+
+                row_count = sum(row_counts.values())
+                row_info = f"Rows loaded: {row_count}\nPer-table row counts: {json.dumps(row_counts, default=str)}"
+
+                if row_count == 0 and len(file_data) > 0:
+                    validation_warnings.append(
+                        f"⚠️  {len(file_data)} file(s) downloaded but 0 rows loaded. "
+                        f"Prefixes received: {list(prefix_file_map.keys())}. "
+                        f"Check that prefixes match expected routing."
+                    )
+
+                tracker = ExportTracker(str(_DATA_DIR / "rapid7_bulk_export_tracking.db"))
+                tracker.save_export(
+                    export_id=export_id,
+                    status="COMPLETE",
+                    parquet_urls=parquet_urls,
+                    row_count=row_count,
+                    export_type=export_type,
+                )
+                tracker.close()
+
+                stats = db.get_stats()
+        finally:
+            shutil.rmtree(temp_dir, ignore_errors=True)
+
+        warnings_section = ""
+        if validation_warnings:
+            warnings_section = "\nValidation Warnings:\n" + "\n".join(f"  {w}" for w in validation_warnings) + "\n"
+
+        message = (
+            f"✓ {export_type.capitalize()} data loaded successfully.\n\n"
+            f"Export ID: {export_id}\n"
+            f"Files processed: {len(parquet_urls)}\n"
+            f"{row_info}\n"
+            f"{warnings_section}\n"
+            f"Statistics:\n"
+            f"{json.dumps(stats, indent=2, default=str)}\n\n"
+            f"Query the data with query_rapid7, get_rapid7_schema, or get_rapid7_stats."
+        )
+        _set_job(export_id, state="complete", message=message, error=None)
+
+    except Exception as e:
+        error_text = f"{e}\n{traceback.format_exc()}"
+        message = (
+            f"✗ Error downloading/loading {export_type}: {str(e)}\n\n"
+            f"Export ID: {export_id}\n"
+            f"Retry with: download_rapid7_export("
+            f'export_id="{export_id}", '
+            f'export_type="{export_type}")'
+        )
+        _set_job(export_id, state="failed", message=message, error=error_text)
+
+
 @mcp.tool(
     annotations=ToolAnnotations(
         title="Download Rapid7 Export",
@@ -374,29 +535,30 @@ def check_rapid7_export_status(export_id: str) -> str:
     )
 )
 def download_rapid7_export(export_id: str, export_type: str = "vulnerability") -> str:
-    """Download a completed Rapid7 export and load into the database.
+    """Start downloading a completed Rapid7 export and loading it into the database.
 
     Call this after check_rapid7_export_status confirms the export is COMPLETE.
-    Downloads the Parquet files and loads them into the local DuckDB
-    database for querying.
+    This kicks off the download and load in the background and returns
+    immediately — large exports (potentially millions of rows) can take
+    several minutes to load, longer than most MCP clients will wait on a
+    single tool call. Poll progress with check_download_status(export_id).
 
     Args:
         export_id: The export ID of a completed export.
         export_type: Type of export. One of "vulnerability", "policy",
-                     or "remediation".
+                     "remediation", or "asset_software".
 
     Returns:
-        Summary of loaded data including row counts and statistics.
+        Confirmation that the background job has started, plus how to
+        check on it.
     """
-    global db
-
     if export_type not in VALID_EXPORT_TYPES:
         return f"✗ Invalid export_type: '{export_type}'. Valid values are: {', '.join(VALID_EXPORT_TYPES)}"
 
     try:
         config = load_config()
 
-        # Verify export is complete
+        # Quick call — just confirms the export is ready, doesn't download anything.
         status_info = get_export_status(config, export_id)
         current_status = status_info["status"]
 
@@ -410,101 +572,111 @@ def download_rapid7_export(export_id: str, export_type: str = "vulnerability") -
                 f'export_id="{export_id}")'
             )
 
-        parquet_urls = status_info["parquetFiles"]
-        if not parquet_urls:
+        if not status_info["parquetFiles"]:
             return f"✗ Export complete but has no files.\n\nExport ID: {export_id}"
 
-        # Download files
-        print(f"Downloading {len(parquet_urls)} {export_type} files...", file=sys.stderr)
-        file_data = download_all_files(parquet_urls, config["api_key"])
-
-        # Initialize database if needed
-        if db is None:
-            initialize_database()
-
-        temp_dir = tempfile.mkdtemp()
-        validation_warnings = []
-
-        try:
-            # All export types use prefix-based routing from the API response
-            result_list = status_info.get("result") or []
-
-            url_to_prefix = {}
-            for item in result_list:
-                prefix = item.get("prefix", "")
-                for url in item.get("urls", []):
-                    url_to_prefix[url] = prefix
-
-            prefix_file_map = {}
-            for i, (url, data) in enumerate(zip(parquet_urls, file_data)):
-                temp_path = Path(temp_dir) / f"{export_type}_export_{i}.parquet"
-                temp_path.write_bytes(data)
-                prefix = url_to_prefix.get(url, "unknown")
-                prefix_file_map.setdefault(prefix, []).append(str(temp_path))
-                # Validate file has content
-                if len(data) < 100:
-                    validation_warnings.append(f"File {i + 1} (prefix={prefix}): unusually small ({len(data)} bytes)")
-
-            if export_type == "policy":
-                row_counts = db.load_parquet_files_by_prefix(prefix_file_map, skip_prefixes={"asset"})
-            elif export_type == "remediation":
-                row_counts = db.load_parquet_files_by_prefix(prefix_file_map, append=True)
-            else:
-                row_counts = db.load_parquet_files_by_prefix(prefix_file_map)
-
-            row_count = sum(row_counts.values())
-            row_info = f"Rows loaded: {row_count}\nPer-table row counts: {json.dumps(row_counts, default=str)}"
-
-            if row_count == 0 and len(file_data) > 0:
-                validation_warnings.append(
-                    f"⚠️  {len(file_data)} file(s) downloaded but 0 rows loaded. "
-                    f"Prefixes received: {list(prefix_file_map.keys())}. "
-                    f"Check that prefixes match expected routing."
-                )
-
-            # Save export metadata
-            tracker = ExportTracker(str(_DATA_DIR / "rapid7_bulk_export_tracking.db"))
-            tracker.save_export(
-                export_id=export_id,
-                status="COMPLETE",
-                parquet_urls=parquet_urls,
-                row_count=row_count,
-                export_type=export_type,
+        # Don't start a second job for the same export if one's already running.
+        existing = _get_job(export_id)
+        if existing is not None and existing.get("state") in ("downloading", "loading"):
+            return (
+                f"⏳ A download for this export is already in progress "
+                f"(state: {existing['state']}).\n\n"
+                f"Export ID: {export_id}\n"
+                f'Check progress with: check_download_status(export_id="{export_id}")'
             )
-            tracker.close()
 
-            # Get statistics
-            stats = db.get_stats()
+        _set_job(
+            export_id,
+            state="queued",
+            export_type=export_type,
+            message=None,
+            error=None,
+            started_at=_dt.datetime.now().isoformat(timespec="seconds"),
+        )
 
-        finally:
-            # Clean up temp files
-            shutil.rmtree(temp_dir)
-
-        # Build validation warnings section
-        warnings_section = ""
-        if validation_warnings:
-            warnings_section = "\nValidation Warnings:\n" + "\n".join(f"  {w}" for w in validation_warnings) + "\n"
+        thread = threading.Thread(
+            target=_run_download_and_load,
+            args=(export_id, export_type),
+            daemon=True,
+        )
+        thread.start()
 
         return (
-            f"✓ {export_type.capitalize()} data loaded successfully.\n\n"
+            f"▶️ Started downloading and loading {export_type} export in the background.\n\n"
             f"Export ID: {export_id}\n"
-            f"Files processed: {len(parquet_urls)}\n"
-            f"{row_info}\n"
-            f"{warnings_section}\n"
-            f"Statistics:\n"
-            f"{json.dumps(stats, indent=2, default=str)}\n\n"
-            f"Query the data with query_rapid7, "
-            f"get_rapid7_schema, or get_rapid7_stats."
+            f"Files: {len(status_info['parquetFiles'])}\n\n"
+            f"This can take several minutes for large exports. Check progress with:\n"
+            f'check_download_status(export_id="{export_id}")'
         )
 
     except Exception as e:
         return (
-            f"✗ Error downloading/loading {export_type}: {str(e)}\n\n"
+            f"✗ Error starting download for {export_type}: {str(e)}\n\n"
             f"Export ID: {export_id}\n"
             f"Retry with: download_rapid7_export("
             f'export_id="{export_id}", '
             f'export_type="{export_type}")'
         )
+
+
+@mcp.tool(
+    annotations=ToolAnnotations(
+        title="Check Rapid7 Download Status",
+        readOnlyHint=True,
+        destructiveHint=False,
+        idempotentHint=True,
+        openWorldHint=False,
+    )
+)
+def check_download_status(export_id: str) -> str:
+    """Check the status of a background download/load job started by download_rapid7_export.
+
+    This is a fast, non-blocking call — it just reports the current state
+    of the in-memory job tracker. Does not wait for the job to finish.
+
+    Args:
+        export_id: The export ID passed to download_rapid7_export.
+
+    Returns:
+        Current job state, and full results/statistics once complete.
+    """
+    job = _get_job(export_id)
+
+    if job is None:
+        return (
+            f"No background download job found for export ID: {export_id}\n\n"
+            f"Either it hasn't been started yet (start with download_rapid7_export), "
+            f"or the server process was restarted since it ran — job tracking is "
+            f"in-memory only and does not survive a restart. If you believe the data "
+            f"already loaded successfully before a restart, try get_rapid7_stats() "
+            f"directly to check."
+        )
+
+    state = job.get("state")
+
+    if state == "complete":
+        return job.get("message", "✓ Load completed, but no summary message was recorded.")
+
+    if state == "failed":
+        return job.get("message", "✗ Load failed, but no error message was recorded.")
+
+    if state in ("queued", "downloading", "loading"):
+        files_total = job.get("files_total")
+        files_done = job.get("files_done")
+        progress = ""
+        if files_total:
+            progress = f"\nFiles downloaded: {files_done or 0} / {files_total}"
+
+        return (
+            f"⏳ Job is {state}.\n\n"
+            f"Export ID: {export_id}\n"
+            f"Started: {job.get('started_at', 'unknown')}\n"
+            f"Last update: {job.get('updated_at', 'unknown')}{progress}\n\n"
+            f"Check again in 30-60 seconds with: "
+            f'check_download_status(export_id="{export_id}")'
+        )
+
+    return f"Unknown job state '{state}' for export ID: {export_id}"
 
 
 @mcp.tool(
@@ -571,12 +743,20 @@ def query_rapid7(sql: str) -> str:
     if db is None or not db.has_data():
         return "Error: No data loaded. Please run start_rapid7_export and download_rapid7_export first."
 
+    if not _db_lock.acquire(blocking=False):
+        return (
+            "⏳ A background download/load is currently in progress, so the "
+            "database can't be safely queried right now. Try again shortly, "
+            "or check check_download_status(export_id=...) for progress."
+        )
     try:
         results = db.query(sql)
         result_text = json.dumps(results, indent=2, default=str)
         return f"Query executed successfully. {len(results)} rows returned.\n\n{result_text}"
     except Exception as e:
         return f"Error executing query: {str(e)}"
+    finally:
+        _db_lock.release()
 
 
 @mcp.tool(
@@ -605,12 +785,20 @@ def get_rapid7_schema() -> str:
     if db is None or not db.has_data():
         return "Error: No data loaded. Please run start_rapid7_export and download_rapid7_export first."
 
+    if not _db_lock.acquire(blocking=False):
+        return (
+            "⏳ A background download/load is currently in progress, so the "
+            "schema can't be safely read right now. Try again shortly, or "
+            "check check_download_status(export_id=...) for progress."
+        )
     try:
         schema = db.get_schema()
         schema_text = json.dumps(schema, indent=2)
         return f"Database schema:\n\n{schema_text}"
     except Exception as e:
         return f"Error getting schema: {str(e)}"
+    finally:
+        _db_lock.release()
 
 
 @mcp.tool(
@@ -639,12 +827,20 @@ def get_rapid7_stats() -> str:
     if db is None or not db.has_data():
         return "Error: No data loaded. Please run start_rapid7_export and download_rapid7_export first."
 
+    if not _db_lock.acquire(blocking=False):
+        return (
+            "⏳ A background download/load is currently in progress, so "
+            "statistics can't be safely read right now. Try again shortly, "
+            "or check check_download_status(export_id=...) for progress."
+        )
     try:
         stats = db.get_stats()
         stats_text = json.dumps(stats, indent=2, default=str)
         return f"Database statistics:\n\n{stats_text}"
     except Exception as e:
         return f"Error getting statistics: {str(e)}"
+    finally:
+        _db_lock.release()
 
 
 @mcp.tool(
