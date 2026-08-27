@@ -22,6 +22,11 @@ REGION_ENDPOINTS = {
     "ap": "https://ap.api.insight.rapid7.com/export/graphql",
 }
 
+# Base URL for Command Platform Capability APIs (InsightIDR, etc.) — shares
+# the same region and API key as the Bulk Export GraphQL endpoint above, but
+# is a plain regional host with no product-specific path baked in.
+IDR_BASE_ENDPOINTS = {region: f"https://{region}.api.insight.rapid7.com" for region in REGION_ENDPOINTS}
+
 
 def _get_key_from_keychain(service_name: str) -> Optional[str]:
     """Retrieve a password from macOS Keychain.
@@ -102,4 +107,5 @@ def load_config() -> Dict[str, str]:
         "api_key": api_key,
         "region": region,
         "endpoint": endpoint,
+        "idr_base": IDR_BASE_ENDPOINTS[region],
     }

@@ -19,6 +19,7 @@ class TestLoadConfig:
             assert config["api_key"] == "test-api-key-123"
             assert config["region"] == "us"
             assert config["endpoint"] == "https://us.api.insight.rapid7.com/export/graphql"
+            assert config["idr_base"] == "https://us.api.insight.rapid7.com"
 
     def test_load_config_all_regions(self):
         """Test that load_config works with all valid regions."""
@@ -29,7 +30,8 @@ class TestLoadConfig:
                 assert config["region"] == region
                 assert config["endpoint"] == expected_endpoint
 
-    def test_missing_api_key_raises_error(self):
+    @patch("src.config._get_key_from_keychain", return_value=None)
+    def test_missing_api_key_raises_error(self, mock_keychain):
         """Test that missing RAPID7_API_KEY raises ValueError."""
         with patch.dict(os.environ, {"RAPID7_REGION": "us"}, clear=True):
             with pytest.raises(ValueError, match="RAPID7_API_KEY not found"):
@@ -54,7 +56,8 @@ class TestLoadConfig:
             with pytest.raises(ValueError, match="Valid regions are:"):
                 load_config()
 
-    def test_empty_api_key_raises_error(self):
+    @patch("src.config._get_key_from_keychain", return_value=None)
+    def test_empty_api_key_raises_error(self, mock_keychain):
         """Test that empty RAPID7_API_KEY raises ValueError."""
         with patch.dict(os.environ, {"RAPID7_API_KEY": "", "RAPID7_REGION": "us"}):
             with pytest.raises(ValueError, match="RAPID7_API_KEY not found"):
@@ -74,7 +77,8 @@ class TestLoadConfig:
             assert "api_key" in config
             assert "region" in config
             assert "endpoint" in config
-            assert len(config) == 3  # Ensure no extra keys
+            assert "idr_base" in config
+            assert len(config) == 4  # Ensure no extra keys
 
 
 class TestKeychainFallback:

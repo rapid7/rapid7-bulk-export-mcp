@@ -32,6 +32,21 @@ from .export_manager import (
     get_export_status,
 )
 from .export_tracker import ExportTracker
+from .insightidr_manager import (
+    VALID_DISPOSITIONS,
+)
+from .insightidr_manager import (
+    close_investigation as idr_close_investigation,
+)
+from .insightidr_manager import (
+    get_investigation as idr_get_investigation,
+)
+from .insightidr_manager import (
+    list_investigation_alerts as idr_list_investigation_alerts,
+)
+from .insightidr_manager import (
+    list_investigations as idr_list_investigations,
+)
 
 # Initialize FastMCP server
 mcp = FastMCP("rapid7-bulk-export")
@@ -737,6 +752,183 @@ def list_rapid7_exports(limit: int = 10) -> str:
 
     except Exception as e:
         return f"✗ Error listing exports: {str(e)}"
+
+
+@mcp.tool(
+    annotations=ToolAnnotations(
+        title="Get Rapid7 InsightIDR Investigations",
+        readOnlyHint=True,
+        destructiveHint=False,
+        idempotentHint=True,
+        openWorldHint=True,
+    )
+)
+def get_investigations(
+    status: str = "",
+    priorities: str = "",
+    assignee_email: str = "",
+    limit: int = 20,
+) -> str:
+    """List InsightIDR investigations matching the given filters.
+
+    Args:
+        status: Filter by status: "OPEN", "INVESTIGATING", "WAITING", or "CLOSED".
+                Leave empty to include all statuses.
+        priorities: Comma-separated priorities to include, e.g. "CRITICAL,HIGH".
+                    Leave empty to include all priorities.
+        assignee_email: Only return investigations assigned to this user.
+        limit: Maximum number of investigations to return (1-100, default 20).
+
+    Returns:
+        A formatted list of matching investigations with their ID, title,
+        status, priority, disposition, and assignee.
+    """
+    try:
+        config = load_config()
+        response = idr_list_investigations(
+            config,
+            status=status or None,
+            priorities=priorities or None,
+            assignee_email=assignee_email or None,
+            size=limit,
+        )
+        investigations = response.get("data", [])
+        metadata = response.get("metadata", {})
+
+        if not investigations:
+            return "No investigations found matching the given filters."
+
+        lines = [f"Found {len(investigations)} investigation(s) (total matching: {metadata.get('total_data', '?')}):\n"]
+        for inv in investigations:
+            assignee = inv.get("assignee") or {}
+            lines.append(
+                f"- [{inv.get('priority', '?')}] {inv.get('title', '(no title)')}\n"
+                f"    id: {inv.get('rrn', inv.get('id', '?'))}\n"
+                f"    status: {inv.get('status', '?')}  disposition: {inv.get('disposition', '-')}\n"
+                f"    assignee: {assignee.get('name', 'Unassigned')} ({assignee.get('email', '-')})\n"
+                f"    created: {inv.get('created_time', '?')}  latest alert: {inv.get('latest_alert_time', '?')}"
+            )
+        return "\n\n".join(lines)
+
+    except Exception as e:
+        return f"✗ Error listing investigations: {str(e)}"
+
+
+@mcp.tool(
+    annotations=ToolAnnotations(
+        title="Get Rapid7 InsightIDR Investigation Details",
+        readOnlyHint=True,
+        destructiveHint=False,
+        idempotentHint=True,
+        openWorldHint=True,
+    )
+)
+def get_investigation_details(investigation_id: str) -> str:
+    """Get full details for a single InsightIDR investigation, including its associated alerts.
+
+    Args:
+        investigation_id: The investigation ID or RRN (from get_investigations).
+
+    Returns:
+        The complete investigation record (all fields returned by the API)
+        plus the list of alerts/evidence associated with it.
+    """
+    try:
+        config = load_config()
+        investigation = idr_get_investigation(config, investigation_id)
+
+        if not investigation:
+            return f"✗ No investigation found for ID: {investigation_id}"
+
+        alerts_response = idr_list_investigation_alerts(config, investigation_id, size=100)
+        alerts = alerts_response.get("data", [])
+
+        sections = [
+            "Investigation details:",
+            json.dumps(investigation, indent=2, default=str),
+        ]
+
+        if alerts:
+            sections.append(f"\nAssociated alerts ({len(alerts)}):")
+            sections.append(json.dumps(alerts, indent=2, default=str))
+        else:
+            sections.append("\nNo associated alerts found.")
+
+        return "\n".join(sections)
+
+    except Exception as e:
+        return f"✗ Error getting investigation details: {str(e)}"
+
+
+@mcp.tool(
+    annotations=ToolAnnotations(
+        title="Close Rapid7 InsightIDR Investigation",
+        readOnlyHint=False,
+        destructiveHint=True,
+        idempotentHint=True,
+        openWorldHint=True,
+    )
+)
+def close_investigation(investigation_id: str, disposition: str, confirm: bool = False) -> str:
+    """Close a single InsightIDR investigation. This is a WRITE operation on live SIEM data.
+
+    SAFETY: Call this once WITHOUT confirm=True first — it will preview the
+    investigation and make no changes. Only call it again with confirm=True,
+    after showing the preview to the user and getting their go-ahead, to
+    actually close it.
+
+    Args:
+        investigation_id: The investigation ID or RRN to close (from get_investigations).
+        disposition: One of "BENIGN", "MALICIOUS", "NOT_APPLICABLE" — required
+                     whenever an investigation is closed.
+        confirm: Must be True to actually perform the close. Defaults to
+                 False, which only previews the investigation and its
+                 current state without changing anything.
+
+    Returns:
+        A preview of the investigation to be closed (if confirm=False), or
+        confirmation that it was closed (if confirm=True).
+    """
+    if disposition not in VALID_DISPOSITIONS:
+        return f"✗ Invalid disposition: '{disposition}'. Valid values are: {', '.join(VALID_DISPOSITIONS)}"
+
+    try:
+        config = load_config()
+        current = idr_get_investigation(config, investigation_id)
+
+        if current.get("status") == "CLOSED":
+            return (
+                f"ℹ️ Investigation is already CLOSED — no action taken.\n\n"
+                f"Title: {current.get('title', '?')}\n"
+                f"ID: {investigation_id}\n"
+                f"Disposition: {current.get('disposition', '-')}"
+            )
+
+        if not confirm:
+            assignee = current.get("assignee") or {}
+            return (
+                f"⚠️ This will CLOSE the following investigation with disposition '{disposition}'. "
+                f"No changes have been made yet.\n\n"
+                f"Title: {current.get('title', '?')}\n"
+                f"ID: {investigation_id}\n"
+                f"Current status: {current.get('status', '?')}\n"
+                f"Priority: {current.get('priority', '?')}\n"
+                f"Assignee: {assignee.get('email', 'Unassigned')}\n\n"
+                f'To proceed, call close_investigation(investigation_id="{investigation_id}", '
+                f'disposition="{disposition}", confirm=True)'
+            )
+
+        result = idr_close_investigation(config, investigation_id, disposition)
+        return (
+            f"✓ Investigation closed.\n\n"
+            f"Title: {result.get('title', current.get('title', '?'))}\n"
+            f"ID: {investigation_id}\n"
+            f"Status: {result.get('status', 'CLOSED')}\n"
+            f"Disposition: {result.get('disposition', disposition)}"
+        )
+
+    except Exception as e:
+        return f"✗ Error closing investigation: {str(e)}"
 
 
 def main():
