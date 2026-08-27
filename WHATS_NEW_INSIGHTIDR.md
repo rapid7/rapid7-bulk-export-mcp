@@ -21,6 +21,48 @@
 | Command Platform API вже надає єдиний ендпоінт, автентифікацію і дизайн для обох продуктів — розширення наявного клієнта природніше й дешевше, ніж створення окремого сервера з нуля. | The Command Platform API already provides a single endpoint, authentication, and design shared across both products — extending the existing client is more natural and cheaper than building a separate server from scratch. |
 | Форк офіційного open-source репозиторію Rapid7 дає готову інфраструктуру (конфіг, тестування, пакування, DuckDB-шар) — розширюємо перевірений код, а не пишемо MCP-сервер з нуля. | Forking Rapid7's official open-source repository provides ready-made infrastructure (config, testing, packaging, DuckDB layer) — we extend proven code instead of writing an MCP server from scratch. |
 
+## Структура компонентів та залежності / Component Structure & Dependencies
+
+Потік виклику для будь-якого InsightIDR MCP-інструменту, зверху вниз (АІ-асистент → Rapid7 API) і назад: / The call flow for any InsightIDR MCP tool, top to bottom (AI assistant → Rapid7 API) and back:
+
+```
+AI-асистент (Claude Desktop / Claude Code)
+    │  викликає MCP tool: get_investigations / get_investigation_details /
+    │  get_alert_evidence / close_investigation
+    ▼
+src/mcp_server.py
+    │  @mcp.tool функції: приймають аргументи від AI, форматують відповідь
+    │  у людяний текст, ловлять помилки. Для close_investigation — тут
+    │  живе обов'язковий preview/confirm safety-flow.
+    ▼
+src/insightidr_manager.py
+    │  бізнес-логіка: list_investigations, get_investigation,
+    │  list_investigation_alerts, get_alert_evidence, close_investigation.
+    │  Валідує статуси (VALID_STATUSES) і dispositions (VALID_DISPOSITIONS)
+    │  до того, як щось піде в мережу.
+    ▼
+src/insightidr_client.py
+    │  send_idr_request(): REST-транспорт — X-Api-Key, Content-Type,
+    │  User-Agent (з config.py), опційний Accept-version для preview API.
+    ▼
+Rapid7 InsightIDR REST API  (Command Platform, /idr/v2/*, /idr/at/*)
+    ▲
+    │  base URL (idr_base) + RAPID7_API_KEY
+src/config.py
+    load_config(): читає RAPID7_API_KEY (env → macOS Keychain fallback) і
+    RAPID7_REGION, будує idr_base = IDR_BASE_ENDPOINTS[region].
+```
+
+| Компонент | Українською | English |
+|---|---|---|
+| `src/config.py` | Єдина точка входу для credentials. `IDR_BASE_ENDPOINTS` — регіональна мапа base URL, окрема від `REGION_ENDPOINTS` (GraphQL Bulk Export). Використовується і InsightVM-, і InsightIDR-частиною. | Single entry point for credentials. `IDR_BASE_ENDPOINTS` — a regional base-URL map, separate from `REGION_ENDPOINTS` (GraphQL Bulk Export). Used by both the InsightVM and InsightIDR parts. |
+| `src/insightidr_client.py` | Не знає нічого про investigations/alerts — лише вміє відправити REST-запит з правильними заголовками. Аналог `graphql_client.py`, але для JSON REST замість GraphQL. Не залежить від `insightidr_manager.py`. | Knows nothing about investigations/alerts — it only knows how to send a REST request with the right headers. Analogous to `graphql_client.py`, but for JSON REST instead of GraphQL. Does not depend on `insightidr_manager.py`. |
+| `src/insightidr_manager.py` | Тут живуть правила: які статуси/dispositions валідні, який шлях API для кожної дії (наприклад, закриття — через точковий `/status/CLOSED`, а не `bulk_close`). Залежить лише від `insightidr_client.py`. | This is where the rules live: which statuses/dispositions are valid, which API path each action uses (e.g. closing goes through the targeted `/status/CLOSED`, not `bulk_close`). Depends only on `insightidr_client.py`. |
+| `src/mcp_server.py` | Єдиний файл, який АІ-асистент бачить напряму — оголошує tools через `@mcp.tool`. Залежить від `insightidr_manager.py` (бізнес-логіка) і `config.py` (credentials). | The only file the AI assistant sees directly — declares tools via `@mcp.tool`. Depends on `insightidr_manager.py` (business logic) and `config.py` (credentials). |
+| `rapid7-insightidr-skill/SKILL.md` + `README.md` | Не код — документація для АІ-асистента: як і коли викликати tools з `mcp_server.py`, safety-flow, обробка помилок. Оновлюється вручну щоразу, коли зʼявляється новий tool. | Not code — documentation for the AI assistant: how and when to call the tools from `mcp_server.py`, the safety flow, error handling. Updated by hand whenever a new tool appears. |
+
+**Ключова залежність**: `RAPID7_API_KEY` + `RAPID7_REGION` — спільні для InsightVM (GraphQL) і InsightIDR (REST) частин сервера; одна зміна в `config.py` (`load_config()`) впливає на обидві. / **Key dependency**: `RAPID7_API_KEY` + `RAPID7_REGION` are shared between the InsightVM (GraphQL) and InsightIDR (REST) parts of the server; one change in `config.py` (`load_config()`) affects both.
+
 ## Історія змін / Changelog
 
 ### 2026-08-27 — Розгортання та тестування базового сервера / Baseline server deployment and testing
