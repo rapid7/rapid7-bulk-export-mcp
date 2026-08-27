@@ -36,7 +36,7 @@ notice.
 | PUT | `/idr/v2/investigations/{id}/assignee` | `assignUserToInvestigation` | `assign_investigation` | Body: `{user_email_address}` |
 | GET | `/idr/v2/investigations/{identifier}/alerts` | `listInvestigationAlerts` | `list_investigation_alerts` | Alert metadata only, not event evidence |
 | DELETE | `/idr/v2/investigations/{identifier}/alerts/{alertRrn}` | `removeAlertFromInvestigation` | — not implemented | Unlink an alert from an investigation |
-| GET | `/idr/v2/investigations/{identifier}/rapid7-product-alerts` | `getInvestigationRapid7ProductAlertInfo` | — not implemented | Alerts from OTHER Rapid7 products (Threat Command, Insight Agent) tied to this investigation — separate from InsightIDR's own alerts |
+| GET | `/idr/v2/investigations/{identifier}/rapid7-product-alerts` | `getInvestigationRapid7ProductAlertInfo` | `list_investigation_product_alerts` | Alerts from OTHER Rapid7 products (Threat Command, Insight Agent) tied to this investigation — separate from InsightIDR's own alerts. Response is a plain JSON array, not a paginated `{data, metadata}` object like other list endpoints here. |
 
 Alert evidence (`get_alert_evidence`) uses a **different** API path entirely —
 `/idr/at/alerts/{alert_rrn}/evidences` (alert-triage API) — not present in
@@ -112,3 +112,14 @@ single-purpose calls (`close_investigation` for status+disposition,
 `assign_investigation` for assignee). If a future request needs to change
 multiple fields atomically (e.g. "reassign AND bump priority"), this endpoint
 is the right one to reach for instead of chaining several single-field calls.
+
+**Known gap**: `list_investigation_product_alerts` surfaces
+`applicable_close_reasons` for Threat Command-linked investigations (e.g.
+`ProblemSolved`, `FalsePositive`), but `close_investigation` doesn't accept
+a `threat_command_close_reason` — it only sends `disposition` to `setStatus`
+(`InvestigationStatusRequestV2` also has `threat_command_close_reason` and
+`threat_command_free_text` fields, unused here). Closing a Threat
+Command-linked investigation currently works but won't pass a close reason
+back to Threat Command. If that becomes a real need, extend
+`close_investigation` (or add a Threat-Command-specific close path) to
+accept it — don't silently drop a reason the user explicitly gives.

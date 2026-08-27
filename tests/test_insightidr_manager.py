@@ -17,9 +17,12 @@ from src.insightidr_manager import (
     VALID_DISPOSITIONS,
     assign_investigation,
     close_investigation,
+    create_comment,
     get_alert_evidence,
     get_investigation,
+    list_comments,
     list_investigation_alerts,
+    list_investigation_product_alerts,
     list_investigations,
     list_known_assignees,
 )
@@ -130,6 +133,46 @@ class TestListInvestigationAlerts:
         assert "size=20" in request_url
         assert "index=0" in request_url
         assert responses.calls[0].request.headers["Accept-version"] == "investigations-preview"
+
+
+class TestListInvestigationProductAlerts:
+    @responses.activate
+    def test_returns_list_of_product_alerts(self):
+        responses.add(
+            responses.GET,
+            f"{CONFIG['idr_base']}/idr/v2/investigations/inv-1/rapid7-product-alerts",
+            json=[
+                {
+                    "type": "THREAT_COMMAND",
+                    "threat_command_details": {
+                        "alert_id": "tc-1",
+                        "alert_type": "Phishing",
+                        "applicable_close_reasons": ["ProblemSolved", "Other"],
+                    },
+                }
+            ],
+            status=200,
+        )
+
+        result = list_investigation_product_alerts(CONFIG, "inv-1")
+
+        assert result[0]["type"] == "THREAT_COMMAND"
+        request_url = responses.calls[0].request.url
+        assert "/investigations/inv-1/rapid7-product-alerts" in request_url
+        assert responses.calls[0].request.headers["Accept-version"] == "investigations-preview"
+
+    @responses.activate
+    def test_empty_list_when_none_linked(self):
+        responses.add(
+            responses.GET,
+            f"{CONFIG['idr_base']}/idr/v2/investigations/inv-1/rapid7-product-alerts",
+            json=[],
+            status=200,
+        )
+
+        result = list_investigation_product_alerts(CONFIG, "inv-1")
+
+        assert result == []
 
 
 class TestListKnownAssignees:
@@ -285,3 +328,64 @@ class TestCloseInvestigation:
 
         assert "inv-42" in responses.calls[0].request.url
         assert "bulk_close" not in responses.calls[0].request.url
+
+
+class TestListComments:
+    @responses.activate
+    def test_lists_comments_for_target(self):
+        target = "rrn:investigation:eu:org:investigation:inv-1"
+        responses.add(
+            responses.GET,
+            f"{CONFIG['idr_base']}/idr/v1/comments",
+            json={
+                "data": [{"rrn": "rrn:...:comment:1", "body": "hi", "visibility": "INTERNAL"}],
+                "metadata": {"total_data": 1},
+            },
+            status=200,
+        )
+
+        result = list_comments(CONFIG, target)
+
+        assert result["data"][0]["body"] == "hi"
+        request_url = responses.calls[0].request.url
+        assert "target=" in request_url
+        assert "size=20" in request_url
+        assert "index=0" in request_url
+        assert "sortDirection=DESC" in request_url
+        # Comments API is stable v1 — no Accept-version header required
+        assert "Accept-version" not in responses.calls[0].request.headers
+
+    @responses.activate
+    def test_custom_paging_and_sort(self):
+        responses.add(
+            responses.GET,
+            f"{CONFIG['idr_base']}/idr/v1/comments",
+            json={"data": [], "metadata": {}},
+            status=200,
+        )
+
+        list_comments(CONFIG, "rrn:x", size=50, index=1, sort_direction="ASC")
+
+        request_url = responses.calls[0].request.url
+        assert "size=50" in request_url
+        assert "index=1" in request_url
+        assert "sortDirection=ASC" in request_url
+
+
+class TestCreateComment:
+    @responses.activate
+    def test_sends_target_and_body(self):
+        target = "rrn:investigation:eu:org:investigation:inv-1"
+        responses.add(
+            responses.POST,
+            f"{CONFIG['idr_base']}/idr/v1/comments",
+            json={"rrn": "rrn:...:comment:1", "target": target, "body": "note", "visibility": "INTERNAL"},
+            status=200,
+        )
+
+        result = create_comment(CONFIG, target, "note")
+
+        assert result["body"] == "note"
+        request_body = json.loads(responses.calls[0].request.body)
+        assert request_body == {"target": target, "body": "note"}
+        assert "Accept-version" not in responses.calls[0].request.headers

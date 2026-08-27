@@ -32,6 +32,27 @@ from .export_manager import (
     get_export_status,
 )
 from .export_tracker import ExportTracker
+from .insightidr_log_search_manager import (
+    create_saved_query as idr_create_saved_query,
+)
+from .insightidr_log_search_manager import (
+    delete_saved_query as idr_delete_saved_query,
+)
+from .insightidr_log_search_manager import (
+    list_logs as idr_list_logs,
+)
+from .insightidr_log_search_manager import (
+    list_logsets as idr_list_logsets,
+)
+from .insightidr_log_search_manager import (
+    list_saved_queries as idr_list_saved_queries,
+)
+from .insightidr_log_search_manager import (
+    query_logs as idr_query_logs,
+)
+from .insightidr_log_search_manager import (
+    run_saved_query as idr_run_saved_query,
+)
 from .insightidr_manager import (
     VALID_DISPOSITIONS,
 )
@@ -42,13 +63,22 @@ from .insightidr_manager import (
     close_investigation as idr_close_investigation,
 )
 from .insightidr_manager import (
+    create_comment as idr_create_comment,
+)
+from .insightidr_manager import (
     get_alert_evidence as idr_get_alert_evidence,
 )
 from .insightidr_manager import (
     get_investigation as idr_get_investigation,
 )
 from .insightidr_manager import (
+    list_comments as idr_list_comments,
+)
+from .insightidr_manager import (
     list_investigation_alerts as idr_list_investigation_alerts,
+)
+from .insightidr_manager import (
+    list_investigation_product_alerts as idr_list_investigation_product_alerts,
 )
 from .insightidr_manager import (
     list_investigations as idr_list_investigations,
@@ -937,6 +967,66 @@ def get_alert_evidence(alert_id: str) -> str:
 
 @mcp.tool(
     annotations=ToolAnnotations(
+        title="Get Rapid7 Product Alerts for InsightIDR Investigation",
+        readOnlyHint=True,
+        destructiveHint=False,
+        idempotentHint=True,
+        openWorldHint=True,
+    )
+)
+def get_investigation_product_alerts(investigation_id: str) -> str:
+    """List alerts from OTHER Rapid7 products (not InsightIDR) linked to this investigation.
+
+    Covers products like Threat Command (external threat intel) or Insight
+    Agent (endpoint), if the org has an active license and this
+    investigation is tied to one of their alerts. This is separate from
+    get_investigation_details's "Associated alerts", which only covers
+    InsightIDR's own alerts — most investigations will have none of these,
+    which is normal, not an error.
+
+    Args:
+        investigation_id: The investigation ID or RRN (from get_investigations).
+
+    Returns:
+        A formatted list of linked product alerts (product type, and for
+        Threat Command, the close reasons that API expects when this
+        investigation is eventually closed), or a note that none exist.
+    """
+    try:
+        config = load_config()
+        product_alerts = idr_list_investigation_product_alerts(config, investigation_id)
+
+        if not product_alerts:
+            return "No Rapid7 product alerts (from products other than InsightIDR) are linked to this investigation."
+
+        lines = [f"Found {len(product_alerts)} linked product alert(s):"]
+        for pa in product_alerts:
+            lines.append(f"\n- Product: {pa.get('type', '?')}")
+
+            threat_command = pa.get("threat_command_details")
+            if threat_command:
+                reasons = ", ".join(threat_command.get("applicable_close_reasons", []))
+                lines.append(
+                    f"  Threat Command alert_id: {threat_command.get('alert_id', '?')}"
+                    f"  type: {threat_command.get('alert_type', '?')}\n"
+                    f"  Applicable close reasons: {reasons or '(none listed)'}"
+                )
+
+            for agent_alert in pa.get("insight_agent_details") or []:
+                lines.append(
+                    f"  Insight Agent alert_id: {agent_alert.get('alert_id', '?')}"
+                    f"  type: {agent_alert.get('alert_type', '?')}"
+                    f"  action taken: {agent_alert.get('agent_action_taken', '?')}"
+                )
+
+        return "\n".join(lines)
+
+    except Exception as e:
+        return f"✗ Error getting product alerts: {str(e)}"
+
+
+@mcp.tool(
+    annotations=ToolAnnotations(
         title="List Rapid7 InsightIDR Known Assignees",
         readOnlyHint=True,
         destructiveHint=False,
@@ -981,6 +1071,92 @@ def list_investigation_assignees() -> str:
 
     except Exception as e:
         return f"✗ Error listing assignees: {str(e)}"
+
+
+@mcp.tool(
+    annotations=ToolAnnotations(
+        title="List Rapid7 InsightIDR Investigation Comments",
+        readOnlyHint=True,
+        destructiveHint=False,
+        idempotentHint=True,
+        openWorldHint=True,
+    )
+)
+def list_investigation_comments(investigation_id: str, limit: int = 20) -> str:
+    """List comments on an InsightIDR investigation, newest first.
+
+    Args:
+        investigation_id: The investigation RRN (use the full rrn from
+                           get_investigations, not a short id).
+        limit: Maximum number of comments to return (1-100, default 20).
+
+    Returns:
+        A formatted list of comments with author, time, visibility, and body.
+    """
+    try:
+        config = load_config()
+        response = idr_list_comments(config, investigation_id, size=limit)
+        comments = response.get("data", [])
+
+        if not comments:
+            return "No comments found on this investigation."
+
+        lines = [f"Found {len(comments)} comment(s):"]
+        for c in comments:
+            creator = c.get("creator") or {}
+            lines.append(
+                f"\n- {creator.get('name', '?')} ({creator.get('type', '?')}) at {c.get('created_time', '?')}"
+                f"\n  visibility: {c.get('visibility', '?')}\n  {c.get('body', '')}"
+            )
+        return "\n".join(lines)
+
+    except Exception as e:
+        return f"✗ Error listing comments: {str(e)}"
+
+
+@mcp.tool(
+    annotations=ToolAnnotations(
+        title="Add Rapid7 InsightIDR Investigation Comment",
+        readOnlyHint=False,
+        destructiveHint=False,
+        idempotentHint=False,
+        openWorldHint=True,
+    )
+)
+def add_investigation_comment(investigation_id: str, body: str) -> str:
+    """Add a comment to an InsightIDR investigation. WRITE operation, applied immediately.
+
+    Unlike close_investigation/assign_investigation, this does NOT require
+    a confirm step — a comment doesn't change the investigation's status,
+    priority, or disposition, and isn't destructive (it can be reviewed or
+    removed by an analyst in the InsightIDR UI). Still, only post comments
+    the user actually asked for or clearly approved — don't narrate routine
+    tool activity into the investigation's comment thread unprompted.
+
+    Args:
+        investigation_id: The investigation RRN (use the full rrn from
+                           get_investigations, not a short id).
+        body: The comment text.
+
+    Returns:
+        Confirmation of the created comment, including its visibility
+        (set by the API — not something this call controls).
+    """
+    if not body or not body.strip():
+        return "✗ Comment body cannot be empty."
+
+    try:
+        config = load_config()
+        result = idr_create_comment(config, investigation_id, body)
+        return (
+            f"✓ Comment added.\n\n"
+            f"Investigation: {investigation_id}\n"
+            f"Visibility: {result.get('visibility', '?')}\n"
+            f"Body: {result.get('body', body)}"
+        )
+
+    except Exception as e:
+        return f"✗ Error adding comment: {str(e)}"
 
 
 @mcp.tool(
@@ -1111,6 +1287,342 @@ def close_investigation(investigation_id: str, disposition: str, confirm: bool =
 
     except Exception as e:
         return f"✗ Error closing investigation: {str(e)}"
+
+
+def _log_query_still_pending(result: dict) -> bool:
+    """True if a log search result is a still-pending 202, not a final answer.
+
+    A pending response already carries an "events": [] key — it's not the
+    presence of "events" that signals completion, only the disappearance
+    of the "links" self-href (present while polling, absent once the API
+    returns the final 200). See src/insightidr_log_search_manager.py's
+    _poll_until_ready docstring for the live-verified bug this fixes.
+    """
+    return any(link.get("rel", "").lower() == "self" for link in result.get("links", []))
+
+
+def _format_log_events(events: list) -> str:
+    """Format LEQL query results for display, parsing each event's JSON message body."""
+    if not events:
+        return "(no matching events)"
+
+    lines = []
+    for ev in events:
+        raw = ev.get("message")
+        if isinstance(raw, str):
+            try:
+                body = json.dumps(json.loads(raw), indent=2, ensure_ascii=False, default=str)
+            except (TypeError, ValueError):
+                body = raw
+        else:
+            body = json.dumps(raw, indent=2, ensure_ascii=False, default=str) if raw else "(empty)"
+        lines.append(f"- log_id: {ev.get('log_id', '?')}  timestamp: {ev.get('timestamp', '?')}\n{body}")
+
+    return "\n\n".join(lines)
+
+
+@mcp.tool(
+    annotations=ToolAnnotations(
+        title="List Rapid7 InsightIDR Logs",
+        readOnlyHint=True,
+        destructiveHint=False,
+        idempotentHint=True,
+        openWorldHint=True,
+    )
+)
+def list_logs() -> str:
+    """List all logs configured for this account, with their IDs.
+
+    Use this to find log IDs for query_logs, or to look up a log's name.
+
+    Returns:
+        Formatted list of logs (id, name).
+    """
+    try:
+        config = load_config()
+        response = idr_list_logs(config)
+        logs = response.get("logs", [])
+
+        if not logs:
+            return "No logs found."
+
+        lines = [f"Found {len(logs)} log(s):"]
+        for log in logs:
+            lines.append(f"- {log.get('name', '?')}  id: {log.get('id', '?')}")
+        return "\n".join(lines)
+
+    except Exception as e:
+        return f"✗ Error listing logs: {str(e)}"
+
+
+@mcp.tool(
+    annotations=ToolAnnotations(
+        title="List Rapid7 InsightIDR Logsets",
+        readOnlyHint=True,
+        destructiveHint=False,
+        idempotentHint=True,
+        openWorldHint=True,
+    )
+)
+def list_logsets() -> str:
+    """List all logsets (named groupings of logs) configured for this account.
+
+    Returns:
+        Formatted list of logsets (name, id, and the logs each one contains).
+    """
+    try:
+        config = load_config()
+        response = idr_list_logsets(config)
+        logsets = response.get("logsets", [])
+
+        if not logsets:
+            return "No logsets found."
+
+        lines = [f"Found {len(logsets)} logset(s):"]
+        for logset in logsets:
+            log_names = ", ".join(li.get("name", "?") for li in logset.get("logs_info", []))
+            lines.append(f"- {logset.get('name', '?')}  id: {logset.get('id', '?')}\n  logs: {log_names or '(none)'}")
+        return "\n".join(lines)
+
+    except Exception as e:
+        return f"✗ Error listing logsets: {str(e)}"
+
+
+@mcp.tool(
+    annotations=ToolAnnotations(
+        title="Query Rapid7 InsightIDR Log Data",
+        readOnlyHint=True,
+        destructiveHint=False,
+        idempotentHint=True,
+        openWorldHint=True,
+    )
+)
+def query_logs(log_ids: str, statement: str, time_range: str = "Last 1 Day", from_ms: int = 0, to_ms: int = 0) -> str:
+    """Run a LEQL query against one or more logs and return matching events.
+
+    PRIVACY NOTE: Raw log events can contain personal data (usernames,
+    emails, IP addresses, actions taken) — this is real organizational
+    data, not test data. Only fetch what's needed to answer the question at
+    hand, extract the relevant fields when presenting results rather than
+    dumping every raw message by default, and never forward this output to
+    an external system without the user's explicit instruction to do so.
+
+    Args:
+        log_ids: One or more log IDs, comma-separated (from list_logs).
+        statement: A LEQL statement, e.g. "where(user)" or
+                   "where(result=FAILED) groupby(source_ip)".
+        time_range: A relative window, e.g. "Last 1 Day", "Today", "Last 7
+                    Days". Ignored if from_ms and to_ms are both set.
+        from_ms: Start of an explicit time window, Unix milliseconds.
+                 Use with to_ms instead of time_range for a precise range.
+        to_ms: End of an explicit time window, Unix milliseconds.
+
+    Returns:
+        Matching log events, or a note if the query is still processing
+        (rare — only for unusually large/slow queries).
+    """
+    try:
+        config = load_config()
+        ids = [i.strip() for i in log_ids.split(",") if i.strip()]
+        if not ids:
+            return "✗ log_ids must contain at least one log ID."
+
+        kwargs = {"time_range": time_range} if not (from_ms and to_ms) else {"from_ms": from_ms, "to_ms": to_ms}
+        result = idr_query_logs(config, ids, statement, **kwargs)
+
+        if _log_query_still_pending(result):
+            return (
+                f"⏳ Query still processing (id: {result.get('id', '?')}). "
+                f"This is unusual for most queries — try narrowing the time range or statement."
+            )
+
+        events = result.get("events", [])
+        return f"Found {len(events)} matching event(s):\n\n{_format_log_events(events)}"
+
+    except Exception as e:
+        return f"✗ Error querying logs: {str(e)}"
+
+
+@mcp.tool(
+    annotations=ToolAnnotations(
+        title="List Rapid7 InsightIDR Saved Queries",
+        readOnlyHint=True,
+        destructiveHint=False,
+        idempotentHint=True,
+        openWorldHint=True,
+    )
+)
+def list_saved_queries() -> str:
+    """List all saved LEQL queries for this account.
+
+    Returns:
+        Formatted list of saved queries (name, id, logs, LEQL statement).
+    """
+    try:
+        config = load_config()
+        response = idr_list_saved_queries(config)
+        queries = response.get("saved_queries", [])
+
+        if not queries:
+            return "No saved queries found."
+
+        lines = [f"Found {len(queries)} saved quer{'y' if len(queries) == 1 else 'ies'}:"]
+        for q in queries:
+            leql = q.get("leql", {})
+            lines.append(
+                f"- {q.get('name', '?')}  id: {q.get('id', '?')}\n"
+                f"  logs: {', '.join(q.get('logs', []))}\n"
+                f"  statement: {leql.get('statement', '?')}  during: {leql.get('during', {})}"
+            )
+        return "\n".join(lines)
+
+    except Exception as e:
+        return f"✗ Error listing saved queries: {str(e)}"
+
+
+@mcp.tool(
+    annotations=ToolAnnotations(
+        title="Run Rapid7 InsightIDR Saved Query",
+        readOnlyHint=True,
+        destructiveHint=False,
+        idempotentHint=True,
+        openWorldHint=True,
+    )
+)
+def run_saved_query(saved_query_id: str) -> str:
+    """Run a previously saved LEQL query and return matching events.
+
+    PRIVACY NOTE: same as query_logs — raw log events can contain real
+    personal data. Handle accordingly.
+
+    Args:
+        saved_query_id: The saved query's ID (from list_saved_queries).
+
+    Returns:
+        Matching log events, or a note if still processing.
+    """
+    try:
+        config = load_config()
+        result = idr_run_saved_query(config, saved_query_id)
+
+        if _log_query_still_pending(result):
+            return f"⏳ Query still processing (id: {result.get('id', '?')}). Try again shortly."
+
+        events = result.get("events", [])
+        return f"Found {len(events)} matching event(s):\n\n{_format_log_events(events)}"
+
+    except Exception as e:
+        return f"✗ Error running saved query: {str(e)}"
+
+
+@mcp.tool(
+    annotations=ToolAnnotations(
+        title="Create Rapid7 InsightIDR Saved Query",
+        readOnlyHint=False,
+        destructiveHint=False,
+        idempotentHint=False,
+        openWorldHint=True,
+    )
+)
+def create_saved_query(
+    name: str,
+    log_ids: str,
+    statement: str,
+    time_range: str = "Last 1 Day",
+    from_ms: int = 0,
+    to_ms: int = 0,
+    confirm: bool = False,
+) -> str:
+    """Create a saved LEQL query. WRITE operation.
+
+    SAFETY: Call this once WITHOUT confirm=True first — it previews what
+    would be created and makes no changes. Only call it again with
+    confirm=True, after the user approves, to actually create it.
+
+    Args:
+        name: A name for the saved query.
+        log_ids: One or more log IDs, comma-separated (from list_logs).
+        statement: A LEQL statement.
+        time_range: A relative window, e.g. "Last 1 Day". Ignored if
+                    from_ms and to_ms are both set.
+        from_ms: Start of an explicit time window, Unix milliseconds.
+        to_ms: End of an explicit time window, Unix milliseconds.
+        confirm: Must be True to actually create the saved query.
+
+    Returns:
+        A preview (if confirm=False), or confirmation of creation.
+    """
+    ids = [i.strip() for i in log_ids.split(",") if i.strip()]
+    if not ids:
+        return "✗ log_ids must contain at least one log ID."
+
+    if not confirm:
+        return (
+            f"⚠️ This will CREATE a saved query. No changes have been made yet.\n\n"
+            f"Name: {name}\n"
+            f"Logs: {', '.join(ids)}\n"
+            f"Statement: {statement}\n"
+            f"Time range: {time_range if not (from_ms and to_ms) else f'{from_ms} to {to_ms} (ms)'}\n\n"
+            f'To proceed, call create_saved_query(name="{name}", log_ids="{log_ids}", '
+            f'statement="{statement}", confirm=True)'
+        )
+
+    try:
+        config = load_config()
+        kwargs = {"time_range": time_range} if not (from_ms and to_ms) else {"from_ms": from_ms, "to_ms": to_ms}
+        result = idr_create_saved_query(config, name, ids, statement, **kwargs)
+        saved = result.get("saved_query", result)
+        return f"✓ Saved query created.\n\nName: {saved.get('name', name)}\nID: {saved.get('id', '?')}"
+
+    except Exception as e:
+        return f"✗ Error creating saved query: {str(e)}"
+
+
+@mcp.tool(
+    annotations=ToolAnnotations(
+        title="Delete Rapid7 InsightIDR Saved Query",
+        readOnlyHint=False,
+        destructiveHint=True,
+        idempotentHint=True,
+        openWorldHint=True,
+    )
+)
+def delete_saved_query(saved_query_id: str, confirm: bool = False) -> str:
+    """Delete a saved query. WRITE (destructive) operation.
+
+    SAFETY: Call this once WITHOUT confirm=True first — it previews the
+    saved query (if found) and makes no changes. Only call it again with
+    confirm=True, after the user approves, to actually delete it.
+
+    Args:
+        saved_query_id: The saved query's ID (from list_saved_queries).
+        confirm: Must be True to actually delete it.
+
+    Returns:
+        A preview (if confirm=False), or confirmation of deletion.
+    """
+    try:
+        config = load_config()
+
+        if not confirm:
+            existing = idr_list_saved_queries(config).get("saved_queries", [])
+            match = next((q for q in existing if q.get("id") == saved_query_id), None)
+            if match:
+                leql = match.get("leql", {})
+                preview = f"Name: {match.get('name', '?')}\nStatement: {leql.get('statement', '?')}"
+            else:
+                preview = "(Not found in the current saved queries list — double-check the ID before deleting.)"
+            return (
+                f"⚠️ This will DELETE the following saved query. No changes have been made yet.\n\n"
+                f"ID: {saved_query_id}\n{preview}\n\n"
+                f'To proceed, call delete_saved_query(saved_query_id="{saved_query_id}", confirm=True)'
+            )
+
+        idr_delete_saved_query(config, saved_query_id)
+        return f"✓ Saved query deleted.\n\nID: {saved_query_id}"
+
+    except Exception as e:
+        return f"✗ Error deleting saved query: {str(e)}"
 
 
 def main():

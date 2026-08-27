@@ -83,15 +83,23 @@ As of this version, the skill covers three MCP tools:
 | `get_investigations(status?, priorities?, assignee_email?, limit?)` | List/search investigations |
 | `get_investigation_details(investigation_id)` | Full record + associated alerts for one investigation |
 | `get_alert_evidence(alert_id)` | Raw source event behind one alert — user, IP, geolocation, service, result. Contains real personal data; see the skill's privacy note. |
+| `get_investigation_product_alerts(investigation_id)` | Alerts from OTHER Rapid7 products (Threat Command, Insight Agent) linked to this investigation — most have none |
 | `list_investigation_assignees()` | Known assignees observed in investigation history — not an exhaustive list of everyone eligible (InsightIDR has no such API). |
 | `assign_investigation(investigation_id, user_email, confirm?)` | Assign one investigation to a user — two-step confirm required, since the person is notified by email |
+| `list_investigation_comments(investigation_id, limit?)` | List comments on an investigation, newest first |
+| `add_investigation_comment(investigation_id, body)` | Add a comment — no confirm needed, it doesn't change investigation state |
 | `close_investigation(investigation_id, disposition, confirm?)` | Close one investigation — two-step confirm required |
+| `list_logs()` / `list_logsets()` | Logs and named log groupings available for search |
+| `query_logs(log_ids, statement, time_range?, from_ms?, to_ms?)` | Run a LEQL query against raw log data. Contains real personal data; see the skill's privacy note. |
+| `list_saved_queries()` / `run_saved_query(saved_query_id)` | List/run saved LEQL queries |
+| `create_saved_query(name, log_ids, statement, ..., confirm?)` | Create a saved query — two-step confirm required |
+| `delete_saved_query(saved_query_id, confirm?)` | Delete a saved query — two-step confirm required |
 
-Not yet covered by this skill: Log Search (LEQL), Detection Rules management, Comments, and setting priority/disposition without closing. These will be added here as the corresponding MCP tools are implemented.
+Not yet covered by this skill: Pre-Computed Queries, Detection Rules management, deleting/updating comment visibility, setting priority/disposition without closing, single log/logset detail lookups, and log/logset/saved-query management beyond create+delete. These will be added here as the corresponding MCP tools are implemented.
 
 ### API Reference
 
-`references/investigations-api-v2.md` and `references/investigations-api-v2.json` contain the official Rapid7 Investigations v2 OpenAPI spec — every endpoint, parameter, and enum, including ones not yet wired up as tools (create, update, search, set-priority, set-disposition, remove-alert, and more). Consult these before assuming a capability doesn't exist.
+`references/investigations-api-v2.md`/`.json` contain the official Rapid7 Investigations v2 OpenAPI spec. `references/comments-api-v1.md`/`insightidr-api-v1.json` cover Comments. `references/log-search-api.md` covers Log Search (no official spec exists for this one — built from Rapid7's blog post, Rapid7's official Postman collection, and a cross-checked community spec; see that file for details). Together these cover every endpoint, parameter, and enum this server touches, including ones not yet wired up as tools. Consult these before assuming a capability doesn't exist.
 
 The JSON copy is kept in sync with Rapid7's published spec via `make check-idr-spec` (from the repo root) — it checks weekly by default and re-downloads automatically if the spec changed (`make check-idr-spec FORCE=1` to check immediately). This is a maintainer command, run manually or on a schedule — it is not something the AI assistant runs during normal use of this skill. The condensed `.md` reference is hand-curated and is not regenerated automatically when the JSON updates.
 
@@ -128,6 +136,27 @@ You: #rapid7-insightidr Who authenticated and from where in this alert?
 AI: [calls get_alert_evidence on the alert id from get_investigation_details,
      then reports the relevant fields — user, source IP, location, service,
      result — rather than dumping the full raw event]
+```
+
+### Searching log data
+
+```
+You: #rapid7-insightidr Did user.name have any failed logins in the O365 logs this week?
+
+AI: [calls list_logs to find the O365 log_id, then query_logs with a
+     where(...) statement and time_range="Last 7 Days", then reports the
+     relevant fields from matching events — not the full raw payload]
+```
+
+### Adding a comment
+
+```
+You: #rapid7-insightidr Add a comment: "Confirmed with the user, this login is expected."
+
+AI: ✓ Comment added.
+    Investigation: rrn:investigation:...
+    Visibility: INTERNAL
+    Body: Confirmed with the user, this login is expected.
 ```
 
 ### Assigning an investigation (safety flow)

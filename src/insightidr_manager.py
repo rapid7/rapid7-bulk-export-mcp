@@ -5,7 +5,7 @@ Business logic for listing, retrieving, and closing InsightIDR
 investigations, built on top of the REST transport in insightidr_client.py.
 
 API reference: docs.rapid7.com/insightidr/insightidr-rest-api/
-(Investigations v2 — preview).
+(Investigations v2 — preview; Comments v1 — stable).
 
 Author: rozumeyroman@gmail.com
 """
@@ -16,8 +16,10 @@ from .insightidr_client import INVESTIGATIONS_ACCEPT_VERSION, send_idr_request
 
 VALID_STATUSES = ("OPEN", "INVESTIGATING", "WAITING", "CLOSED")
 VALID_DISPOSITIONS = ("BENIGN", "MALICIOUS", "NOT_APPLICABLE")
+VALID_COMMENT_VISIBILITIES = ("INTERNAL", "PUBLIC")
 
 _INVESTIGATIONS_PATH = "/idr/v2/investigations"
+_COMMENTS_PATH = "/idr/v1/comments"
 
 
 def list_investigations(
@@ -201,5 +203,85 @@ def close_investigation(config: Dict[str, str], investigation_id: str, dispositi
         f"{_INVESTIGATIONS_PATH}/{investigation_id}/status/CLOSED",
         config["api_key"],
         json_body={"disposition": disposition},
+        accept_version=INVESTIGATIONS_ACCEPT_VERSION,
+    )
+
+
+def list_comments(
+    config: Dict[str, str],
+    target_rrn: str,
+    size: int = 20,
+    index: int = 0,
+    sort_direction: str = "DESC",
+) -> Dict[str, Any]:
+    """List comments on a target resource (e.g. an investigation), newest first by default.
+
+    The Comments API is stable v1 — unlike Investigations v2, no
+    Accept-version header is required.
+
+    Args:
+        config: Config dict from load_config() (needs api_key, idr_base).
+        target_rrn: The RRN of the resource comments are attached to (e.g.
+            an investigation's rrn — use the full rrn from
+            list_investigations/get_investigation, not a short id; the
+            Comments API's `target` param is documented as an RRN).
+        size: Page size, 1-100.
+        index: 0-based page index.
+        sort_direction: "ASC" or "DESC" by creation time.
+
+    Returns:
+        The raw API response: {"data": [...], "metadata": {...}}.
+    """
+    params = {"target": target_rrn, "size": size, "index": index, "sortDirection": sort_direction}
+    return send_idr_request(
+        "GET",
+        config["idr_base"],
+        _COMMENTS_PATH,
+        config["api_key"],
+        params=params,
+    )
+
+
+def create_comment(config: Dict[str, str], target_rrn: str, body: str) -> Dict[str, Any]:
+    """Create a comment on a target resource (e.g. an investigation).
+
+    Args:
+        config: Config dict from load_config() (needs api_key, idr_base).
+        target_rrn: The RRN of the resource to comment on (same caveat as
+            list_comments — use the full rrn, not a short id).
+        body: The comment text.
+
+    Returns:
+        The created Comment record, including its assigned rrn and
+        default visibility (visibility is set by the API on creation —
+        there is no way to specify it in this call; use a separate
+        visibility-update call if this server adds one later).
+    """
+    return send_idr_request(
+        "POST",
+        config["idr_base"],
+        _COMMENTS_PATH,
+        config["api_key"],
+        json_body={"target": target_rrn, "body": body},
+    )
+
+
+def list_investigation_product_alerts(config: Dict[str, str], investigation_id: str) -> List[Dict[str, Any]]:
+    """List alerts from OTHER Rapid7 products (not InsightIDR itself) linked to this investigation.
+
+    E.g. Threat Command (external threat intel) or Insight Agent (endpoint)
+    alerts, if the org has an active license for those products and this
+    investigation originated from or is linked to one of their alerts.
+    Separate from list_investigation_alerts, which only covers InsightIDR's
+    own alerts.
+
+    Returns an empty list if no product alerts are linked — that's a
+    normal, expected result for most investigations, not an error.
+    """
+    return send_idr_request(
+        "GET",
+        config["idr_base"],
+        f"{_INVESTIGATIONS_PATH}/{investigation_id}/rapid7-product-alerts",
+        config["api_key"],
         accept_version=INVESTIGATIONS_ACCEPT_VERSION,
     )

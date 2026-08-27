@@ -1,7 +1,7 @@
 ---
 name: Rapid7 InsightIDR Investigations Expert
-description: Expert guidance for triaging, reviewing, assigning, and closing Rapid7 InsightIDR investigations via the Command Platform REST API (v2, preview)
-version: 0.2.0
+description: Expert guidance for triaging, reviewing, commenting on, assigning, and closing Rapid7 InsightIDR investigations, plus searching raw log data (LEQL), via the Command Platform REST API
+version: 0.5.0
 author: rozumeyroman@gmail.com
 tags: [security, siem, xdr, rapid7, insightidr, investigations, incident-response]
 ---
@@ -13,9 +13,10 @@ tags: [security, siem, xdr, rapid7, insightidr, investigations, incident-respons
 2. This skill covers **InsightIDR Investigations** — a different Rapid7 product from Bulk Export/InsightVM. It reads/writes live SIEM state, not exported snapshot data.
 3. **Never close or assign an investigation without first previewing it and confirming with the user.** See "Closing Investigations — MANDATORY SAFETY FLOW" and "Assigning Investigations — SAFETY FLOW" below.
 4. The underlying API (`/idr/v2/investigations`) is in **preview mode** — behavior may change without notice. Treat unexpected fields or errors as a signal to re-check the current API response shape, not as a bug to silently work around.
-5. **Alert evidence contains real personal data.** `get_alert_evidence` can return a real employee's name, email, IP address, and device details. See "Alert Evidence — PRIVACY" below before using it.
+5. **Alert evidence and raw log events contain real personal data.** `get_alert_evidence`, `query_logs`, and `run_saved_query` can all return a real employee's name, email, IP address, and other personal details. See "Alert Evidence — PRIVACY" and "Log Search" below before using them.
 6. **There is no API to list everyone eligible to be assigned an investigation.** `list_investigation_assignees` only shows people assigned before — see "Assigning Investigations" below for how to handle someone not on that list.
-7. **Before assuming an endpoint, parameter, or enum value doesn't exist (or guessing one), check `references/investigations-api-v2.md` and `references/investigations-api-v2.json` in this skill's directory** — the official Rapid7 OpenAPI spec. It already caught one real bug in this codebase (a silently-ignored filter param). Guessing instead of checking is how that bug happened.
+7. **Before assuming an endpoint, parameter, or enum value doesn't exist (or guessing one), check the files in `references/`** in this skill's directory — `investigations-api-v2.md`/`.json` (official spec), `comments-api-v1.md`/`insightidr-api-v1.json`, and `log-search-api.md`. This already caught one real bug in this codebase (a silently-ignored filter param). Guessing instead of checking is how that bug happened.
+8. **Never create or delete a saved query without preview/confirm**, same as closing or assigning an investigation. See "Log Search — Saved Queries" below.
 
 ## Prerequisites — MANDATORY
 
@@ -24,21 +25,33 @@ This skill ONLY works with the Rapid7 MCP server's InsightIDR tools:
 - `get_investigations(status?, priorities?, assignee_email?, sources?, tags?, limit?)` — list/search investigations
 - `get_investigation_details(investigation_id)` — full record + associated alerts for one investigation
 - `get_alert_evidence(alert_id)` — raw source event behind one alert (user, IP, geolocation, service, result — see privacy note below)
+- `get_investigation_product_alerts(investigation_id)` — alerts from OTHER Rapid7 products (Threat Command, Insight Agent) linked to this investigation; most investigations have none, which is normal
 - `list_investigation_assignees()` — known assignees observed in investigation history (not exhaustive — see "Assigning Investigations" below)
 - `assign_investigation(investigation_id, user_email, confirm?)` — assign one investigation to a user (two-step confirm)
+- `list_investigation_comments(investigation_id, limit?)` — list comments on an investigation, newest first
+- `add_investigation_comment(investigation_id, body)` — add a comment (no confirm needed — see "Comments" below for why)
 - `close_investigation(investigation_id, disposition, confirm?)` — close one investigation (two-step confirm)
+- `list_logs()` / `list_logsets()` — logs and named log groupings available for search
+- `query_logs(log_ids, statement, time_range?, from_ms?, to_ms?)` — run a LEQL query against raw log data (see "Log Search" below — privacy note applies)
+- `list_saved_queries()` / `run_saved_query(saved_query_id)` — list/run saved LEQL queries
+- `create_saved_query(name, log_ids, statement, ..., confirm?)` / `delete_saved_query(saved_query_id, confirm?)` — write, two-step confirm
 
 If these tools are not available, STOP and tell the user: "The Rapid7 MCP server's InsightIDR tools are not configured or not connected." Do not attempt to fetch investigation data any other way.
 
 ## API Reference — check before searching or guessing
 
-`references/investigations-api-v2.md` (condensed) and `references/investigations-api-v2.json` (the full official OpenAPI spec, verbatim) live in this skill's directory. They cover every endpoint, parameter, and enum in the Investigations v2 API — including several this server doesn't implement yet:
+`references/investigations-api-v2.md` (condensed) and `references/investigations-api-v2.json` (the full official OpenAPI spec, verbatim), plus `references/comments-api-v1.md`/`references/insightidr-api-v1.json` for Comments, and `references/log-search-api.md` for Log Search, live in this skill's directory. They cover every endpoint, parameter, and enum this server touches — including several not implemented yet:
 
-- `createInvestigation` (POST), `updateInvestigation` (PATCH — can set title/status/priority/disposition/assignee in one call), `setPriority`, `setDisposition` (single-field versions of what `close_investigation` does for status), `_search` (richer filtering than list, including free-text `title` CONTAINS search), `removeAlertFromInvestigation`, `getInvestigationRapid7ProductAlertInfo` (alerts from other Rapid7 products tied to an investigation, e.g. Threat Command).
+- `createInvestigation` (POST), `updateInvestigation` (PATCH — can set title/status/priority/disposition/assignee in one call), `setPriority`, `setDisposition` (single-field versions of what `close_investigation` does for status), `_search` (richer filtering than list, including free-text `title` CONTAINS search), `removeAlertFromInvestigation`.
+- Log Search: single-log/logset detail lookups, log/logset create/rename/delete, saved query update-in-place — see `log-search-api.md`'s "Not implemented this iteration" section for the reasoning behind each.
+
+**Note on `log-search-api.md`**: unlike the Investigations spec, no official OpenAPI JSON exists for Log Search — this reference was built from three cross-checked sources (an official Rapid7 blog post, Rapid7's official Postman collection, and a community-scraped spec used only for path names, verified live) and confirmed against the real API. Treat it as solid but not "verbatim spec" the way `investigations-api-v2.json` is.
 
 If a user asks for something that sounds like it needs a new capability (reassigning + reprioritizing in one step, free-text search by title, unlinking a bad alert from an investigation), check the reference first — it may already be a known, documented endpoint just not wired up as a tool yet, which is a very different conversation than "does this API even support that."
 
 **Keeping the reference current**: `references/.spec-meta.json` tracks when the spec was last checked against Rapid7's published copy and its content hash. `make check-idr-spec` (run from the repo root, not something this skill's chat-facing tools expose) checks weekly and re-downloads `investigations-api-v2.json` automatically if it changed — `make check-idr-spec FORCE=1` bypasses the weekly gate. This is a maintainer/dev-workflow command, not something to run as part of triaging an investigation. If `investigations-api-v2.json` is ever updated by that command, `investigations-api-v2.md` (the condensed table) is NOT auto-regenerated — it needs a manual review to stay accurate.
+
+**Note**: `check-idr-spec` currently only covers the v2 Investigations spec. `insightidr-api-v1.json`/`comments-api-v1.md` were fetched once by hand and are NOT auto-checked for staleness — if Comments behavior seems off, verify against a fresh fetch of `help.rapid7.com/insightidr/en-us/api/v1/insightidr-api-v1.json` rather than assuming the bundled copy is current.
 
 ## Data Source
 
@@ -46,6 +59,7 @@ If a user asks for something that sounds like it needs a new capability (reassig
 - **Scope**: Live, current state of your organization's SIEM — not historical exports. There is no local database; every call hits the Rapid7 API directly.
 - **Investigation**: A grouping of one or more related alerts that Rapid7 (or a detection rule) has determined represent a single security event worth reviewing.
 - **Alert**: The underlying evidence — a specific detection (e.g. "Suspicious Authentication") tied to a detection rule and a timestamp. `get_investigation_details` returns the alerts associated with an investigation.
+- **Product alert**: A DIFFERENT thing from the above — an alert from another Rapid7 product (Threat Command, Insight Agent) that this investigation is linked to, if the org has that product licensed. `get_investigation_product_alerts` covers these; `get_investigation_details`'s alert list does not. Most investigations have zero product alerts — don't call this reflexively for every investigation, only when the user's question suggests a cross-product link (e.g. an endpoint/agent action, or an external threat intel match) or when `source` on the investigation itself hints at it.
 
 ### Status values
 | Status | Meaning |
@@ -109,6 +123,49 @@ Assigning an investigation is a **write operation on live SIEM data** — the as
 3. Ask the user for the exact email if it's not already in the conversation — do not guess at an email format (e.g. don't assume `firstname.lastname@company.com`) or infer one from a name alone.
 4. Just call `assign_investigation` with the email — the API validates eligibility itself (400/403/404 for an invalid or ineligible email) and its error message is the authoritative answer, more reliable than trying to pre-check.
 
+## Log Search
+
+A genuinely separate API family from Investigations/Comments (different path prefix `/log_search`, no `Accept-version` header, async/pollable queries). See `references/log-search-api.md` for full endpoint details.
+
+**Basic flow**:
+```
+list_logs() → find the log_id(s) relevant to the question (e.g. "O365", "Windows Event Log")
+query_logs(log_ids="<id>", statement="<LEQL>", time_range="Last 7 Days")
+  → returns matching events, or a "still processing" note for unusually large queries
+```
+
+**LEQL basics**: a query statement like `where(user)`, `where(result=FAILED) groupby(source_ip)`, `calculate(count) timeslice(1h)`. This skill does not attempt to teach LEQL syntax in depth — if unsure, start narrow (`where(...)` on a specific field) and widen only if needed, rather than guessing a complex statement. `time_range` accepts relative windows like `"Today"`, `"Last 1 Day"`, `"Last 7 Days"`; use `from_ms`/`to_ms` (Unix milliseconds) instead for a precise window.
+
+**To match every event with no filter, use `statement=""` (empty string) — NOT `where()`.** `where()` with empty parentheses is invalid LEQL and the API rejects it with `400 "Invalid Query Syntax"`; confirmed live. An empty statement string is the correct way to request all raw events in the window unfiltered.
+
+**PRIVACY — same treatment as `get_alert_evidence`**: `query_logs` and `run_saved_query` return raw log content that can include real personal data (this was confirmed live against this org's actual authentication logs — usernames, emails, source IPs, actions like password resets). Only fetch what's needed, extract relevant fields when presenting results instead of dumping every raw event by default, and never forward this output externally without the user's explicit instruction.
+
+**Async queries**: most queries resolve immediately. If `query_logs`/`run_saved_query` reports "still processing," that's unusual — consider narrowing the time range or statement rather than just retrying the same query, since retrying creates a brand-new query rather than resuming the pending one.
+
+### Log Search — Saved Queries (SAFETY FLOW)
+
+`create_saved_query` and `delete_saved_query` are write operations and follow the same mandatory two-step pattern as closing/assigning an investigation:
+
+```
+1. Call without confirm=True — previews what will be created/deleted, makes no changes
+2. WAIT for explicit user approval
+3. Only then call again with confirm=True
+```
+
+`list_saved_queries`/`run_saved_query` are read-only, no confirm needed.
+
+## Comments
+
+Comments are the one write action in this skill that does NOT require a preview/confirm step. Rationale: unlike closing or assigning, adding a comment doesn't change the investigation's status, priority, disposition, or who's responsible for it — it's an additive note, visible and removable by an analyst in the InsightIDR UI, not a state transition with downstream effects (no notification email is sent, unlike assignment).
+
+This is a narrower exception, not a precedent for skipping confirmation elsewhere — don't generalize "this write op is low-risk enough to skip confirm" to other actions without the same reasoning holding up.
+
+**Still be deliberate about content**: only post a comment the user actually asked for, or clearly wants recorded (e.g. "note that I checked with the user and this is expected"). Don't narrate your own tool calls or routine analysis into the investigation's comment thread unprompted — a comment is a permanent-ish record other analysts will read, not a scratchpad.
+
+**Visibility is not controllable at creation** — the API sets it (see `references/comments-api-v1.md`); there's no `visibility` parameter on `add_investigation_comment`. If a user needs a specific visibility, that requires a separate `updateComment` call this server doesn't implement yet.
+
+**Finding the right `investigation_id`**: `list_comments`/`create_comment` use the investigation's RRN as `target` — pass the full `rrn` from `get_investigations`/`get_investigation_details`, not a short id (documented as an RRN in the API, unlike several Investigations v2 endpoints that accept either).
+
 ## Closing Investigations — MANDATORY SAFETY FLOW
 
 Closing an investigation is a **write operation on live SIEM data** with no local undo. Always follow this exact two-step sequence:
@@ -132,6 +189,8 @@ Closing an investigation is a **write operation on live SIEM data** with no loca
 If `close_investigation` reports the investigation is already `CLOSED`, that's informational, not an error — no action was taken and none is needed.
 
 **Choosing a disposition**: base it on the alert evidence from `get_investigation_details`, not on the investigation title alone. If the evidence is genuinely ambiguous, say so and ask the user rather than guessing between `BENIGN` and `NOT_APPLICABLE`.
+
+**Threat Command-linked investigations**: check `get_investigation_product_alerts` first if the investigation might be Threat Command-linked — it lists `applicable_close_reasons` (e.g. `ProblemSolved`, `FalsePositive`). `close_investigation` does NOT currently forward a Threat Command close reason to the API (a known gap — see `references/investigations-api-v2.md`); mention this limitation to the user rather than silently ignoring a close reason they explicitly want recorded.
 
 ## Common Analysis Patterns
 
@@ -176,6 +235,38 @@ After user approves the batch:
   Report a running tally: closed X of Y so far
 ```
 
+### Checking for cross-product context
+```
+get_investigation_details(id) → note the source field and title
+get_investigation_product_alerts(id) → if non-empty, this investigation
+  ties to Threat Command or Insight Agent — surface that context (e.g.
+  applicable_close_reasons) before recommending a disposition or closing
+```
+
+### Recording a finding before closing
+```
+get_investigation_details(id) → analyze evidence, reach a conclusion
+add_investigation_comment(id, "<summary of the finding and why>")
+  → no confirm needed, but only if the user wants this recorded
+close_investigation(id, disposition) → normal preview/confirm flow
+```
+
+### Corroborating alert evidence with raw log data
+```
+get_alert_evidence(alert_id) → note the log_id/source implied by the evidence
+list_logs() → confirm the exact log_id to search
+query_logs(log_ids="<id>", statement="where(<relevant field>)", time_range="Last 7 Days")
+  → look for related activity around the same time/user/IP the alert flagged
+```
+
+### Reusing a recurring investigative query
+```
+list_saved_queries() → check if a relevant query already exists
+run_saved_query(id) if found, else query_logs(...) directly
+If the user wants to reuse this query regularly:
+  create_saved_query(name, log_ids, statement, ...) → preview → confirm=True
+```
+
 ## Known Alert Patterns
 
 Documented patterns save re-deriving the same analysis from scratch each time. Each entry below is a recognition signature + a short recommendation — the goal is to reach a conclusion in one pass instead of reasoning through the underlying mechanism again. **A documented pattern is a starting hypothesis, not a verdict** — it tells you what to check and what to say, never a reason to skip `close_investigation`'s preview/confirm flow or to close anything without the user's explicit go-ahead. This applies with extra weight for organizations other than the one this pattern was first observed in — a "usually benign" signature here can be a real incident somewhere else with different infrastructure norms.
@@ -206,7 +297,7 @@ Documented patterns save re-deriving the same analysis from scratch each time. E
 
 ## Error Handling
 
-If `get_investigations`/`get_investigation_details`/`get_alert_evidence`/`list_investigation_assignees`/`assign_investigation`/`close_investigation` are not available:
+If `get_investigations`/`get_investigation_details`/`get_alert_evidence`/`get_investigation_product_alerts`/`list_investigation_assignees`/`assign_investigation`/`list_investigation_comments`/`add_investigation_comment`/`close_investigation`/`list_logs`/`list_logsets`/`query_logs`/`list_saved_queries`/`run_saved_query`/`create_saved_query`/`delete_saved_query` are not available:
 1. STOP immediately
 2. Tell the user: "InsightIDR tools are not configured in this MCP connection."
 3. DO NOT attempt to fabricate investigation data or guess at API responses
@@ -220,10 +311,26 @@ If `assign_investigation` returns an error (400/403/404):
 1. Show the raw error to the user — do not retry with a guessed alternate email
 2. Most likely cause: the email is not a platform admin, product admin, or read/write InsightIDR/InsightUBA user — ask the user to confirm the person's exact platform login email and role, rather than trying nearby spellings
 
+If `get_investigation_product_alerts` returns zero results:
+1. That's the normal case for most investigations — do not treat it as an error or retry
+2. Only worth investigating further if the user specifically expected a Threat Command/Insight Agent link and it's missing
+
+If `add_investigation_comment`/`list_investigation_comments` returns an error:
+1. Show the raw error to the user
+2. Most likely cause: `investigation_id` is a short id rather than the full RRN — the Comments API's `target` param requires the RRN. Re-fetch with `get_investigations` and use its `rrn` field, don't guess an RRN format
+
 If `get_investigations` returns zero results:
 1. Check whether filters are too narrow (e.g. wrong `status` value, `assignee_email` typo)
 2. Retry with no filters to confirm the connection itself is working
 3. Zero open investigations is a valid, good outcome — don't assume it's an error
+
+If `query_logs`/`run_saved_query` reports "still processing" after the internal poll window:
+1. This is unusual for typical queries — mention it to the user rather than silently retrying in a loop
+2. Consider narrowing the time range or statement; a fresh call starts a new query, it does not resume the pending one
+
+If `create_saved_query` fails with a JSON mapping error:
+1. Check that at least one `log_id` is valid (from `list_logs`) and the LEQL `statement` is well-formed
+2. See `references/log-search-api.md` for the confirmed request shape — the error message itself won't explain what's wrong
 
 ## Tips for Analysis
 
