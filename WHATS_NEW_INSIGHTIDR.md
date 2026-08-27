@@ -1,4 +1,6 @@
-# Що нового / What's New
+# Що нового: інтеграція з InsightIDR / What's New: InsightIDR Integration
+
+*Цей файл відстежує зміни, повʼязані саме з розширенням сервера підтримкою Rapid7 InsightIDR — новий функціонал, а не форк в цілому. / This file tracks changes specific to the server's InsightIDR extension — the new functionality, not the fork as a whole.*
 
 ## Про проєкт / About the Project
 
@@ -49,3 +51,16 @@
 | Авторство (`rozumeyroman@gmail.com`) вказано в `SKILL.md` та в докстрінгах нових файлів: `src/insightidr_client.py`, `src/insightidr_manager.py`, `tests/test_insightidr_client.py`, `tests/test_insightidr_manager.py`. | Authorship (`rozumeyroman@gmail.com`) noted in `SKILL.md` and in the docstrings of the new files: `src/insightidr_client.py`, `src/insightidr_manager.py`, `tests/test_insightidr_client.py`, `tests/test_insightidr_manager.py`. |
 | Новий файл `rapid7-insightidr-skill/README.md` — за аналогією з README InsightVM-скіла: як встановити/використати скіл, приклади, обмеження. Явно перелічує, які MCP tools вже покриті (3), а які ще ні (Log Search, Detection Rules, Comments, assign/priority без закриття) — щоб документація не забігала наперед реалізації. | New file `rapid7-insightidr-skill/README.md` — modeled on the InsightVM skill's README: how to install/use the skill, examples, limitations. Explicitly lists which MCP tools are already covered (3) and which are not yet (Log Search, Detection Rules, Comments, assign/priority without closing) — so the documentation doesn't get ahead of the implementation. |
 | Локальна тестова інфраструктура (не комітиться, у `.gitignore`): `.mcp.json` (MCP-конфіг для Claude Code) та `.claude/skills/` (встановлені скіли для цієї сесії). | Local test infrastructure (not committed, in `.gitignore`): `.mcp.json` (MCP config for Claude Code) and `.claude/skills/` (skills installed for this session). |
+
+### 2026-08-27 — Деталізація подій: новий інструмент `get_alert_evidence` / Event-level detail: new `get_alert_evidence` tool
+
+| Українською | English |
+|---|---|
+| Після тестування в Claude Desktop виявилось, що `get_investigation_details` повертає лише метадані алертів (тип, час, detection rule) — без IP, користувача чи результату автентифікації. | Testing in Claude Desktop showed that `get_investigation_details` only returns alert metadata (type, timestamp, detection rule) — no IP, user, or authentication result. |
+| Досліджено й експериментально перевірено (одним безпечним GET-запитом з реальними даними) окремий ендпоінт alert-triage API: `GET /idr/at/alerts/{alert_rrn}/evidences` — інший шлях (`/idr/at/`), відмінний від Investigations v2 (`/idr/v2/`). | Researched and experimentally verified (one safe GET request against real data) a separate alert-triage API endpoint: `GET /idr/at/alerts/{alert_rrn}/evidences` — a different path (`/idr/at/`) from Investigations v2 (`/idr/v2/`). |
+| Спільнота Rapid7 повідомляє, що ця частина API "недорозвинена" і для деяких org потребує окремого увімкнення від підтримки Rapid7 ("restricted evidence") — у нашому org це спрацювало без додаткового звернення. | Rapid7's own community reports this part of the API is "underdeveloped" and for some orgs requires separate enablement from Rapid7 support ("restricted evidence") — in our org it worked without any such request. |
+| `src/insightidr_manager.py`: новий `get_alert_evidence(config, alert_id)`. | `src/insightidr_manager.py`: new `get_alert_evidence(config, alert_id)`. |
+| Новий MCP-інструмент `get_alert_evidence(alert_id)` — повертає джерело події (user/account, source IP, геолокацію, сервіс, результат) для конкретного alert. | New MCP tool `get_alert_evidence(alert_id)` — returns the source event (user/account, source IP, geolocation, service, result) for a specific alert. |
+| **Важливо**: цей виклик повертає реальні персональні дані співробітника (ім'я, email, IP, дані пристрою) — не тестові дані. Додано явне попередження в docstring інструменту та окремий розділ "PRIVACY" у SKILL.md з правилами поводження з такими даними. | **Important**: this call returns a real employee's personal data (name, email, IP, device info) — not test data. Added an explicit warning in the tool's docstring and a dedicated "PRIVACY" section in SKILL.md with rules for handling such data. |
+| Тест: `tests/test_insightidr_manager.py::TestGetAlertEvidence`. `make lint`, `make security`, `make test` — усі чисті. | Test: `tests/test_insightidr_manager.py::TestGetAlertEvidence`. `make lint`, `make security`, `make test` — all clean. |
+| Оновлено `rapid7-insightidr-skill/SKILL.md` і `README.md`: новий інструмент у списку, приклад використання, розділ про приватність даних. | Updated `rapid7-insightidr-skill/SKILL.md` and `README.md`: new tool listed, usage example, data-privacy section. |

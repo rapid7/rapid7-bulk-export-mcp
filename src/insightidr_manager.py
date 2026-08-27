@@ -84,6 +84,32 @@ def list_investigation_alerts(
     )
 
 
+def get_alert_evidence(config: Dict[str, str], alert_id: str, size: int = 20, index: int = 0) -> Dict[str, Any]:
+    """Get the underlying event evidence for a single alert.
+
+    This is the source event data that triggered the alert — e.g. for an
+    authentication alert: user, account, source IP, geolocation, and the
+    raw log payload. Uses the alert-triage API
+    (docs.rapid7.com/insightidr/api/alert-triage/), a different Command
+    Platform path (/idr/at/) from the Investigations v2 API.
+
+    Args:
+        config: Config dict from load_config() (needs api_key, idr_base).
+        alert_id: The alert ID/RRN, as returned in the "data" list from
+            list_investigation_alerts.
+        size: Page size.
+        index: 0-based page index.
+    """
+    return send_idr_request(
+        "GET",
+        config["idr_base"],
+        f"/idr/at/alerts/{alert_id}/evidences",
+        config["api_key"],
+        params={"size": size, "index": index},
+        accept_version=INVESTIGATIONS_ACCEPT_VERSION,
+    )
+
+
 def close_investigation(config: Dict[str, str], investigation_id: str, disposition: str) -> Dict[str, Any]:
     """Close a single investigation by ID, setting its disposition.
 

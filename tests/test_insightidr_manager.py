@@ -16,6 +16,7 @@ import responses
 from src.insightidr_manager import (
     VALID_DISPOSITIONS,
     close_investigation,
+    get_alert_evidence,
     get_investigation,
     list_investigation_alerts,
     list_investigations,
@@ -115,6 +116,32 @@ class TestListInvestigationAlerts:
         assert result["data"] == [{"id": "alert-1"}]
         request_url = responses.calls[0].request.url
         assert "/investigations/inv-1/alerts" in request_url
+        assert "size=20" in request_url
+        assert "index=0" in request_url
+        assert responses.calls[0].request.headers["Accept-version"] == "investigations-preview"
+
+
+class TestGetAlertEvidence:
+    @responses.activate
+    def test_fetches_evidence_for_alert(self):
+        alert_id = "rrn:alerts:eu:org:alert:1:abc123"
+        responses.add(
+            responses.GET,
+            f"{CONFIG['idr_base']}/idr/at/alerts/{alert_id}/evidences",
+            json={
+                "evidences": [
+                    {"event_type": "ingress_auth", "external_source": "IDR ABA", "data": '{"source_ip": "1.2.3.4"}'}
+                ],
+                "metadata": {"total_items": 1},
+            },
+            status=200,
+        )
+
+        result = get_alert_evidence(CONFIG, alert_id)
+
+        assert result["evidences"][0]["event_type"] == "ingress_auth"
+        request_url = responses.calls[0].request.url
+        assert f"/idr/at/alerts/{alert_id}/evidences" in request_url
         assert "size=20" in request_url
         assert "index=0" in request_url
         assert responses.calls[0].request.headers["Accept-version"] == "investigations-preview"

@@ -39,6 +39,9 @@ from .insightidr_manager import (
     close_investigation as idr_close_investigation,
 )
 from .insightidr_manager import (
+    get_alert_evidence as idr_get_alert_evidence,
+)
+from .insightidr_manager import (
     get_investigation as idr_get_investigation,
 )
 from .insightidr_manager import (
@@ -858,6 +861,63 @@ def get_investigation_details(investigation_id: str) -> str:
 
     except Exception as e:
         return f"✗ Error getting investigation details: {str(e)}"
+
+
+@mcp.tool(
+    annotations=ToolAnnotations(
+        title="Get Rapid7 InsightIDR Alert Evidence",
+        readOnlyHint=True,
+        destructiveHint=False,
+        idempotentHint=True,
+        openWorldHint=True,
+    )
+)
+def get_alert_evidence(alert_id: str) -> str:
+    """Get the raw event evidence (source data) behind a specific InsightIDR alert.
+
+    Use this after get_investigation_details when you need event-level
+    detail (source IP, user/account, geolocation, service, result) that
+    the investigation/alert summary doesn't include.
+
+    PRIVACY NOTE: This can return personal data tied to a real person in
+    the organization (name, email, IP address, device info) if the alert
+    involves a user action such as authentication. Treat it accordingly —
+    it is sensitive organizational data, not test data.
+
+    Args:
+        alert_id: The alert ID/RRN, from the "Associated alerts" section
+                  of get_investigation_details.
+
+    Returns:
+        Evidence records for the alert: event type, timestamp, and the
+        parsed source event payload.
+    """
+    try:
+        config = load_config()
+        response = idr_get_alert_evidence(config, alert_id)
+        evidences = response.get("evidences", [])
+
+        if not evidences:
+            return f"No evidence found for alert: {alert_id}"
+
+        sections = [f"Found {len(evidences)} evidence record(s) for alert {alert_id}:"]
+        for ev in evidences:
+            sections.append(
+                f"\n- event_type: {ev.get('event_type', '?')}  source: {ev.get('external_source', '?')}"
+                f"\n  evented_at: {ev.get('evented_at', '?')}"
+            )
+            raw_data = ev.get("data")
+            if raw_data:
+                try:
+                    parsed = json.loads(raw_data) if isinstance(raw_data, str) else raw_data
+                    sections.append(f"  event data:\n{json.dumps(parsed, indent=2, ensure_ascii=False, default=str)}")
+                except (TypeError, ValueError):
+                    sections.append(f"  event data (raw): {raw_data}")
+
+        return "\n".join(sections)
+
+    except Exception as e:
+        return f"✗ Error getting alert evidence: {str(e)}"
 
 
 @mcp.tool(

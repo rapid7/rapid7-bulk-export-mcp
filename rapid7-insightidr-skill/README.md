@@ -82,6 +82,7 @@ As of this version, the skill covers three MCP tools:
 |---|---|
 | `get_investigations(status?, priorities?, assignee_email?, limit?)` | List/search investigations |
 | `get_investigation_details(investigation_id)` | Full record + associated alerts for one investigation |
+| `get_alert_evidence(alert_id)` | Raw source event behind one alert — user, IP, geolocation, service, result. Contains real personal data; see the skill's privacy note. |
 | `close_investigation(investigation_id, disposition, confirm?)` | Close one investigation — two-step confirm required |
 
 Not yet covered by this skill: Log Search (LEQL), Detection Rules management, Comments, assigning investigations to a user, and setting priority/disposition without closing. These will be added here as the corresponding MCP tools are implemented.
@@ -107,6 +108,16 @@ You: #rapid7-insightidr Give me full details on investigation <id>
 
 AI: [returns the full investigation record and its associated alerts —
      detection rule, alert source, timestamps]
+```
+
+### Getting event-level detail on an alert
+
+```
+You: #rapid7-insightidr Who authenticated and from where in this alert?
+
+AI: [calls get_alert_evidence on the alert id from get_investigation_details,
+     then reports the relevant fields — user, source IP, location, service,
+     result — rather than dumping the full raw event]
 ```
 
 ### Closing an investigation (safety flow)

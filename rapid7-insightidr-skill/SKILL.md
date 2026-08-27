@@ -13,6 +13,7 @@ tags: [security, siem, xdr, rapid7, insightidr, investigations, incident-respons
 2. This skill covers **InsightIDR Investigations** — a different Rapid7 product from Bulk Export/InsightVM. It reads/writes live SIEM state, not exported snapshot data.
 3. **Never close an investigation without first previewing it and confirming with the user.** See "Closing Investigations — MANDATORY SAFETY FLOW" below.
 4. The underlying API (`/idr/v2/investigations`) is in **preview mode** — behavior may change without notice. Treat unexpected fields or errors as a signal to re-check the current API response shape, not as a bug to silently work around.
+5. **Alert evidence contains real personal data.** `get_alert_evidence` can return a real employee's name, email, IP address, and device details. See "Alert Evidence — PRIVACY" below before using it.
 
 ## Prerequisites — MANDATORY
 
@@ -20,6 +21,7 @@ This skill ONLY works with the Rapid7 MCP server's InsightIDR tools:
 
 - `get_investigations(status?, priorities?, assignee_email?, limit?)` — list/search investigations
 - `get_investigation_details(investigation_id)` — full record + associated alerts for one investigation
+- `get_alert_evidence(alert_id)` — raw source event behind one alert (user, IP, geolocation, service, result — see privacy note below)
 - `close_investigation(investigation_id, disposition, confirm?)` — close one investigation (two-step confirm)
 
 If these tools are not available, STOP and tell the user: "The Rapid7 MCP server's InsightIDR tools are not configured or not connected." Do not attempt to fetch investigation data any other way.
@@ -53,8 +55,24 @@ If these tools are not available, STOP and tell the user: "The Rapid7 MCP server
 
 1. **Start broad, then narrow.** Call `get_investigations()` with no filters first to see the current landscape, or filter immediately if the user has a clear ask (e.g. `status="OPEN"`, `priorities="CRITICAL,HIGH"`).
 2. **Summarize before diving in.** Group by status/priority and tell the user the shape of what's open before pulling full details on any one investigation — don't dump 20 investigations' full JSON unprompted.
-3. **Drill into specifics with `get_investigation_details`.** Use this when the user asks about one particular investigation, or when triaging a small shortlist (e.g. all CRITICAL + OPEN). It returns the full investigation record plus associated alerts — the alerts are the actual evidence (detection rule, alert type, source, timestamps).
-4. **Interpret `null` fields as API gaps, not analysis failures.** Fields like `first_alert_time`/`latest_alert_time`/`assignee` are frequently `null` in the current preview API even for real investigations — don't over-interpret their absence as meaningful, and don't guess values to fill them in.
+3. **Drill into specifics with `get_investigation_details`.** Use this when the user asks about one particular investigation, or when triaging a small shortlist (e.g. all CRITICAL + OPEN). It returns the full investigation record plus associated alerts — the alerts are metadata only (detection rule, alert type, timestamps), not the underlying event.
+4. **Go one level deeper with `get_alert_evidence` when the user needs event-level detail** — source/destination IP, user or account, geolocation, service, and whether the action succeeded. `get_investigation_details` alone does not include this; you must call `get_alert_evidence` per alert ID. See the privacy note below before doing so.
+5. **Interpret `null` fields as API gaps, not analysis failures.** Fields like `first_alert_time`/`latest_alert_time`/`assignee` are frequently `null` in the current preview API even for real investigations — don't over-interpret their absence as meaningful, and don't guess values to fill them in.
+
+## Alert Evidence — PRIVACY
+
+`get_alert_evidence(alert_id)` calls the alert-triage API (`/idr/at/alerts/{id}/evidences`), a separate endpoint from Investigations. It returns the actual source event, which for user-driven alerts (e.g. authentication) typically includes:
+
+- A real employee's name, email, and account/username
+- Source IP address and geolocation (city, country, ISP/org)
+- Device/browser details, and for MFA events, phone/device metadata
+- The full raw event payload as ingested by Rapid7
+
+**This is real personal data about a person in the organization, not test data.** Handle it accordingly:
+- Only fetch it when it's actually needed to triage the alert — don't call it reflexively for every alert in a list.
+- When presenting it to the user, extract the fields relevant to the security question (who, from where, what result) rather than dumping the entire raw payload by default — offer the full raw JSON if they ask for it specifically.
+- Never paste this output into an external system (ticketing, chat, a shared doc) without the user's explicit instruction to do so — the user asking you to investigate is not the same as authorization to export PII elsewhere.
+- If the alert turns out to involve a different, unexpected person than expected, flag that explicitly rather than silently proceeding — it may itself be a signal worth the user's attention.
 
 ## Closing Investigations — MANDATORY SAFETY FLOW
 
@@ -101,6 +119,14 @@ get_investigations() → filter results client-side by title/keyword
 get_investigations(assignee_email="analyst@example.com")
 ```
 
+### Understanding who/what triggered an alert
+```
+get_investigation_details(investigation_id) → note the alert id(s)
+get_alert_evidence(alert_id) → extract user/account, source_ip, geoip fields,
+  service, result from the event data — present only what answers the
+  user's question, not the full raw payload, unless asked for it
+```
+
 ### Closing a batch of confirmed-benign investigations
 ```
 For each candidate:
@@ -113,7 +139,7 @@ After user approves the batch:
 
 ## Error Handling
 
-If `get_investigations`/`get_investigation_details`/`close_investigation` are not available:
+If `get_investigations`/`get_investigation_details`/`get_alert_evidence`/`close_investigation` are not available:
 1. STOP immediately
 2. Tell the user: "InsightIDR tools are not configured in this MCP connection."
 3. DO NOT attempt to fabricate investigation data or guess at API responses
