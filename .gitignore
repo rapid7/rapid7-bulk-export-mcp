@@ -44,6 +44,10 @@ htmlcov/
 # Kiro
 .kiro/settings/
 
+# Local testing setup (not for upstream/fork)
+.mcp.json
+.claude/
+
 # OS
 .DS_Store
 Thumbs.db
