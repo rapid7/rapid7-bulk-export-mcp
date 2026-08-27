@@ -80,10 +80,8 @@ class TestQueryLogs:
 
     @responses.activate
     def test_polls_pending_query_until_events_available(self):
-        # A pending (202) response already carries an "events": [] key —
-        # it's the "links" self-href that distinguishes pending from
-        # final, not the presence of "events". Confirmed live against the
-        # real API; see _poll_until_ready's docstring.
+        # A pending (202) response carries an "events": [] key — it's the
+        # "links" self-href that distinguishes pending from final.
         poll_url = "https://eu.api.insight.rapid7.com/log_search/query/abc-123"
         responses.add(
             responses.POST,
@@ -139,8 +137,7 @@ class TestSavedQueries:
 
         assert result["saved_query"]["id"] == "sq1"
         request_body = json.loads(responses.calls[0].request.body)
-        # Real bodies must be wrapped in a top-level "saved_query" key —
-        # confirmed against Rapid7's official Postman collection and live.
+        # Body must be wrapped in a top-level "saved_query" key.
         assert request_body == {
             "saved_query": {
                 "name": "test",

@@ -45,7 +45,7 @@ If these tools are not available, STOP and tell the user: "The Rapid7 MCP server
 - `createInvestigation` (POST), `updateInvestigation` (PATCH — can set title/status/priority/disposition/assignee in one call), `setPriority`, `setDisposition` (single-field versions of what `close_investigation` does for status), `_search` (richer filtering than list, including free-text `title` CONTAINS search), `removeAlertFromInvestigation`.
 - Log Search: single-log/logset detail lookups, log/logset create/rename/delete, saved query update-in-place — see `log-search-api.md`'s "Not implemented this iteration" section for the reasoning behind each.
 
-**Note on `log-search-api.md`**: unlike the Investigations spec, no official OpenAPI JSON exists for Log Search — this reference was built from three cross-checked sources (an official Rapid7 blog post, Rapid7's official Postman collection, and a community-scraped spec used only for path names, verified live) and confirmed against the real API. Treat it as solid but not "verbatim spec" the way `investigations-api-v2.json` is.
+**Note on `log-search-api.md`**: unlike the Investigations spec, no official OpenAPI JSON exists for Log Search — see that file for sources. Treat it as solid but not "verbatim spec" the way `investigations-api-v2.json` is.
 
 If a user asks for something that sounds like it needs a new capability (reassigning + reprioritizing in one step, free-text search by title, unlinking a bad alert from an investigation), check the reference first — it may already be a known, documented endpoint just not wired up as a tool yet, which is a very different conversation than "does this API even support that."
 
@@ -136,9 +136,9 @@ query_logs(log_ids="<id>", statement="<LEQL>", time_range="Last 7 Days")
 
 **LEQL basics**: a query statement like `where(user)`, `where(result=FAILED) groupby(source_ip)`, `calculate(count) timeslice(1h)`. This skill does not attempt to teach LEQL syntax in depth — if unsure, start narrow (`where(...)` on a specific field) and widen only if needed, rather than guessing a complex statement. `time_range` accepts relative windows like `"Today"`, `"Last 1 Day"`, `"Last 7 Days"`; use `from_ms`/`to_ms` (Unix milliseconds) instead for a precise window.
 
-**To match every event with no filter, use `statement=""` (empty string) — NOT `where()`.** `where()` with empty parentheses is invalid LEQL and the API rejects it with `400 "Invalid Query Syntax"`; confirmed live. An empty statement string is the correct way to request all raw events in the window unfiltered.
+**To match every event with no filter, use `statement=""` (empty string) — NOT `where()`.** `where()` with empty parentheses is invalid LEQL and the API rejects it with `400 "Invalid Query Syntax"`.
 
-**PRIVACY — same treatment as `get_alert_evidence`**: `query_logs` and `run_saved_query` return raw log content that can include real personal data (this was confirmed live against this org's actual authentication logs — usernames, emails, source IPs, actions like password resets). Only fetch what's needed, extract relevant fields when presenting results instead of dumping every raw event by default, and never forward this output externally without the user's explicit instruction.
+**PRIVACY — same treatment as `get_alert_evidence`**: `query_logs` and `run_saved_query` return raw log content that can include real personal data (usernames, emails, source IPs, actions like password resets). Only fetch what's needed, extract relevant fields when presenting results instead of dumping every raw event by default, and never forward this output externally without the user's explicit instruction.
 
 **Async queries**: most queries resolve immediately. If `query_logs`/`run_saved_query` reports "still processing," that's unusual — consider narrowing the time range or statement rather than just retrying the same query, since retrying creates a brand-new query rather than resuming the pending one.
 

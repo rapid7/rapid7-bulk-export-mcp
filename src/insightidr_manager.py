@@ -37,8 +37,7 @@ def list_investigations(
     Args:
         config: Config dict from load_config() (needs api_key, idr_base).
         status: Comma-separated statuses, e.g. "OPEN,INVESTIGATING". Sent as
-            the API's "statuses" query param (plural) — see
-            references/investigations-api-v2.md for why this matters.
+            the API's "statuses" query param (plural).
         priorities: Comma-separated list of priorities, e.g. "CRITICAL,HIGH".
         assignee_email: Only investigations assigned to this user.
         sources: Comma-separated sources, e.g. "MANUAL,HUNT,ALERT".

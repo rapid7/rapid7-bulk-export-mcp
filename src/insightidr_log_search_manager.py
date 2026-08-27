@@ -4,18 +4,12 @@ InsightIDR Log Search Manager
 Business logic for querying log data, managing saved queries, and listing
 logs/logsets, built on top of the REST transport in insightidr_client.py.
 
-This is a genuinely separate API family from Investigations/Comments: it
-lives under the /log_search path prefix, requires NO Accept-version header
-(unlike Investigations v2 preview), and its query endpoints are
-async/pollable (an LEQL query can return 202 with a polling link instead of
-immediate results, on larger datasets).
+Separate API family from Investigations/Comments: /log_search path prefix,
+no Accept-version header, and query endpoints are async/pollable (an LEQL
+query can return 202 with a polling link instead of immediate results).
 
-API reference: verified live against the real API (see
-WHATS_NEW_INSIGHTIDR.md) and cross-checked against Rapid7's official
-Postman collection (github.com/rapid7/logentries-postman-collection) for
-exact request body shapes — no single authoritative OpenAPI spec was found
-for this API (docs.rapid7.com/insightidr/log-search-api/ renders via
-client-side JS; its underlying spec JSON could not be located).
+See rapid7-insightidr-skill/references/log-search-api.md for the full API
+reference (no official OpenAPI spec exists for this API).
 
 Author: rozumeyroman@gmail.com
 """
@@ -43,21 +37,11 @@ def _poll_until_ready(
     max_wait_seconds: float,
     poll_interval_seconds: float,
 ) -> Dict[str, Any]:
-    """Follow a query's self-link until it returns events or max_wait_seconds elapses.
+    """Follow a query's self-link until it returns a final result or max_wait_seconds elapses.
 
-    LEQL queries can return HTTP 202 with a polling link instead of
-    immediate results for larger/slower queries. Small queries typically
-    resolve on the first call — this only sleeps/polls when a "self" link
-    is actually present and results aren't in yet.
-
-    IMPORTANT: a pending (202) response already contains an "events" key
-    — it's just an empty list, not an absence of the key. The presence of
-    "events" does NOT mean the query is done; only the disappearance of
-    the "links" self-href (which happens once the response is a final
-    200) means that. Checking `"events" not in result` here previously
-    caused every query to return its still-pending, always-empty first
-    response without ever polling — confirmed live (see
-    WHATS_NEW_INSIGHTIDR.md).
+    A pending (202) response already contains an "events" key — an empty
+    list, not an absent key — so completion is signaled by the "links"
+    self-href disappearing, not by "events" being present.
     """
     result = initial_result
     elapsed = 0.0
@@ -146,9 +130,7 @@ def create_saved_query(
 ) -> Dict[str, Any]:
     """Create a saved query.
 
-    Request body must be wrapped in a top-level "saved_query" key — this
-    isn't documented in any spec found, only confirmed against Rapid7's
-    official Postman collection and verified live.
+    The request body must be wrapped in a top-level "saved_query" key.
     """
     body = {
         "saved_query": {

@@ -99,7 +99,7 @@ Not yet covered by this skill: Pre-Computed Queries, Detection Rules management,
 
 ### API Reference
 
-`references/investigations-api-v2.md`/`.json` contain the official Rapid7 Investigations v2 OpenAPI spec. `references/comments-api-v1.md`/`insightidr-api-v1.json` cover Comments. `references/log-search-api.md` covers Log Search (no official spec exists for this one — built from Rapid7's blog post, Rapid7's official Postman collection, and a cross-checked community spec; see that file for details). Together these cover every endpoint, parameter, and enum this server touches, including ones not yet wired up as tools. Consult these before assuming a capability doesn't exist.
+`references/investigations-api-v2.md`/`.json` contain the official Rapid7 Investigations v2 OpenAPI spec. `references/comments-api-v1.md`/`insightidr-api-v1.json` cover Comments. `references/log-search-api.md` covers Log Search (no official OpenAPI spec exists for this one; see that file for sources). Together these cover every endpoint, parameter, and enum this server touches, including ones not yet wired up as tools. Consult these before assuming a capability doesn't exist.
 
 The JSON copy is kept in sync with Rapid7's published spec via `make check-idr-spec` (from the repo root) — it checks weekly by default and re-downloads automatically if the spec changed (`make check-idr-spec FORCE=1` to check immediately). This is a maintainer command, run manually or on a schedule — it is not something the AI assistant runs during normal use of this skill. The condensed `.md` reference is hand-curated and is not regenerated automatically when the JSON updates.
 

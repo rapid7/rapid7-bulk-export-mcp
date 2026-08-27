@@ -69,9 +69,7 @@ class TestListInvestigations:
         )
 
         request_url = responses.calls[0].request.url
-        # The API's query param is "statuses" (plural), not "status" — see
-        # references/investigations-api-v2.md. This was a real bug: "status"
-        # was silently ignored by the API, returning unfiltered results.
+        # The API's query param is "statuses" (plural), not "status".
         assert "statuses=OPEN" in request_url
         assert "priorities=CRITICAL%2CHIGH" in request_url
         assert "assignee.email=analyst%40example.com" in request_url
