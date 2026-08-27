@@ -15,11 +15,13 @@ import responses
 
 from src.insightidr_manager import (
     VALID_DISPOSITIONS,
+    assign_investigation,
     close_investigation,
     get_alert_evidence,
     get_investigation,
     list_investigation_alerts,
     list_investigations,
+    list_known_assignees,
 )
 
 CONFIG = {"api_key": "test-api-key", "idr_base": "https://eu.api.insight.rapid7.com"}
@@ -57,14 +59,21 @@ class TestListInvestigations:
             status="OPEN",
             priorities="CRITICAL,HIGH",
             assignee_email="analyst@example.com",
+            sources="ALERT,MANUAL",
+            tags="Incident",
             size=50,
             index=2,
         )
 
         request_url = responses.calls[0].request.url
-        assert "status=OPEN" in request_url
+        # The API's query param is "statuses" (plural), not "status" — see
+        # references/investigations-api-v2.md. This was a real bug: "status"
+        # was silently ignored by the API, returning unfiltered results.
+        assert "statuses=OPEN" in request_url
         assert "priorities=CRITICAL%2CHIGH" in request_url
         assert "assignee.email=analyst%40example.com" in request_url
+        assert "sources=ALERT%2CMANUAL" in request_url
+        assert "tags=Incident" in request_url
         assert "size=50" in request_url
         assert "index=2" in request_url
 
@@ -80,7 +89,9 @@ class TestListInvestigations:
         list_investigations(CONFIG)
 
         request_url = responses.calls[0].request.url
-        assert "status=" not in request_url
+        assert "statuses=" not in request_url
+        assert "sources=" not in request_url
+        assert "tags=" not in request_url
         assert "priorities=" not in request_url
         assert "assignee.email=" not in request_url
 
@@ -118,6 +129,99 @@ class TestListInvestigationAlerts:
         assert "/investigations/inv-1/alerts" in request_url
         assert "size=20" in request_url
         assert "index=0" in request_url
+        assert responses.calls[0].request.headers["Accept-version"] == "investigations-preview"
+
+
+class TestListKnownAssignees:
+    @responses.activate
+    def test_dedupes_and_sorts_assignees_from_a_single_page(self):
+        responses.add(
+            responses.GET,
+            f"{CONFIG['idr_base']}/idr/v2/investigations",
+            json={
+                "data": [
+                    {"assignee": {"email": "b@example.com", "name": "Bob"}},
+                    {"assignee": {"email": "a@example.com", "name": "Alice"}},
+                    {"assignee": {"email": "b@example.com", "name": "Bob"}},
+                    {"assignee": None},
+                    {},
+                ],
+                "metadata": {"total_pages": 1},
+            },
+            status=200,
+        )
+
+        result = list_known_assignees(CONFIG)
+
+        assert result == [
+            {"email": "a@example.com", "name": "Alice"},
+            {"email": "b@example.com", "name": "Bob"},
+        ]
+        assert len(responses.calls) == 1
+
+    @responses.activate
+    def test_paginates_until_total_pages_reached(self):
+        responses.add(
+            responses.GET,
+            f"{CONFIG['idr_base']}/idr/v2/investigations",
+            json={"data": [{"assignee": {"email": "p1@example.com", "name": "P1"}}], "metadata": {"total_pages": 2}},
+            status=200,
+        )
+        responses.add(
+            responses.GET,
+            f"{CONFIG['idr_base']}/idr/v2/investigations",
+            json={"data": [{"assignee": {"email": "p2@example.com", "name": "P2"}}], "metadata": {"total_pages": 2}},
+            status=200,
+        )
+
+        result = list_known_assignees(CONFIG)
+
+        assert result == [
+            {"email": "p1@example.com", "name": "P1"},
+            {"email": "p2@example.com", "name": "P2"},
+        ]
+        assert len(responses.calls) == 2
+
+    @responses.activate
+    def test_respects_max_pages_safety_cap(self):
+        responses.add(
+            responses.GET,
+            f"{CONFIG['idr_base']}/idr/v2/investigations",
+            json={"data": [], "metadata": {"total_pages": 100}},
+            status=200,
+        )
+
+        list_known_assignees(CONFIG, max_pages=3)
+
+        assert len(responses.calls) == 3
+
+    @responses.activate
+    def test_no_investigations_returns_empty_list(self):
+        responses.add(
+            responses.GET,
+            f"{CONFIG['idr_base']}/idr/v2/investigations",
+            json={"data": [], "metadata": {"total_pages": 1}},
+            status=200,
+        )
+
+        assert list_known_assignees(CONFIG) == []
+
+
+class TestAssignInvestigation:
+    @responses.activate
+    def test_sends_email_to_assignee_endpoint(self):
+        responses.add(
+            responses.PUT,
+            f"{CONFIG['idr_base']}/idr/v2/investigations/inv-1/assignee",
+            json={"id": "inv-1", "assignee": {"email": "analyst@example.com"}},
+            status=200,
+        )
+
+        result = assign_investigation(CONFIG, "inv-1", "analyst@example.com")
+
+        assert result["assignee"]["email"] == "analyst@example.com"
+        request_body = json.loads(responses.calls[0].request.body)
+        assert request_body == {"user_email_address": "analyst@example.com"}
         assert responses.calls[0].request.headers["Accept-version"] == "investigations-preview"
 
 

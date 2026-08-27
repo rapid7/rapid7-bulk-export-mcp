@@ -83,9 +83,19 @@ As of this version, the skill covers three MCP tools:
 | `get_investigations(status?, priorities?, assignee_email?, limit?)` | List/search investigations |
 | `get_investigation_details(investigation_id)` | Full record + associated alerts for one investigation |
 | `get_alert_evidence(alert_id)` | Raw source event behind one alert — user, IP, geolocation, service, result. Contains real personal data; see the skill's privacy note. |
+| `list_investigation_assignees()` | Known assignees observed in investigation history — not an exhaustive list of everyone eligible (InsightIDR has no such API). |
+| `assign_investigation(investigation_id, user_email, confirm?)` | Assign one investigation to a user — two-step confirm required, since the person is notified by email |
 | `close_investigation(investigation_id, disposition, confirm?)` | Close one investigation — two-step confirm required |
 
-Not yet covered by this skill: Log Search (LEQL), Detection Rules management, Comments, assigning investigations to a user, and setting priority/disposition without closing. These will be added here as the corresponding MCP tools are implemented.
+Not yet covered by this skill: Log Search (LEQL), Detection Rules management, Comments, and setting priority/disposition without closing. These will be added here as the corresponding MCP tools are implemented.
+
+### API Reference
+
+`references/investigations-api-v2.md` and `references/investigations-api-v2.json` contain the official Rapid7 Investigations v2 OpenAPI spec — every endpoint, parameter, and enum, including ones not yet wired up as tools (create, update, search, set-priority, set-disposition, remove-alert, and more). Consult these before assuming a capability doesn't exist.
+
+The JSON copy is kept in sync with Rapid7's published spec via `make check-idr-spec` (from the repo root) — it checks weekly by default and re-downloads automatically if the spec changed (`make check-idr-spec FORCE=1` to check immediately). This is a maintainer command, run manually or on a schedule — it is not something the AI assistant runs during normal use of this skill. The condensed `.md` reference is hand-curated and is not regenerated automatically when the JSON updates.
+
+**Maintainers: run `make check-idr-spec FORCE=1` before changing any InsightIDR server code** (`src/insightidr_manager.py`, `src/insightidr_client.py`) — see `scripts/README.md` for why.
 
 ## Example Usage
 
@@ -118,6 +128,23 @@ You: #rapid7-insightidr Who authenticated and from where in this alert?
 AI: [calls get_alert_evidence on the alert id from get_investigation_details,
      then reports the relevant fields — user, source IP, location, service,
      result — rather than dumping the full raw event]
+```
+
+### Assigning an investigation (safety flow)
+
+```
+You: #rapid7-insightidr Assign investigation <id> to analyst@example.com
+
+AI: ⚠️ This will ASSIGN the following investigation to analyst@example.com.
+    They will receive a notification email. No changes have been made yet.
+    Title: ...
+    Current assignee: Unassigned
+    ...
+    To proceed, call assign_investigation(..., confirm=True)
+
+You: yes, go ahead
+
+AI: ✓ Investigation assigned.
 ```
 
 ### Closing an investigation (safety flow)

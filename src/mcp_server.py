@@ -36,6 +36,9 @@ from .insightidr_manager import (
     VALID_DISPOSITIONS,
 )
 from .insightidr_manager import (
+    assign_investigation as idr_assign_investigation,
+)
+from .insightidr_manager import (
     close_investigation as idr_close_investigation,
 )
 from .insightidr_manager import (
@@ -49,6 +52,9 @@ from .insightidr_manager import (
 )
 from .insightidr_manager import (
     list_investigations as idr_list_investigations,
+)
+from .insightidr_manager import (
+    list_known_assignees as idr_list_known_assignees,
 )
 
 # Initialize FastMCP server
@@ -770,16 +776,23 @@ def get_investigations(
     status: str = "",
     priorities: str = "",
     assignee_email: str = "",
+    sources: str = "",
+    tags: str = "",
     limit: int = 20,
 ) -> str:
     """List InsightIDR investigations matching the given filters.
 
     Args:
-        status: Filter by status: "OPEN", "INVESTIGATING", "WAITING", or "CLOSED".
+        status: Comma-separated statuses to include, e.g. "OPEN,INVESTIGATING".
+                Valid values: "OPEN", "INVESTIGATING", "WAITING", "CLOSED".
                 Leave empty to include all statuses.
         priorities: Comma-separated priorities to include, e.g. "CRITICAL,HIGH".
                     Leave empty to include all priorities.
         assignee_email: Only return investigations assigned to this user.
+        sources: Comma-separated sources to include, e.g. "MANUAL,HUNT,ALERT".
+                 Leave empty to include all sources.
+        tags: Comma-separated tags; only investigations with ALL given tags
+              are included. Leave empty to not filter by tags.
         limit: Maximum number of investigations to return (1-100, default 20).
 
     Returns:
@@ -793,6 +806,8 @@ def get_investigations(
             status=status or None,
             priorities=priorities or None,
             assignee_email=assignee_email or None,
+            sources=sources or None,
+            tags=tags or None,
             size=limit,
         )
         investigations = response.get("data", [])
@@ -918,6 +933,113 @@ def get_alert_evidence(alert_id: str) -> str:
 
     except Exception as e:
         return f"✗ Error getting alert evidence: {str(e)}"
+
+
+@mcp.tool(
+    annotations=ToolAnnotations(
+        title="List Rapid7 InsightIDR Known Assignees",
+        readOnlyHint=True,
+        destructiveHint=False,
+        idempotentHint=True,
+        openWorldHint=True,
+    )
+)
+def list_investigation_assignees() -> str:
+    """List people previously assigned to InsightIDR investigations.
+
+    NOTE: This is NOT an exhaustive list of everyone eligible to be
+    assigned. InsightIDR's Investigations API has no endpoint to list all
+    eligible platform users (that requires a separate, permission-gated
+    account-management API this key does not have access to). This only
+    surfaces people observed as an assignee on at least one investigation
+    so far. To assign someone not listed here, call assign_investigation
+    with their email directly — the API validates eligibility itself and
+    returns an error if the email is invalid or ineligible.
+
+    Returns:
+        Known assignee names and emails observed in investigation history.
+    """
+    try:
+        config = load_config()
+        assignees = idr_list_known_assignees(config)
+
+        if not assignees:
+            return (
+                "No known assignees found — no investigations have been assigned to anyone yet.\n"
+                "You can still call assign_investigation(investigation_id, user_email) with any "
+                "email; the API validates eligibility."
+            )
+
+        lines = ["Known assignees (from investigation history):"]
+        for a in assignees:
+            lines.append(f"- {a['name'] or '(no name)'} <{a['email']}>")
+        lines.append(
+            "\nThis list is not exhaustive — it's only people assigned before. "
+            "To assign someone not listed, call assign_investigation with their email directly."
+        )
+        return "\n".join(lines)
+
+    except Exception as e:
+        return f"✗ Error listing assignees: {str(e)}"
+
+
+@mcp.tool(
+    annotations=ToolAnnotations(
+        title="Assign Rapid7 InsightIDR Investigation",
+        readOnlyHint=False,
+        destructiveHint=False,
+        idempotentHint=True,
+        openWorldHint=True,
+    )
+)
+def assign_investigation(investigation_id: str, user_email: str, confirm: bool = False) -> str:
+    """Assign an InsightIDR investigation to a user. WRITE operation — the assigned user is notified by email.
+
+    SAFETY: Call this once WITHOUT confirm=True first — it previews the
+    investigation and target assignee, and makes no changes. Only call it
+    again with confirm=True, after the user explicitly approves, to
+    actually assign it.
+
+    Args:
+        investigation_id: The investigation ID or RRN (from get_investigations).
+        user_email: Email of the user to assign. Must be a platform
+                    administrator, product administrator, or read/write
+                    user with InsightIDR/InsightUBA access — use
+                    list_investigation_assignees for known candidates, or
+                    pass any email directly and let the API validate it.
+        confirm: Must be True to actually perform the assignment.
+
+    Returns:
+        A preview of the change (if confirm=False), or confirmation that
+        the investigation was assigned (if confirm=True).
+    """
+    try:
+        config = load_config()
+        current = idr_get_investigation(config, investigation_id)
+        current_assignee = (current.get("assignee") or {}).get("email", "Unassigned")
+
+        if not confirm:
+            return (
+                f"⚠️ This will ASSIGN the following investigation to {user_email}. "
+                f"They will receive a notification email. No changes have been made yet.\n\n"
+                f"Title: {current.get('title', '?')}\n"
+                f"ID: {investigation_id}\n"
+                f"Current assignee: {current_assignee}\n"
+                f"New assignee: {user_email}\n\n"
+                f'To proceed, call assign_investigation(investigation_id="{investigation_id}", '
+                f'user_email="{user_email}", confirm=True)'
+            )
+
+        result = idr_assign_investigation(config, investigation_id, user_email)
+        return (
+            f"✓ Investigation assigned.\n\n"
+            f"Title: {result.get('title', current.get('title', '?'))}\n"
+            f"ID: {investigation_id}\n"
+            f"Assignee: {(result.get('assignee') or {}).get('email', user_email)}"
+        )
+
+    except Exception as e:
+        return f"✗ Error assigning investigation: {str(e)}"
 
 
 @mcp.tool(

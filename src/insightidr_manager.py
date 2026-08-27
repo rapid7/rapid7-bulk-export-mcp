@@ -10,7 +10,7 @@ API reference: docs.rapid7.com/insightidr/insightidr-rest-api/
 Author: rozumeyroman@gmail.com
 """
 
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional
 
 from .insightidr_client import INVESTIGATIONS_ACCEPT_VERSION, send_idr_request
 
@@ -25,6 +25,8 @@ def list_investigations(
     status: Optional[str] = None,
     priorities: Optional[str] = None,
     assignee_email: Optional[str] = None,
+    sources: Optional[str] = None,
+    tags: Optional[str] = None,
     size: int = 20,
     index: int = 0,
 ) -> Dict[str, Any]:
@@ -32,9 +34,14 @@ def list_investigations(
 
     Args:
         config: Config dict from load_config() (needs api_key, idr_base).
-        status: Filter by status, e.g. "OPEN".
+        status: Comma-separated statuses, e.g. "OPEN,INVESTIGATING". Sent as
+            the API's "statuses" query param (plural) — see
+            references/investigations-api-v2.md for why this matters.
         priorities: Comma-separated list of priorities, e.g. "CRITICAL,HIGH".
         assignee_email: Only investigations assigned to this user.
+        sources: Comma-separated sources, e.g. "MANUAL,HUNT,ALERT".
+        tags: Comma-separated tags; only investigations with ALL given tags
+            are included.
         size: Page size, 1-100.
         index: 0-based page index.
 
@@ -43,11 +50,15 @@ def list_investigations(
     """
     params: Dict[str, Any] = {"size": size, "index": index}
     if status:
-        params["status"] = status
+        params["statuses"] = status
     if priorities:
         params["priorities"] = priorities
     if assignee_email:
         params["assignee.email"] = assignee_email
+    if sources:
+        params["sources"] = sources
+    if tags:
+        params["tags"] = tags
 
     return send_idr_request(
         "GET",
@@ -55,6 +66,60 @@ def list_investigations(
         _INVESTIGATIONS_PATH,
         config["api_key"],
         params=params,
+        accept_version=INVESTIGATIONS_ACCEPT_VERSION,
+    )
+
+
+def list_known_assignees(config: Dict[str, str], max_pages: int = 5, page_size: int = 100) -> List[Dict[str, str]]:
+    """Collect the unique assignees observed across existing investigations.
+
+    The Investigations API has no endpoint to list everyone eligible to be
+    assigned (that requires the separate, permission-gated
+    /account/v1/users API). This is a best-effort substitute: it scans
+    investigation history for people who have been assigned before. It is
+    NOT an exhaustive list of eligible users — a valid new assignee may
+    simply never have been assigned anything yet.
+
+    Args:
+        config: Config dict from load_config() (needs api_key, idr_base).
+        max_pages: Safety cap on how many pages of investigations to scan.
+        page_size: Investigations per page (API max is 100).
+
+    Returns:
+        A list of {"email": ..., "name": ...} dicts, sorted by email,
+        deduplicated.
+    """
+    seen: Dict[str, str] = {}
+    page = 0
+    total_pages = 1
+
+    while page < max_pages and page < total_pages:
+        response = list_investigations(config, size=page_size, index=page)
+        for investigation in response.get("data", []):
+            assignee = investigation.get("assignee")
+            if assignee and assignee.get("email"):
+                seen[assignee["email"]] = assignee.get("name") or ""
+
+        total_pages = response.get("metadata", {}).get("total_pages", 1)
+        page += 1
+
+    return [{"email": email, "name": name} for email, name in sorted(seen.items())]
+
+
+def assign_investigation(config: Dict[str, str], investigation_id: str, user_email: str) -> Dict[str, Any]:
+    """Assign a user to an investigation by email.
+
+    The target user must be a platform administrator, product
+    administrator, or read/write user with access to InsightIDR or
+    InsightUBA. This function does not pre-validate eligibility — the API
+    itself returns 400/403/404 for an ineligible or unknown email.
+    """
+    return send_idr_request(
+        "PUT",
+        config["idr_base"],
+        f"{_INVESTIGATIONS_PATH}/{investigation_id}/assignee",
+        config["api_key"],
+        json_body={"user_email_address": user_email},
         accept_version=INVESTIGATIONS_ACCEPT_VERSION,
     )
 

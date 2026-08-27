@@ -1,0 +1,2740 @@
+{
+  "openapi": "3.0.3",
+  "info": {
+    "title": "InsightIDR API",
+    "version": "v2",
+    "description": "<h2>Introduction</h2>\n<p>Welcome to the reference documentation for the InsightIDR public APIs.</p>\n<p>Here are a few resources to help you learn how to start using our APIs:</p>\n<ul>\n<li><a href='https://insight.help.rapid7.com/docs/api-overview'>Learn about basic concepts and capabilities</a></li>\n<li><a href='https://insight.help.rapid7.com/docs/managing-platform-api-keys'>Get an Insight platform API key to set up authentication</a></li>\n<li><a href='https://insight.help.rapid7.com/docs/product-apis'>See available Insight product APIs</a></li>\n<li><a href='https://insightidr.help.rapid7.com/docs'>Learn more about InsightIDR</a></li>\n</ul>\n<p>After you've got the basics down, you can use this API guide to find examples of requests and responses.</p>"
+  },
+  "servers": [
+    {
+      "url": "https://eu.api.insight.rapid7.com",
+      "description": "Europe"
+    },
+    {
+      "url": "https://us.api.insight.rapid7.com",
+      "description": "United States 1"
+    },
+    {
+      "url": "https://us2.api.insight.rapid7.com",
+      "description": "United States 2"
+    },
+    {
+      "url": "https://us3.api.insight.rapid7.com",
+      "description": "United States 3"
+    },
+    {
+      "url": "https://ca.api.insight.rapid7.com",
+      "description": "Canada"
+    },
+    {
+      "url": "https://au.api.insight.rapid7.com",
+      "description": "Australia"
+    },
+    {
+      "url": "https://ap.api.insight.rapid7.com",
+      "description": "Japan"
+    }
+  ],
+  "externalDocs": {
+    "description": "Product docs",
+    "url": "https://insightidr.help.rapid7.com/docs"
+  },
+  "security": [],
+  "tags": [
+    {
+      "name": "Investigations",
+      "description": "An API used to search, access, and modify investigations. To learn more about investigations, see our documentation at: https://docs.rapid7.com/insightidr/investigations"
+    }
+  ],
+  "paths": {
+    "/idr/v2/investigations/{id}/status/{status}": {
+      "put": {
+        "tags": [
+          "Investigations"
+        ],
+        "summary": "Set the status of an investigation",
+        "description": "An API that sets the status of the investigation, which is specified by id or rrn. This API returns the investigation with its status updated to the new state. If the investigation already has the given status, no change is made, but the investigation will still be returned.",
+        "operationId": "setStatus",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "The id or rrn of the investigation to be changed.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "example": "174e4f99-2ac7-4481-9301-4d24c34baf06"
+          },
+          {
+            "name": "status",
+            "in": "path",
+            "description": "The new status for the investigation (case insensitive).",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "enum": [
+                "OPEN",
+                "CLOSED",
+                "INVESTIGATING",
+                "WAITING"
+              ],
+              "example": "OPEN"
+            }
+          },
+          {
+            "name": "multi-customer",
+            "in": "query",
+            "description": "Indicates whether the requester has multi-customer access. If set to true, the ID of the investigation must be in the RRN format, the region of the RRN must match the region of the endpoint, and a user API key must be provided.",
+            "required": false,
+            "schema": {
+              "type": "boolean",
+              "default": false
+            },
+            "example": true
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/InvestigationStatusRequestV2"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/InvestigationV2"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Bad Request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthorized",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Insufficient Permissions",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Entity Not Found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "405": {
+            "description": "Method Not Allowed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal Server Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "502": {
+            "description": "Bad Gateway",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Service Unavailable",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "504": {
+            "description": "Gateway Timeout",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/idr/v2/investigations/{id}/priority/{priority}": {
+      "put": {
+        "tags": [
+          "Investigations"
+        ],
+        "summary": "Set the priority of an investigation",
+        "description": "An API that sets the priority of the investigation, which is specified by id or rrn. This API returns the investigation with its priority updated to the new state. If the investigation already has the given priority, no change is made, but the investigation will still be returned.",
+        "operationId": "setPriority",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "The id or rrn of the investigation to be changed.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "example": "174e4f99-2ac7-4481-9301-4d24c34baf06"
+          },
+          {
+            "name": "priority",
+            "in": "path",
+            "description": "The new priority for the investigation (case insensitive).",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "enum": [
+                "UNSPECIFIED",
+                "LOW",
+                "MEDIUM",
+                "HIGH",
+                "CRITICAL"
+              ],
+              "example": "MEDIUM"
+            }
+          },
+          {
+            "name": "multi-customer",
+            "in": "query",
+            "description": "Indicates whether the requester has multi-customer access. If set to true, the ID of the investigation must be in the RRN format, the region of the RRN must match the region of the endpoint, and a user API key must be provided.",
+            "required": false,
+            "schema": {
+              "type": "boolean",
+              "default": false
+            },
+            "example": true
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/InvestigationV2"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Bad Request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthorized",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Insufficient Permissions",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Entity Not Found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "405": {
+            "description": "Method Not Allowed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal Server Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "502": {
+            "description": "Bad Gateway",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Service Unavailable",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "504": {
+            "description": "Gateway Timeout",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/idr/v2/investigations/{id}/disposition/{disposition}": {
+      "put": {
+        "tags": [
+          "Investigations"
+        ],
+        "summary": "Set the disposition of an investigation",
+        "description": "An API that sets the disposition of the investigation, which is specified by id or rrn This API returns the investigation with its disposition updated to the new state. If the investigation already has the given disposition, no change is made, but the investigation will still be returned.",
+        "operationId": "setDisposition",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "The id or rrn of the investigation to be changed.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "example": "174e4f99-2ac7-4481-9301-4d24c34baf06"
+          },
+          {
+            "name": "disposition",
+            "in": "path",
+            "description": "The new disposition for the investigation (case insensitive).",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "enum": [
+                "BENIGN",
+                "MALICIOUS",
+                "NOT_APPLICABLE"
+              ],
+              "example": "BENIGN"
+            }
+          },
+          {
+            "name": "multi-customer",
+            "in": "query",
+            "description": "Indicates whether the requester has multi-customer access. If set to true, the ID of the investigation must be in the RRN format, the region of the RRN must match the region of the endpoint, and a user API key must be provided.",
+            "required": false,
+            "schema": {
+              "type": "boolean",
+              "default": false
+            },
+            "example": true
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/InvestigationV2"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Bad Request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthorized",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Insufficient Permissions",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Entity Not Found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "405": {
+            "description": "Method Not Allowed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal Server Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "502": {
+            "description": "Bad Gateway",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Service Unavailable",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "504": {
+            "description": "Gateway Timeout",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/idr/v2/investigations/{id}/assignee": {
+      "put": {
+        "tags": [
+          "Investigations"
+        ],
+        "summary": "Assign user to investigation",
+        "description": "An API that assigns a user to an investigation, specified by id or rrn. The user must be a platform administrator, product administrator, or read/write user with access to either InsightIDR or InsightUBA.",
+        "operationId": "assignUserToInvestigation",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "The id or rrn of the investigation to assign the user to.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "example": "174e4f99-2ac7-4481-9301-4d24c34baf06"
+          },
+          {
+            "name": "multi-customer",
+            "in": "query",
+            "description": "Indicates whether the requester has multi-customer access. If set to true, the ID of the investigation must be in the RRN format, the region of the RRN must match the region of the endpoint, and a user API key must be provided.",
+            "required": false,
+            "schema": {
+              "type": "boolean",
+              "default": false
+            },
+            "example": true
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AssignUserToInvestigationRequestV2"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/InvestigationV2"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Bad Request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthorized",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Insufficient Permissions",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Entity Not Found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "405": {
+            "description": "Method Not Allowed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal Server Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "502": {
+            "description": "Bad Gateway",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Service Unavailable",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "504": {
+            "description": "Gateway Timeout",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/idr/v2/investigations": {
+      "get": {
+        "tags": [
+          "Investigations"
+        ],
+        "summary": "List investigations",
+        "description": "An API that retrieves a page of investigations matching the given request parameters. By default, this page of investigations will be sorted by investigation priority in descending order.",
+        "operationId": "listInvestigations",
+        "parameters": [
+          {
+            "name": "index",
+            "in": "query",
+            "description": "The 0-based index of the first page to retrieve. Must be an integer greater than 0.",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "default": 0,
+              "minimum": 0
+            },
+            "example": 0
+          },
+          {
+            "name": "size",
+            "in": "query",
+            "description": "The maximum number of investigations to retrieve. Must be an integer greater than 0, or less than or equal to 100.",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "default": 20,
+              "maximum": 100,
+              "minimum": 1
+            },
+            "example": 20
+          },
+          {
+            "name": "statuses",
+            "in": "query",
+            "description": "A comma-separated list of investigation statuses to include in the result.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            },
+            "example": "OPEN,INVESTIGATING,CLOSED"
+          },
+          {
+            "name": "sources",
+            "in": "query",
+            "description": "A comma-separated list of investigation sources to include in the result.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            },
+            "example": "USER,ALERT"
+          },
+          {
+            "name": "priorities",
+            "in": "query",
+            "description": "A comma-separated list of investigation priorities to include in the result.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            },
+            "example": "UNSPECIFIED, LOW, MEDIUM, HIGH, CRITICAL"
+          },
+          {
+            "name": "assignee.email",
+            "in": "query",
+            "description": "A user's email address.  Only investigations assigned to that user will be included.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            },
+            "example": "user@test.com"
+          },
+          {
+            "name": "start_time",
+            "in": "query",
+            "description": "The time an investigation is opened. Only investigations whose <span _ngcontent-c11 class=\"param-example-value\">created_time</span> is after this date will be returned by the API.  Must be an ISO-formatted timestamp.",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "default": "28 days prior"
+            },
+            "example": "2018-07-01T00:00:00Z"
+          },
+          {
+            "name": "end_time",
+            "in": "query",
+            "description": "The time an investigation is closed. Only investigations whose <span _ngcontent-c11 class=\"param-example-value\">created_time</span> is before this date will be returned by the API. Must be an ISO-formatted timestamp.",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "default": "The current time"
+            },
+            "example": "2018-07-28T23:59:00Z"
+          },
+          {
+            "name": "sort",
+            "in": "query",
+            "description": "A field for investigations to be sorted by and their sort direction separated by a comma. Sortable fields are <span _ngcontent-c11 class=\"param-example-value\">created_time</span>,<span _ngcontent-c11 class=\"param-example-value\">priority</span>, <span _ngcontent-c11 class=\"param-example-value\">rrn</span>, <span _ngcontent-c11 class=\"param-example-value\">alerts_most_recent_created_time</span>, and <span _ngcontent-c11 class=\"param-example-value\">alerts_most_recent_detection_created_time</span>.",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "default": "priority,DESC"
+            }
+          },
+          {
+            "name": "multi-customer",
+            "in": "query",
+            "description": "Indicates whether the requester has multi-customer access. If set to true, a user API key must be provided. Investigations will be returned from all organizations the calling user has access to.",
+            "required": false,
+            "schema": {
+              "type": "boolean",
+              "default": false
+            },
+            "example": true
+          },
+          {
+            "name": "tags",
+            "in": "query",
+            "description": "A comma-separated list of tags to include in the result. Only investigations who have all specified tags will be included.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            },
+            "example": "Incident, Security Test, Reported to Customer, Potentially Unwanted Program"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PageInvestigationV2"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Bad Request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthorized",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Insufficient Permissions",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Entity Not Found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "405": {
+            "description": "Method Not Allowed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal Server Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "502": {
+            "description": "Bad Gateway",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Service Unavailable",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "504": {
+            "description": "Gateway Timeout",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "tags": [
+          "Investigations"
+        ],
+        "summary": "Create investigation",
+        "description": "An API to manually create investigations. Creating an investigation requires a user API key in the request headers. Non-default investigation fields can be specified in the request body. The API returns the newly created investigation information in the response.",
+        "operationId": "createInvestigation",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CreateInvestigationRequestV2"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/InvestigationV2"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Bad Request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthorized",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Insufficient Permissions",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Entity Not Found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "405": {
+            "description": "Method Not Allowed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal Server Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "502": {
+            "description": "Bad Gateway",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Service Unavailable",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "504": {
+            "description": "Gateway Timeout",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/idr/v2/investigations/bulk_close": {
+      "post": {
+        "tags": [
+          "Investigations"
+        ],
+        "summary": "Close investigations in bulk",
+        "description": "An API to bulk close all investigations that match the provided request parameters. This API returns the number of investigations that were closed and a list of their IDs.\n If there are any investigations found associated with Threat Command alerts within the given request parameters, they will be closed in Threat Command with the close reason, \"Other\".",
+        "operationId": "bulkCloseInvestigations",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/BulkCloseInvestigationsRequestV2"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ClosedInvestigationsV2"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Bad Request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthorized",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Insufficient Permissions",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Entity Not Found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "405": {
+            "description": "Method Not Allowed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal Server Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "502": {
+            "description": "Bad Gateway",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Service Unavailable",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "504": {
+            "description": "Gateway Timeout",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/idr/v2/investigations/_search": {
+      "post": {
+        "tags": [
+          "Investigations"
+        ],
+        "summary": "Search investigations",
+        "description": "An API that searches for investigations matching the given search/sort criteria.<table style=\"width:max-content;border:1px solid rgba(38, 50, 56, 0.3)\" title=\"Searchable/Sortable Fields\"><tr><th>Field</th><th>Can Search?</th><th>Can Sort?</th><th>Type</th><th>Search Operator</th></tr><tr><td>actor_asset_hostname</td><td>Yes</td><td>No</td><td>String</td><td>CONTAINS</td></tr><tr><td>actor_user_name</td><td>Yes</td><td>No</td><td>String</td><td>CONTAINS</td></tr><tr><td>alert_mitre_t_codes</td><td>Yes</td><td>No</td><td>String</td><td>EQUALS</td></tr><tr><td>alert_rule_rrn</td><td>Yes</td><td>No</td><td>String</td><td>EQUALS</td></tr><tr><td>alerts_most_recent_created_time</td><td>No</td><td>Yes</td><td>String</td><td>N/A</td></tr><tr><td>alerts_most_recent_detection_created_time</td><td>No</td><td>Yes</td><td>String</td><td>N/A</td></tr><tr><td>assignee_id</td><td>Yes</td><td>No</td><td>String</td><td>EQUALS</td></tr><tr><td>created_time</td><td>No</td><td>Yes</td><td>String</td><td>N/A</td></tr><tr><td>organization_id</td><td>Yes</td><td>No</td><td>String</td><td>EQUALS</td></tr><tr><td>priority</td><td>Yes</td><td>Yes</td><td>String</td><td>EQUALS</td></tr><tr><td>rrn</td><td>Yes</td><td>Yes</td><td>String</td><td>EQUALS</td></tr><tr><td>source</td><td>Yes</td><td>No</td><td>String</td><td>EQUALS</td></tr><tr><td>status</td><td>Yes</td><td>No</td><td>String</td><td>EQUALS</td></tr><tr><td>title</td><td>Yes</td><td>No</td><td>String</td><td>CONTAINS</td></tr></table>",
+        "operationId": "searchInvestigations",
+        "parameters": [
+          {
+            "name": "index",
+            "in": "query",
+            "description": "The optional 0-based index of the page to retrieve.  Must be an integer greater than or equal to 0. ",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "default": 0,
+              "minimum": 0
+            },
+            "example": 0
+          },
+          {
+            "name": "size",
+            "in": "query",
+            "description": "The optional size of the page to retrieve. Must be an integer greater than 0 or less than or equal to 100.",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "default": 20,
+              "maximum": 100,
+              "minimum": 1
+            },
+            "example": 20
+          },
+          {
+            "name": "multi-customer",
+            "in": "query",
+            "description": "Indicates whether the requester has multi-customer access. If set to true, a user API key must be provided. Investigations will be returned from all organizations the calling user has access to.",
+            "required": false,
+            "schema": {
+              "type": "boolean",
+              "default": false
+            },
+            "example": true
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/DatedSearchRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PageInvestigationV2"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Bad Request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthorized",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Insufficient Permissions",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Entity Not Found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "405": {
+            "description": "Method Not Allowed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal Server Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "502": {
+            "description": "Bad Gateway",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Service Unavailable",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "504": {
+            "description": "Gateway Timeout",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/idr/v2/investigations/{id}": {
+      "get": {
+        "tags": [
+          "Investigations"
+        ],
+        "summary": "Get investigation",
+        "description": "An API to retrieve a specific investigation. This investigation is specified by either id or rrn.",
+        "operationId": "getInvestigationById",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "The <span _ngcontent-c11 class=\"param-example-value\">id</span> or <span _ngcontent-c11 class=\"param-example-value\">rrn</span> of the investigation to get investigation details.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "example": "174e4f99-2ac7-4481-9301-4d24c34baf06"
+          },
+          {
+            "name": "multi-customer",
+            "in": "query",
+            "description": "Indicates whether the requester has multi-customer access. If set to true, the ID of the investigation must be in the RRN format, the region of the RRN must match the region of the endpoint, and a user API key must be provided.",
+            "required": false,
+            "schema": {
+              "type": "boolean",
+              "default": false
+            },
+            "example": true
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/InvestigationV2"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Bad Request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthorized",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Insufficient Permissions",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Entity Not Found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "405": {
+            "description": "Method Not Allowed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal Server Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "502": {
+            "description": "Bad Gateway",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Service Unavailable",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "504": {
+            "description": "Gateway Timeout",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      },
+      "patch": {
+        "tags": [
+          "Investigations"
+        ],
+        "summary": "Update investigation",
+        "description": "An API that updates multiple fields in a single operation for an investigation, specified by id or rrn. The investigation will be returned with its changed fields. Null or omitted fields will not have their values updated in the investigation.",
+        "operationId": "updateInvestigation",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "The id or rrn of the investigation to update",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "example": "174e4f99-2ac7-4481-9301-4d24c34baf06"
+          },
+          {
+            "name": "multi-customer",
+            "in": "query",
+            "description": "Indicates whether the requester has multi-customer access. If set to true, the ID of the investigation must be in the RRN format, the region of the RRN must match the region of the endpoint, and a user API key must be provided.",
+            "required": false,
+            "schema": {
+              "type": "boolean",
+              "default": false
+            },
+            "example": true
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/UpdateInvestigationRequestV2"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/InvestigationV2"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Bad Request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthorized",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Insufficient Permissions",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Entity Not Found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "405": {
+            "description": "Method Not Allowed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal Server Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "502": {
+            "description": "Bad Gateway",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Service Unavailable",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "504": {
+            "description": "Gateway Timeout",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/idr/v2/investigations/{identifier}/rapid7-product-alerts": {
+      "get": {
+        "tags": [
+          "Investigations"
+        ],
+        "summary": "Get a list of Rapid7 product alerts associated with the specified investigation",
+        "description": "An API to retrieve and list all Rapid7 product alerts associated with an investigation with the given id. These alerts are generated by Rapid7 products other than InsightIDR that you have an active license for.",
+        "operationId": "getInvestigationRapid7ProductAlertInfo",
+        "parameters": [
+          {
+            "name": "identifier",
+            "in": "path",
+            "description": "The ID of the investigation.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "example": "174e4f99-2ac7-4481-9301-4d24c34baf06"
+          },
+          {
+            "name": "multi-customer",
+            "in": "query",
+            "description": "Indicates whether the requester has multi-customer access. If set to true, the ID of the investigation must be in the RRN format, the region of the RRN must match the region of the endpoint, and a user API key must be provided.",
+            "required": false,
+            "schema": {
+              "type": "boolean",
+              "default": false
+            },
+            "example": true
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/SecondPartyInfoDtoV2"
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Bad Request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthorized",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Insufficient Permissions",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Entity Not Found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "405": {
+            "description": "Method Not Allowed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal Server Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "502": {
+            "description": "Bad Gateway",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Service Unavailable",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "504": {
+            "description": "Gateway Timeout",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/idr/v2/investigations/{identifier}/alerts": {
+      "get": {
+        "tags": [
+          "Investigations"
+        ],
+        "summary": "List alerts associated with the specified investigation",
+        "description": "An API to retrieve and list all alerts associated with an investigation, with the given id or rrn. The listed alerts are sorted in descending order by alert create time.",
+        "operationId": "listInvestigationAlerts",
+        "parameters": [
+          {
+            "name": "identifier",
+            "in": "path",
+            "description": "The ID of the investigation.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "example": "174e4f99-2ac7-4481-9301-4d24c34baf06"
+          },
+          {
+            "name": "index",
+            "in": "query",
+            "description": "The optional 0-based index of the page to retrieve. Must be an integer greater than or equal to 0.",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "default": 0,
+              "minimum": 0
+            },
+            "example": 0
+          },
+          {
+            "name": "size",
+            "in": "query",
+            "description": "The optional size of the page to retrieve. Must be an integer greater than 0, or less than or equal to 100.",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "default": 20,
+              "maximum": 100,
+              "minimum": 1
+            },
+            "example": 20
+          },
+          {
+            "name": "multi-customer",
+            "in": "query",
+            "description": "Indicates whether the requester has multi-customer access. If set to true, the ID of the investigation must be in the RRN format, the region of the RRN must match the region of the endpoint, and a user API key must be provided.",
+            "required": false,
+            "schema": {
+              "type": "boolean",
+              "default": false
+            },
+            "example": true
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PageInvestigationAlertDto"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Bad Request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthorized",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Insufficient Permissions",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Entity Not Found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "405": {
+            "description": "Method Not Allowed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal Server Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "502": {
+            "description": "Bad Gateway",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Service Unavailable",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "504": {
+            "description": "Gateway Timeout",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/idr/v2/investigations/{identifier}/alerts/{alertRrn}": {
+      "delete": {
+        "tags": [
+          "Investigations"
+        ],
+        "summary": "Remove alert associated to an investigation",
+        "description": "An API that removes the association between an alert and an investigation, which is specified by id or rrn. If the investigation is not associated with the given alert, not found exception will be thrown.",
+        "operationId": "removeAlertFromInvestigation",
+        "parameters": [
+          {
+            "name": "identifier",
+            "in": "path",
+            "description": "The id or rrn of the investigation to be changed.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "example": "174e4f99-2ac7-4481-9301-4d24c34baf06"
+          },
+          {
+            "name": "alertRrn",
+            "in": "path",
+            "description": "The rrn of the alert to be removed from the investigation.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "example": "rrn:alerts:us1:cf946362-0809-426d-987c-jkasdckjasb:alert:1:iuasdb11"
+          },
+          {
+            "name": "multi-customer",
+            "in": "query",
+            "description": "Indicates whether the requester has multi-customer access. If set to true, the ID of the investigation must be in the RRN format, the region of the RRN must match the region of the endpoint, and a user API key must be provided.",
+            "required": false,
+            "schema": {
+              "type": "boolean",
+              "default": false
+            },
+            "example": true
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK"
+          },
+          "400": {
+            "description": "Bad Request",
+            "content": {
+              "*/*": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthorized",
+            "content": {
+              "*/*": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Insufficient Permissions",
+            "content": {
+              "*/*": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Entity Not Found",
+            "content": {
+              "*/*": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "405": {
+            "description": "Method Not Allowed",
+            "content": {
+              "*/*": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal Server Error",
+            "content": {
+              "*/*": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "502": {
+            "description": "Bad Gateway",
+            "content": {
+              "*/*": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Service Unavailable",
+            "content": {
+              "*/*": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "504": {
+            "description": "Gateway Timeout",
+            "content": {
+              "*/*": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  "components": {
+    "schemas": {
+      "ErrorResponse": {
+        "type": "object",
+        "properties": {
+          "message": {
+            "type": "string",
+            "description": "A human-readable message describing the error that occurred.",
+            "example": "A human-readable message describing the error that occurred."
+          },
+          "correlation_id": {
+            "type": "string",
+            "description": "An identifier that uniquely identifies the failed request.",
+            "example": "An identifier that uniquely identifies the failed request."
+          }
+        },
+        "required": [
+          "message"
+        ]
+      },
+      "InvestigationStatusRequestV2": {
+        "type": "object",
+        "description": "Additional info to set when setting an investigation's status.",
+        "properties": {
+          "disposition": {
+            "type": "string",
+            "description": "A disposition to set the investigation to. Only used if the new status is CLOSED. Defaults to UNDECIDED upon creation.",
+            "enum": [
+              "BENIGN,MALICIOUS,NOT_APPLICABLE"
+            ],
+            "example": "BENIGN"
+          },
+          "threat_command_close_reason": {
+            "type": "string",
+            "description": "The Threat Command reason for closing, applicable only if the investigation being closed has an associated alert in Threat Command. The Close Reason description depends on the Threat Command alert type. To get this information, use: `getInvestigationRapid7ProductAlertInfo`.",
+            "enum": [
+              "ProblemSolved, InformationalOnly, ProblemWeAreAlreadyAwareOf, NotRelatedToMyCompany, FalsePositive, LegitimateApplication/Profile, CompanyOwnedDomain, Other"
+            ],
+            "example": "FalsePositive"
+          },
+          "threat_command_free_text": {
+            "type": "string",
+            "description": "Additional information provided by the user when closing a Threat Command alert.",
+            "example": "False positive alert"
+          }
+        }
+      },
+      "InvestigationV2": {
+        "type": "object",
+        "properties": {
+          "rrn": {
+            "$ref": "#/components/schemas/RRN",
+            "description": "The rrn of the investigation.",
+            "example": "rrn:investigation:us1:174e4f99-2ac7-4481-9301-4d24c34baf06:investigation:6A74T2A4"
+          },
+          "organization_id": {
+            "type": "string",
+            "writeOnly": true
+          },
+          "title": {
+            "type": "string",
+            "description": "The name of the investigation.",
+            "example": "Jane Smith enabled account Roger Johnson"
+          },
+          "source": {
+            "type": "string",
+            "description": "How this investigation was generated.",
+            "enum": [
+              "MANUAL,HUNT,ALERT"
+            ],
+            "example": "ALERT"
+          },
+          "status": {
+            "type": "string",
+            "description": "The status of the investigation.",
+            "enum": [
+              "OPEN,CLOSED,INVESTIGATING"
+            ],
+            "example": "OPEN"
+          },
+          "priority": {
+            "type": "string",
+            "description": "The investigations priority.",
+            "enum": [
+              "CRITICAL,HIGH,MEDIUM,LOW,UNSPECIFIED"
+            ],
+            "example": "CRITICAL"
+          },
+          "last_accessed": {
+            "type": "string",
+            "writeOnly": true
+          },
+          "created_time": {
+            "type": "string",
+            "writeOnly": true
+          },
+          "disposition": {
+            "type": "string",
+            "description": "The disposition of this investigation.",
+            "enum": [
+              "BENIGN,MALICIOUS,NOT_APPLICABLE,UNDECIDED"
+            ],
+            "example": "BENIGN"
+          },
+          "assignee": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Information about the user assigned to this investigation (if any)."
+          },
+          "first_alert_time": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "writeOnly": true
+          },
+          "latest_alert_time": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "writeOnly": true
+          },
+          "tags": {
+            "type": [
+              "array",
+              "null"
+            ],
+            "description": "The tags assigned to this investigation (if any).",
+            "example": [
+              "Incident",
+              "Security Test"
+            ],
+            "items": {
+              "type": "string"
+            },
+            "uniqueItems": true
+          },
+          "responsibility": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The responsibility of the investigation, which denotes who is responsible for performing the investigation. This field will only appear for Managed Detection & Response customers.",
+            "example": "CUSTOMER"
+          },
+          "organizationId": {
+            "type": "string",
+            "description": "The id of the organization that owns this investigation.",
+            "example": "174e4f99-2ac7-4481-9301-4d24c34baf06"
+          },
+          "lastAccessed": {
+            "type": "string",
+            "description": "The time this investigation was last viewed or modified.",
+            "example": "2018-06-06T16:56:42Z"
+          },
+          "createdTime": {
+            "type": "string",
+            "description": "The time this investigation was created.",
+            "example": "2018-06-06T16:56:42Z"
+          },
+          "firstAlertTime": {
+            "type": "string",
+            "description": "The create time of the first alert belonging to this investigation (if any).",
+            "example": "2018-06-06T16:56:42Z"
+          },
+          "latestAlertTime": {
+            "type": "string",
+            "description": "The create time of the most recent alert belonging to this investigation (if any).",
+            "example": "2018-06-06T16:56:42Z"
+          }
+        },
+        "required": [
+          "createdTime",
+          "disposition",
+          "lastAccessed",
+          "organizationId",
+          "priority",
+          "rrn",
+          "source",
+          "status",
+          "title"
+        ]
+      },
+      "RRN": {
+        "type": "object",
+        "properties": {
+          "partition": {
+            "type": "string"
+          },
+          "service": {
+            "type": "string"
+          },
+          "regionCode": {
+            "type": "string"
+          },
+          "organizationId": {
+            "type": "string"
+          },
+          "resourceTypes": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "resource": {
+            "type": "string"
+          }
+        }
+      },
+      "AssignUserToInvestigationRequestV2": {
+        "type": "object",
+        "description": "Details about which user to assign.",
+        "properties": {
+          "user_email_address": {
+            "type": "string",
+            "description": "The email address of the user to assign to this investigation, used to log into the insight platform. ",
+            "example": "example@test.com",
+            "minLength": 1
+          }
+        },
+        "required": [
+          "user_email_address"
+        ]
+      },
+      "AssigneeRequestV2": {
+        "type": "object",
+        "properties": {
+          "email": {
+            "type": "string",
+            "description": "The email address of the user to assign to this investigation, used to log into the insight platform. ",
+            "example": "example@test.com"
+          }
+        },
+        "required": [
+          "email"
+        ]
+      },
+      "CreateInvestigationRequestV2": {
+        "type": "object",
+        "description": "This is the field information for the new investigation.",
+        "properties": {
+          "title": {
+            "type": "string",
+            "description": "The name of the investigation.",
+            "example": "jsmith enabled account rroe",
+            "minLength": 1
+          },
+          "status": {
+            "type": "string",
+            "description": "The status of the investigation. Defaults to OPEN.",
+            "enum": [
+              "OPEN,CLOSED,INVESTIGATING"
+            ],
+            "example": "OPEN, CLOSED"
+          },
+          "priority": {
+            "type": "string",
+            "description": "The priority for the investigation. Defaults to UNSPECIFIED.",
+            "enum": [
+              "UNSPECIFIED,LOW,MEDIUM,HIGH,CRITICAL"
+            ],
+            "example": "UNSPECIFIED, LOW, MEDIUM, HIGH, CRITICAL"
+          },
+          "disposition": {
+            "type": "string",
+            "description": "The disposition for the investigation. Defaults to UNDECIDED.",
+            "enum": [
+              "UNDECIDED,BENIGN,MALICIOUS,NOT_APPLICABLE"
+            ],
+            "example": "UNDECIDED, BENIGN, MALICIOUS, NOT_APPLICABLE"
+          },
+          "assignee": {
+            "$ref": "#/components/schemas/AssigneeRequestV2",
+            "description": "The user assigned to this investigation."
+          }
+        },
+        "required": [
+          "title"
+        ]
+      },
+      "BulkCloseInvestigationsRequestV2": {
+        "type": "object",
+        "description": "The criteria for what investigations to close.",
+        "properties": {
+          "source": {
+            "type": "string",
+            "description": "The name of an investigation source. Only investigations from this source will be closed. If the source is ALERT, an alert type or a detection rule RRN must be specified as well.",
+            "enum": [
+              "ALERT,MANUAL,HUNT"
+            ],
+            "example": "ALERT"
+          },
+          "alert_type": {
+            "type": "string",
+            "description": "The category of types of alerts that should be closed. This parameter is required if the source is ALERT and ignored for other sources. This description must exactly match the alert type returned by the List Investigations response.",
+            "example": "Attacker Behavior Detected"
+          },
+          "disposition": {
+            "type": "string",
+            "description": "A disposition to set the investigation to. Defaults to NOT_APPLICABLE.",
+            "enum": [
+              "UNDECIDED,BENIGN,MALICIOUS,NOT_APPLICABLE"
+            ],
+            "example": "BENIGN"
+          },
+          "detection_rule_rrn": {
+            "type": "string",
+            "description": "The rrn of the detection rule. Only investigations that are associated with  this detection rule will be closed. If a detection rule rrn is given, the <span _ngcontent-c11 class=\"param-example-description\">alert_type</span> is required to be 'Attacker Behavior Detected'.",
+            "example": "rrn:cba:us1:a2c78570-5346-4d76-b57a-230da72c5e58:detection-rule:ABSJB123U3O9"
+          },
+          "from": {
+            "type": "string",
+            "description": "The time investigations are to be closed from. Only investigations whose createTime is after this date will be closed. Must be an ISO-formatted timestamp.",
+            "example": "2018-07-01T00:00:00Z"
+          },
+          "to": {
+            "type": "string",
+            "description": "The time investigations are to be closed by. Only investigations whose <span _ngcontent-c11 class=\"param-example-description\">created_time</span> is before this date will be closed. Must be an ISO-formatted timestamp.",
+            "example": "2018-07-08T00:00:00Z"
+          },
+          "max_investigations_to_close": {
+            "type": "integer",
+            "format": "int32",
+            "description": "An optional maximum number of alerts to close with this request. If this parameter is not specified then there is no maximum. If this limit is exceeded, then a 400 error response is returned. The minimum description is 0.",
+            "enum": [
+              "range[0, infinity]"
+            ],
+            "example": 10
+          }
+        },
+        "required": [
+          "from",
+          "source",
+          "to"
+        ]
+      },
+      "ClosedInvestigationsV2": {
+        "type": "object",
+        "properties": {
+          "ids": {
+            "type": "array",
+            "description": "The ids of the investigations that were closed by the request.",
+            "example": [
+              "581134c9-2510-4010-865c-7ae81761315b",
+              "114c706d-e64a-4731-997b-9115beef3026"
+            ],
+            "items": {
+              "type": "string"
+            },
+            "uniqueItems": true
+          },
+          "num_closed": {
+            "type": "integer",
+            "format": "int32",
+            "description": "The number of investigations closed by the request.",
+            "example": 2
+          }
+        },
+        "required": [
+          "ids",
+          "num_closed"
+        ]
+      },
+      "DatedSearchRequest": {
+        "type": "object",
+        "description": "The criteria and sorting information for searching. Includes date filtering information.",
+        "properties": {
+          "search": {
+            "type": "array",
+            "description": "The criteria for which entities to return.",
+            "items": {
+              "$ref": "#/components/schemas/SearchRequestCriteria"
+            }
+          },
+          "sort": {
+            "type": "array",
+            "description": "The sorting information.",
+            "items": {
+              "$ref": "#/components/schemas/SearchRequestSort"
+            }
+          },
+          "start_time": {
+            "type": "string",
+            "description": "An optional ISO formatted timestamp for the start of the time period to search for matching investigations. Only investigations whose <span _ngcontent-c11 class=\"param-example-value\">created_time</span> is after this date will be returned. If this field is omitted, this field will default to 28 days ago.",
+            "example": "2018-07-04T00:00:00Z"
+          },
+          "end_time": {
+            "type": "string",
+            "description": "An optional ISO formatted timestamp for the end of the time period to search for matching investigations. Only investigations whose <span _ngcontent-c11 class=\"param-example-value\">created_time</span> is before this date will be returned. If this field is omitted, the field will default to the current time. ",
+            "example": "2018-07-04T00:00:00Z"
+          }
+        }
+      },
+      "SearchRequestCriteria": {
+        "type": "object",
+        "properties": {
+          "field": {
+            "type": "string",
+            "description": "The field to search within.",
+            "example": "name"
+          },
+          "operator": {
+            "type": "string",
+            "description": "The search operation to perform. All operators are case-insensitive when operating on Strings",
+            "enum": [
+              "EQUALS,CONTAINS,IN"
+            ]
+          },
+          "value": {
+            "description": "The value to search for."
+          }
+        }
+      },
+      "SearchRequestSort": {
+        "type": "object",
+        "properties": {
+          "field": {
+            "type": "string",
+            "description": "The field to sort by.",
+            "example": "name"
+          },
+          "order": {
+            "type": "string",
+            "description": "The sorting direction. Sorting is case-insensitive when sorting Strings.",
+            "enum": [
+              "ASC,DESC"
+            ]
+          }
+        }
+      },
+      "PageInvestigationV2": {
+        "type": "object",
+        "properties": {
+          "data": {
+            "type": "array",
+            "description": "The list of data that matches the pagination parameters. If no results match, this will be an empty list.",
+            "items": {
+              "$ref": "#/components/schemas/InvestigationV2"
+            }
+          },
+          "metadata": {
+            "$ref": "#/components/schemas/PageMetadata",
+            "description": "The pagination parameters used to generate this page result. "
+          }
+        },
+        "required": [
+          "data",
+          "metadata"
+        ]
+      },
+      "PageMetadata": {
+        "type": "object",
+        "properties": {
+          "index": {
+            "type": "integer",
+            "format": "int32",
+            "description": "The 0 based index of the page retrieved. ",
+            "example": 0
+          },
+          "size": {
+            "type": "integer",
+            "format": "int32",
+            "description": "The size of the page requested. ",
+            "example": 20
+          },
+          "total_pages": {
+            "type": "integer",
+            "format": "int32",
+            "description": "The total number of pages available with the given filter parameters. ",
+            "example": 1
+          },
+          "total_data": {
+            "type": "integer",
+            "format": "int64",
+            "description": "The total number of results available with the given filter parameters. ",
+            "example": 15
+          }
+        },
+        "required": [
+          "index",
+          "size",
+          "total_data",
+          "total_pages"
+        ]
+      },
+      "UpdateInvestigationRequestV2": {
+        "type": "object",
+        "description": "The updates to the investigation fields.",
+        "properties": {
+          "title": {
+            "type": "string",
+            "description": "The new name of the investigation. The title will not update if omitted.",
+            "example": "jsmith enabled account rroe"
+          },
+          "status": {
+            "type": "string",
+            "description": "The new status for the investigations. The status will not update if omitted.",
+            "enum": [
+              "OPEN,INVESTIGATING,CLOSED"
+            ],
+            "example": "OPEN"
+          },
+          "priority": {
+            "type": "string",
+            "description": "The new priority for the investigation. The priority will not update if omitted.",
+            "enum": [
+              "UNSPECIFIED,LOW,MEDIUM,HIGH,CRITICAL"
+            ],
+            "example": "HIGH"
+          },
+          "disposition": {
+            "type": "string",
+            "description": "The new disposition for the investigation. The disposition will not update if omitted.",
+            "enum": [
+              "BENIGN,MALICIOUS,NOT_APPLICABLE"
+            ],
+            "example": "BENIGN"
+          },
+          "assignee": {
+            "$ref": "#/components/schemas/AssigneeRequestV2",
+            "description": "The new user assigned to this investigation. To unassign a user, set email to null. The assignee will not update if the object is null or omitted."
+          },
+          "threat_command_close_reason": {
+            "type": "string",
+            "description": "The Threat Command reason for closing, applicable only if the investigation being closed has an associated alert in Threat Command. The Close Reason description depends on the Threat Command alert type. To get this information, use: `getInvestigationRapid7ProductAlertInfo`.",
+            "enum": [
+              "ProblemSolved, InformationalOnly, ProblemWeAreAlreadyAwareOf, NotRelatedToMyCompany, FalsePositive, LegitimateApplication/Profile, CompanyOwnedDomain, Other"
+            ],
+            "example": "FalsePositive"
+          },
+          "threat_command_free_text": {
+            "type": "string",
+            "description": "Additional information provided by the user when closing a Threat Command alert.",
+            "example": "False positive alert"
+          }
+        }
+      },
+      "InsightAgentInfoDto": {
+        "type": "object",
+        "properties": {
+          "alert_id": {
+            "type": "string",
+            "description": "The unique identifier for this alert in the Insight Agent.",
+            "example": "01212121-0000-1111-92b0-67ed112073b8"
+          },
+          "alert_type": {
+            "type": "string",
+            "description": "The type of alert in the Insight Agent.",
+            "example": "Endpoint Prevention"
+          },
+          "agent_action_taken": {
+            "type": "string",
+            "description": "The action that was taken by the Insight Agent, as mentioned in this alert.",
+            "example": "Block"
+          }
+        },
+        "required": [
+          "alert_id",
+          "alert_type"
+        ]
+      },
+      "SecondPartyInfoDtoV2": {
+        "type": "object",
+        "properties": {
+          "type": {
+            "type": "string",
+            "description": "String representing the Rapid7 product which is associated with the investigation.",
+            "example": "THREAT_COMMAND"
+          },
+          "threat_command_details": {
+            "$ref": "#/components/schemas/ThreatCommandInfoDto",
+            "description": "Object representing the Threat Command alert associated with an investigation. This object will be present only when the Type field is set to 'THREAT_COMMAND'.",
+            "example": {
+              "alert_id": "620ba5123b2aff3303ed65f3",
+              "alert_type": "Phishing",
+              "applicable_close_reasons": [
+                "ProblemSolved",
+                "InformationalOnly",
+                "Other"
+              ]
+            }
+          },
+          "insight_agent_details": {
+            "type": "array",
+            "description": "Object representing the Insight Agent alert associated with an investigation. This object will be present only when the Type field is set to 'INSIGHT AGENT'.",
+            "example": [
+              {
+                "alert_id": "972bef1b-72c9-48d2-9e33-ca9056cfe086",
+                "alert_type": "Endpoint Prevention",
+                "agent_action_taken": "Block"
+              }
+            ],
+            "items": {
+              "$ref": "#/components/schemas/InsightAgentInfoDto"
+            }
+          }
+        },
+        "required": [
+          "type"
+        ]
+      },
+      "ThreatCommandInfoDto": {
+        "type": "object",
+        "properties": {
+          "alert_id": {
+            "type": "string",
+            "description": "The unique identifier for this alert in Threat Command.",
+            "example": "620ba5123b2aff3303ed65f3"
+          },
+          "alert_type": {
+            "type": "string",
+            "description": "The type of alert in Threat Command.",
+            "example": "Phishing"
+          },
+          "applicable_close_reasons": {
+            "type": "array",
+            "description": "The list of applicable close reasons, based on the alert type, that can be used to close an alert on Threat Command side.",
+            "example": [
+              "ProblemSolved",
+              "InformationalOnly",
+              "Other"
+            ],
+            "items": {
+              "type": "string"
+            }
+          }
+        },
+        "required": [
+          "alert_id",
+          "alert_type",
+          "applicable_close_reasons"
+        ]
+      },
+      "DetectionRuleDto": {
+        "type": "object",
+        "properties": {
+          "ruleName": {
+            "type": "string",
+            "description": "The name of the detection rule.",
+            "example": "Attacker Technique - Accessibility Tool Launching Process"
+          },
+          "ruleRrn": {
+            "$ref": "#/components/schemas/RRN",
+            "description": "The rrn of the detection rule.",
+            "example": "rrn:cba:::detection-rule:FX11KBBSCK20"
+          }
+        },
+        "required": [
+          "ruleName",
+          "ruleRrn"
+        ]
+      },
+      "InvestigationAlertDto": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "description": "The alert's ID.",
+            "example": "174e4f99-2ac7-4481-9301-4d24c34baf06"
+          },
+          "title": {
+            "type": "string",
+            "description": "The alert's title",
+            "example": "Account jdoe had INBOUND firewall traffic from 1.2.3.4 (tracked in MyThreat) to 10.1.2.3"
+          },
+          "alertType": {
+            "type": "string",
+            "description": "The alert's type.",
+            "example": "Account Created"
+          },
+          "alertTypeDescription": {
+            "type": "string",
+            "description": "A description of this type of alert.",
+            "example": "A new account has been created."
+          },
+          "createdTime": {
+            "type": "string",
+            "description": "The time the alert was created.",
+            "example": "2018-06-06T16:56:42Z"
+          },
+          "firstEventTime": {
+            "type": "string",
+            "description": "The time the first event involved in this alert occurred.",
+            "example": "2018-06-06T16:56:42Z"
+          },
+          "latestEventTime": {
+            "type": "string",
+            "description": "The time the most recent event involved in this alert occurred.",
+            "example": "2018-06-06T16:56:42Z"
+          },
+          "alertSource": {
+            "type": "string",
+            "description": "The source of the alert.",
+            "example": "User Behavior Analytics"
+          },
+          "detectionRuleRrn": {
+            "$ref": "#/components/schemas/DetectionRuleDto",
+            "description": "The detection rule that generated this alert, if any."
+          }
+        },
+        "required": [
+          "alertSource",
+          "alertType",
+          "alertTypeDescription",
+          "createdTime",
+          "id",
+          "title"
+        ]
+      },
+      "PageInvestigationAlertDto": {
+        "type": "object",
+        "properties": {
+          "data": {
+            "type": "array",
+            "description": "The list of data that matches the pagination parameters. If no results match, this will be an empty list.",
+            "items": {
+              "$ref": "#/components/schemas/InvestigationAlertDto"
+            }
+          },
+          "metadata": {
+            "$ref": "#/components/schemas/PageMetadata",
+            "description": "The pagination parameters used to generate this page result. "
+          }
+        },
+        "required": [
+          "data",
+          "metadata"
+        ]
+      }
+    }
+  }
+}

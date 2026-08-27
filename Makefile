@@ -1,7 +1,7 @@
 .PHONY: help version check-version bump-version lint lint-fix security test build \
        docker-build docker-build-slim docker-build-distroless docker-test docker-test-slim \
        docker-test-distroless docker-clean package-mcpb package-skill package clean \
-       create-release release
+       create-release release check-idr-spec
 
 SHELL := /usr/bin/env bash
 VERSION := $(shell jq -r '.version' manifest.json)
@@ -44,6 +44,13 @@ bump-version: ## Set a new version: make bump-version V=0.3.0
 	sed -i.bak 's/^version: .*/version: $(V)/' rapid7-bulk-export-skill/SKILL.md && rm -f rapid7-bulk-export-skill/SKILL.md.bak
 	uv lock
 	@echo "Bumped to $(V)"
+
+# ---------------------------------------------------------------------------
+# InsightIDR skill maintenance
+# ---------------------------------------------------------------------------
+
+check-idr-spec: ## Check for updates to the InsightIDR API spec (weekly gate; downloads if changed; --force to bypass)
+	uv run python scripts/check_idr_api_spec.py $(if $(FORCE),--force)
 
 # ---------------------------------------------------------------------------
 # Quality
