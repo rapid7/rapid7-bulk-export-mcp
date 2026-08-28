@@ -64,3 +64,5 @@ rapid7_bulk_export.db.wal
 *.mcpb
 rapid7-bulk-export-skill-*.zip
 rapid7-bulk-export-skill.zip
+rapid7-insightidr-skill-*.zip
+rapid7-insightidr-skill.zip

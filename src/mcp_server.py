@@ -1397,8 +1397,22 @@ def list_logsets() -> str:
         openWorldHint=True,
     )
 )
-def query_logs(log_ids: str, statement: str, time_range: str = "Last 1 Day", from_ms: int = 0, to_ms: int = 0) -> str:
+def query_logs(
+    log_ids: str,
+    statement: str,
+    time_range: str = "Last 1 Day",
+    from_ms: int = 0,
+    to_ms: int = 0,
+    max_wait_seconds: float = 30.0,
+    max_events: int = 5000,
+) -> str:
     """Run a LEQL query against one or more logs and return matching events.
+
+    The underlying API returns results in chunks (observed chunk size: 50)
+    behind a polling link — this tool follows every chunk automatically and
+    returns them newest-first, up to max_events or until max_wait_seconds
+    elapses, whichever comes first. Raise max_wait_seconds for a log with a
+    high event volume if the result looks truncated.
 
     PRIVACY NOTE: Raw log events can contain personal data (usernames,
     emails, IP addresses, actions taken) — this is real organizational
@@ -1416,10 +1430,15 @@ def query_logs(log_ids: str, statement: str, time_range: str = "Last 1 Day", fro
         from_ms: Start of an explicit time window, Unix milliseconds.
                  Use with to_ms instead of time_range for a precise range.
         to_ms: End of an explicit time window, Unix milliseconds.
+        max_wait_seconds: How long to keep following chunk links before
+                           returning whatever's been collected so far.
+        max_events: Stop accumulating once this many events are collected.
 
     Returns:
-        Matching log events, or a note if the query is still processing
-        (rare — only for unusually large/slow queries).
+        Matching log events, newest first. If the query is still producing
+        more chunks when max_wait_seconds/max_events is hit, the events
+        collected so far are still returned, with a note that more may be
+        available.
     """
     try:
         config = load_config()
@@ -1428,16 +1447,15 @@ def query_logs(log_ids: str, statement: str, time_range: str = "Last 1 Day", fro
             return "✗ log_ids must contain at least one log ID."
 
         kwargs = {"time_range": time_range} if not (from_ms and to_ms) else {"from_ms": from_ms, "to_ms": to_ms}
-        result = idr_query_logs(config, ids, statement, **kwargs)
-
-        if _log_query_still_pending(result):
-            return (
-                f"⏳ Query still processing (id: {result.get('id', '?')}). "
-                f"This is unusual for most queries — try narrowing the time range or statement."
-            )
+        result = idr_query_logs(
+            config, ids, statement, max_wait_seconds=max_wait_seconds, max_events=max_events, **kwargs
+        )
 
         events = result.get("events", [])
-        return f"Found {len(events)} matching event(s):\n\n{_format_log_events(events)}"
+        header = f"Found {len(events)} matching event(s)"
+        if _log_query_still_pending(result):
+            header += " (query still has more chunks — raise max_wait_seconds/max_events for more)"
+        return f"{header}:\n\n{_format_log_events(events)}"
 
     except Exception as e:
         return f"✗ Error querying logs: {str(e)}"
@@ -1489,27 +1507,34 @@ def list_saved_queries() -> str:
         openWorldHint=True,
     )
 )
-def run_saved_query(saved_query_id: str) -> str:
+def run_saved_query(saved_query_id: str, max_wait_seconds: float = 30.0, max_events: int = 5000) -> str:
     """Run a previously saved LEQL query and return matching events.
+
+    Follows every result chunk automatically (see query_logs) and returns
+    events newest-first, up to max_events or max_wait_seconds.
 
     PRIVACY NOTE: same as query_logs — raw log events can contain real
     personal data. Handle accordingly.
 
     Args:
         saved_query_id: The saved query's ID (from list_saved_queries).
+        max_wait_seconds: How long to keep following chunk links before
+                           returning whatever's been collected so far.
+        max_events: Stop accumulating once this many events are collected.
 
     Returns:
-        Matching log events, or a note if still processing.
+        Matching log events, newest first, with a note if more chunks
+        remain beyond max_wait_seconds/max_events.
     """
     try:
         config = load_config()
-        result = idr_run_saved_query(config, saved_query_id)
-
-        if _log_query_still_pending(result):
-            return f"⏳ Query still processing (id: {result.get('id', '?')}). Try again shortly."
+        result = idr_run_saved_query(config, saved_query_id, max_wait_seconds=max_wait_seconds, max_events=max_events)
 
         events = result.get("events", [])
-        return f"Found {len(events)} matching event(s):\n\n{_format_log_events(events)}"
+        header = f"Found {len(events)} matching event(s)"
+        if _log_query_still_pending(result):
+            header += " (query still has more chunks — raise max_wait_seconds/max_events for more)"
+        return f"{header}:\n\n{_format_log_events(events)}"
 
     except Exception as e:
         return f"✗ Error running saved query: {str(e)}"

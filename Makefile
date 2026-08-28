@@ -1,6 +1,6 @@
 .PHONY: help version check-version bump-version lint lint-fix security test build \
        docker-build docker-build-slim docker-build-distroless docker-test docker-test-slim \
-       docker-test-distroless docker-clean package-mcpb package-skill package clean \
+       docker-test-distroless docker-clean package-mcpb package-skill package-skill-idr package clean \
        create-release release check-idr-spec
 
 SHELL := /usr/bin/env bash
@@ -156,7 +156,11 @@ package-skill: ## Zip the agent skill directory
 	cd rapid7-bulk-export-skill && zip -r "../rapid7-bulk-export-skill-$(VERSION).zip" .
 	@echo "Built rapid7-bulk-export-skill-$(VERSION).zip"
 
-package: package-mcpb package-skill ## Build all release artifacts
+package-skill-idr: ## Zip the InsightIDR agent skill directory (SKILL.md + references/)
+	cd rapid7-insightidr-skill && zip -r "../rapid7-insightidr-skill-$(VERSION).zip" .
+	@echo "Built rapid7-insightidr-skill-$(VERSION).zip"
+
+package: package-mcpb package-skill package-skill-idr ## Build all release artifacts
 
 # ---------------------------------------------------------------------------
 # Release (used by CI -- requires GH_TOKEN and gh CLI)
@@ -165,16 +169,20 @@ package: package-mcpb package-skill ## Build all release artifacts
 create-release: ## Upload artifacts to a new GitHub release
 	@MCPB=$$(ls *.mcpb 2>/dev/null | head -1); \
 	SKILL="rapid7-bulk-export-skill-$(VERSION).zip"; \
+	SKILL_IDR="rapid7-insightidr-skill-$(VERSION).zip"; \
 	if [ -z "$$MCPB" ]; then echo "ERROR: no .mcpb artifact found -- run make package first"; exit 1; fi; \
 	if [ ! -f "$$SKILL" ]; then echo "ERROR: $$SKILL not found -- run make package first"; exit 1; fi; \
+	if [ ! -f "$$SKILL_IDR" ]; then echo "ERROR: $$SKILL_IDR not found -- run make package first"; exit 1; fi; \
 	echo "Creating release v$(VERSION)"; \
-	echo "  MCPB:  $$MCPB"; \
-	echo "  Skill: $$SKILL"; \
+	echo "  MCPB:      $$MCPB"; \
+	echo "  Skill:     $$SKILL"; \
+	echo "  Skill IDR: $$SKILL_IDR"; \
 	gh release create "v$(VERSION)" \
 		--title "Release v$(VERSION)" \
 		--generate-notes \
 		"$$MCPB" \
-		"$$SKILL"
+		"$$SKILL" \
+		"$$SKILL_IDR"
 
 release: check-version package create-release ## Full release: verify, build, and publish
 

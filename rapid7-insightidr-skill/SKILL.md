@@ -1,6 +1,6 @@
 ---
 name: Rapid7 InsightIDR Investigations Expert
-description: Expert guidance for triaging, reviewing, commenting on, assigning, and closing Rapid7 InsightIDR investigations, plus searching raw log data (LEQL), via the Command Platform REST API
+description: Expert guidance for triaging, reviewing, commenting on, assigning, and closing Rapid7 InsightIDR investigations, plus searching raw log data (LEQL) — including paginating past query_logs' ~50-events-per-call cap to get the real last N events, all events over a period, or an approximate top-N by field — via the Command Platform REST API
 version: 0.5.0
 author: rozumeyroman@gmail.com
 tags: [security, siem, xdr, rapid7, insightidr, investigations, incident-response]
@@ -141,6 +141,57 @@ query_logs(log_ids="<id>", statement="<LEQL>", time_range="Last 7 Days")
 **PRIVACY — same treatment as `get_alert_evidence`**: `query_logs` and `run_saved_query` return raw log content that can include real personal data (usernames, emails, source IPs, actions like password resets). Only fetch what's needed, extract relevant fields when presenting results instead of dumping every raw event by default, and never forward this output externally without the user's explicit instruction.
 
 **Async queries**: most queries resolve immediately. If `query_logs`/`run_saved_query` reports "still processing," that's unusual — consider narrowing the time range or statement rather than just retrying the same query, since retrying creates a brand-new query rather than resuming the pending one.
+
+### Pagination — getting more than 50 events, or the real "last N"
+
+**Empirically confirmed (live testing, not documented behavior)**: `query_logs` reliably returns at most ~50 events per call, regardless of `time_range` width or `max_events`. Those events are the **earliest matches chronologically within the requested window** — i.e. the *first* N events of the window, not the *last* N. Asking for `time_range="Last 1 Day"` and getting exactly 50 events back does NOT mean those are the day's most recent events; they're very likely a cluster from near the start of that window. Do not report a capped result as "the last N events" without pagination — say what it actually is instead.
+
+**Do not try to work around this by shrinking `time_range` alone** (e.g. jumping straight to `"Last 5 Minutes"`) — a very narrow window combined with several `log_ids` at once can itself return `400 Bad Request`. Widen first, then paginate forward with `from_ms` as below.
+
+**Algorithm — the real "last N events" (most recent first)**:
+1. Call `query_logs` with a reasonably wide `time_range` (e.g. `"Last 1 Hour"` or `"Last 1 Day"` — not `"Last 5 Minutes"`).
+2. If the response has exactly ~50 events, that's one page, not the whole window. Take the **maximum timestamp** in that page.
+3. Call `query_logs` again with `from_ms = <that max timestamp> + 1000` and `to_ms` left at the original window's end (or omitted to mean "now").
+4. Repeat step 2–3, accumulating pages, until either:
+   - a page comes back with fewer than ~50 events (you've reached the end of available data), or
+   - you've collected enough events / hit the safety limit below.
+5. Sort everything accumulated by timestamp descending and take the tail (most recent N) — that's the real answer.
+
+**Algorithm — "all events in period X" (period may contain >50 events)**:
+Same loop as above, but the stopping condition is `to_ms` (the end of the requested period) being reached, not a target count.
+
+**Safety limit**: stop and tell the user if the loop is approaching ~20 iterations / ~1000 accumulated events / ~30 seconds of wall time, rather than looping indefinitely — a busy log (e.g. a firewall log during a scan) can produce hundreds of events per second and never "run out" within a reasonable window.
+
+**Worked example** (3 log_ids for one logical log, `statement=""` to match everything):
+```
+Call 1: query_logs(log_ids="id-a,id-b,id-c", statement="", time_range="Last 1 Hour")
+  → 50 events, timestamps span 07:58:04–07:58:40 (NOT up to "now" — this is
+    the window's first page)
+  → max timestamp seen: 1787903920681 (07:58:40.681)
+
+Call 2: query_logs(log_ids="id-a,id-b,id-c", statement="",
+                    from_ms=1787903921681, to_ms=<end of original 1-hour window>)
+  → 50 more events, timestamps span 07:58:40–07:59:12
+  → max timestamp seen: 1787903952000
+
+Call 3: query_logs(log_ids="id-a,id-b,id-c", statement="",
+                    from_ms=1787903953000, to_ms=<end of original window>)
+  → 12 events, timestamps span 07:59:12–07:59:24 — fewer than ~50, so this
+    is genuinely the end of matching data in this window (or the point
+    where activity actually goes quiet — worth double-checking the next
+    time slice returns 0 before concluding "no more events" vs. "another
+    page follows")
+
+→ Accumulated 112 events total, sorted descending by timestamp — take
+  however many the user actually asked for from the top (most recent).
+```
+
+**Aggregation (top-N by field, count-by-field, etc.)**: `groupby()`/`calculate()` LEQL statements reliably return `400 Bad Request` through `query_logs` — the backend aggregation path does not work through this tool. Do not retry these statements expecting a different result. Instead:
+1. Pull the raw events with the pagination loop above (`statement=""` or a `where(...)` filter, never `groupby`/`calculate`).
+2. Compute the aggregate client-side (e.g. count occurrences of `source_address` across the accumulated events with a short script).
+3. **Explicitly tell the user this is an approximation bounded by however many raw events were actually collected**, not an exact count over the entire source — phrase it as "of the N events I pulled, the top source IPs were..." rather than presenting it as a complete statistical answer.
+
+**Finding the right `log_ids`**: a single logical log (e.g. "O365", "Gigatrans") is often split across multiple `log_ids` (duplicate instances/collectors) — pass all of them together in one `log_ids` list, or you will silently miss part of the activity. Prefer `list_logsets()` over manually scanning `list_logs()` when the task maps to a named functional grouping (e.g. "Firewall Activity", "Ingress Authentication") — it's the intended starting point for "give me everything relevant to X" rather than eyeballing a flat log list.
 
 ### Log Search — Saved Queries (SAFETY FLOW)
 
@@ -327,6 +378,10 @@ If `get_investigations` returns zero results:
 If `query_logs`/`run_saved_query` reports "still processing" after the internal poll window:
 1. This is unusual for typical queries — mention it to the user rather than silently retrying in a loop
 2. Consider narrowing the time range or statement; a fresh call starts a new query, it does not resume the pending one
+
+If `query_logs` returns `400 Bad Request` on a `groupby()`/`calculate()` statement:
+1. This is expected — aggregation LEQL does not work through this tool (see "Pagination — getting more than 50 events" above)
+2. Do not retry the same aggregation statement. Switch to pulling raw events (`statement=""` or `where(...)`) and aggregate client-side instead
 
 If `create_saved_query` fails with a JSON mapping error:
 1. Check that at least one `log_id` is valid (from `list_logs`) and the LEQL `statement` is well-formed

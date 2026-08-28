@@ -71,6 +71,7 @@ jobs:
           subject-path: |
             *.mcpb
             rapid7-bulk-export-skill-${{ steps.version.outputs.version }}.zip
+            rapid7-insightidr-skill-${{ steps.version.outputs.version }}.zip
 
       - name: Create GitHub release
         env:

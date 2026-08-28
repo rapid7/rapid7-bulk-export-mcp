@@ -21,8 +21,9 @@ from .insightidr_client import send_idr_request
 
 _LOG_SEARCH_BASE = "/log_search"
 
-_DEFAULT_MAX_WAIT_SECONDS = 15.0
-_DEFAULT_POLL_INTERVAL_SECONDS = 1.5
+_DEFAULT_MAX_WAIT_SECONDS = 30.0
+_DEFAULT_POLL_INTERVAL_SECONDS = 1.0
+_DEFAULT_MAX_EVENTS = 5000
 
 
 def _build_during(time_range: Optional[str], from_ms: Optional[int], to_ms: Optional[int]) -> Dict[str, Any]:
@@ -36,17 +37,25 @@ def _poll_until_ready(
     initial_result: Dict[str, Any],
     max_wait_seconds: float,
     poll_interval_seconds: float,
+    max_events: int = _DEFAULT_MAX_EVENTS,
 ) -> Dict[str, Any]:
     """Follow a query's self-link until it returns a final result or max_wait_seconds elapses.
 
     A pending (202) response already contains an "events" key — an empty
     list, not an absent key — so completion is signaled by the "links"
     self-href disappearing, not by "events" being present.
+
+    Each response is one chunk of matching events (observed chunk size:
+    50), not the full result set — the self-link is a continuation token
+    that must be followed and accumulated across every response, not just
+    the last one. Accumulated events are sorted newest-first by timestamp
+    to match Log Search UI ordering.
     """
     result = initial_result
+    events: List[Dict[str, Any]] = list(initial_result.get("events", []))
     elapsed = 0.0
 
-    while elapsed < max_wait_seconds:
+    while elapsed < max_wait_seconds and len(events) < max_events:
         poll_url = next(
             (link["href"] for link in result.get("links", []) if link.get("rel", "").lower() == "self"),
             None,
@@ -58,6 +67,11 @@ def _poll_until_ready(
         # poll_url is already a full absolute URL — pass it as `path` with
         # an empty base_url rather than re-deriving idr_base + a relative path.
         result = send_idr_request("GET", "", poll_url, config["api_key"])
+        events.extend(result.get("events", []))
+
+    if "events" in result or events:
+        result = dict(result)
+        result["events"] = sorted(events, key=lambda e: e.get("timestamp", 0), reverse=True)[:max_events]
 
     return result
 
@@ -81,6 +95,7 @@ def query_logs(
     to_ms: Optional[int] = None,
     max_wait_seconds: float = _DEFAULT_MAX_WAIT_SECONDS,
     poll_interval_seconds: float = _DEFAULT_POLL_INTERVAL_SECONDS,
+    max_events: int = _DEFAULT_MAX_EVENTS,
 ) -> Dict[str, Any]:
     """Run a LEQL query against one or more logs and return matching events.
 
@@ -94,15 +109,17 @@ def query_logs(
         from_ms: Start of an explicit time window, Unix ms. Used only if
             time_range is not given.
         to_ms: End of an explicit time window, Unix ms.
-        max_wait_seconds: How long to keep polling a slow query before
-            giving up and returning whatever's available.
+        max_wait_seconds: How long to keep polling and accumulating result
+            chunks before giving up and returning whatever's collected.
         poll_interval_seconds: Delay between polls.
+        max_events: Stop accumulating once this many events are collected.
 
     Returns:
-        The raw API response. On success this includes an "events" list;
-        if the query is still processing after max_wait_seconds, the
-        response won't have "events" yet — check for that key rather than
-        assuming success.
+        The raw API response with "events" replaced by the accumulated,
+        newest-first event list across every chunk fetched. If the query
+        still has more chunks when max_wait_seconds/max_events is hit, the
+        response still carries its "links" self-href — see
+        _poll_until_ready's docstring.
     """
     body = {
         "logs": log_ids,
@@ -111,7 +128,7 @@ def query_logs(
     initial = send_idr_request(
         "POST", config["idr_base"], f"{_LOG_SEARCH_BASE}/query/logs", config["api_key"], json_body=body
     )
-    return _poll_until_ready(config, initial, max_wait_seconds, poll_interval_seconds)
+    return _poll_until_ready(config, initial, max_wait_seconds, poll_interval_seconds, max_events)
 
 
 def list_saved_queries(config: Dict[str, str]) -> Dict[str, Any]:
@@ -159,6 +176,7 @@ def run_saved_query(
     saved_query_id: str,
     max_wait_seconds: float = _DEFAULT_MAX_WAIT_SECONDS,
     poll_interval_seconds: float = _DEFAULT_POLL_INTERVAL_SECONDS,
+    max_events: int = _DEFAULT_MAX_EVENTS,
 ) -> Dict[str, Any]:
     """Run a previously saved query and return matching events.
 
@@ -171,4 +189,4 @@ def run_saved_query(
         f"{_LOG_SEARCH_BASE}/query/saved_query/{saved_query_id}",
         config["api_key"],
     )
-    return _poll_until_ready(config, initial, max_wait_seconds, poll_interval_seconds)
+    return _poll_until_ready(config, initial, max_wait_seconds, poll_interval_seconds, max_events)

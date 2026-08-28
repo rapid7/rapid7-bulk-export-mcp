@@ -99,6 +99,47 @@ class TestQueryLogs:
         assert len(responses.calls) == 3
 
     @responses.activate
+    def test_accumulates_events_across_chunks_newest_first(self):
+        # Each response is one chunk (observed size: 50), not the full
+        # result set — every chunk's events must be collected, not just
+        # the last one, and returned sorted newest-first.
+        poll_url = "https://eu.api.insight.rapid7.com/log_search/query/abc-123"
+        chunk1 = {
+            "id": "abc-123",
+            "events": [{"log_id": "l1", "timestamp": 100}],
+            "links": [{"rel": "self", "href": poll_url}],
+        }
+        chunk2 = {
+            "id": "abc-123",
+            "events": [{"log_id": "l1", "timestamp": 200}],
+            "links": [{"rel": "self", "href": poll_url}],
+        }
+        final = {"id": "abc-123", "events": [{"log_id": "l1", "timestamp": 300}]}
+        responses.add(responses.POST, f"{BASE}/query/logs", json=chunk1, status=202)
+        responses.add(responses.GET, poll_url, json=chunk2, status=202)
+        responses.add(responses.GET, poll_url, json=final, status=200)
+
+        result = query_logs(CONFIG, ["l1"], "where(user)", time_range="Today", poll_interval_seconds=0.01)
+
+        assert [e["timestamp"] for e in result["events"]] == [300, 200, 100]
+
+    @responses.activate
+    def test_stops_accumulating_at_max_events(self):
+        poll_url = "https://eu.api.insight.rapid7.com/log_search/query/abc-123"
+        chunk = {
+            "id": "abc-123",
+            "events": [{"log_id": "l1", "timestamp": 1}, {"log_id": "l1", "timestamp": 2}],
+            "links": [{"rel": "self", "href": poll_url}],
+        }
+        responses.add(responses.POST, f"{BASE}/query/logs", json=chunk, status=202)
+        responses.add(responses.GET, poll_url, json=chunk, status=202)
+
+        result = query_logs(CONFIG, ["l1"], "where(user)", time_range="Today", poll_interval_seconds=0.01, max_events=3)
+
+        assert len(result["events"]) == 3
+        assert len(responses.calls) == 2
+
+    @responses.activate
     def test_gives_up_after_max_wait_without_events(self):
         poll_url = "https://eu.api.insight.rapid7.com/log_search/query/abc-123"
         pending = {"id": "abc-123", "events": [], "links": [{"rel": "self", "href": poll_url}]}
