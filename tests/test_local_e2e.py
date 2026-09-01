@@ -316,6 +316,53 @@ def test_FullExportRoundTrip_ParallelWithToolCoverage():
             mcp_server.db = orig_db
 
         # ==================================================================
+        # PHASE 3c: Multi-window remediation job (the collapsing-export-ID fix)
+        #
+        # Drive the real start_rapid7_export(remediation) over a >31-day range
+        # so it splits into multiple windows, then poll the single job to
+        # completion. Regression for the bug where multiple windows collapsed
+        # onto one export ID and only one month loaded. Isolated DB.
+        # ==================================================================
+        print("\n" + "=" * 70)
+        print("PHASE 3c: Multi-window remediation job")
+        print("=" * 70)
+
+        rem_dir = Path(tmpdir) / "remediation_job"
+        rem_dir.mkdir()
+        orig_data_dir = mcp_server._DATA_DIR
+        orig_db = mcp_server.db
+        mcp_server._DATA_DIR = rem_dir
+        mcp_server.db = VulnerabilityDatabase(str(rem_dir / "rapid7_bulk_export.db"))
+        try:
+            rem_start = (_dt.date.today() - _dt.timedelta(days=75)).isoformat()
+            rem_end = _dt.date.today().isoformat()
+            expected_windows = len(build_remediation_date_chunks(rem_start, rem_end))
+            assert expected_windows >= 3, f"expected a multi-window range, got {expected_windows}"
+
+            started = mcp_server.start_rapid7_export(export_type="remediation", start_date=rem_start, end_date=rem_end)
+            job_id = next(line.split("Job ID:", 1)[1].strip() for line in started.splitlines() if "Job ID:" in line)
+            print(f"  ✓ started remediation job {job_id} over {expected_windows} windows")
+
+            deadline = time.monotonic() + _MAX_WAIT
+            final = ""
+            while time.monotonic() < deadline:
+                final = mcp_server.check_rapid7_export_status(export_id=job_id)
+                if "loaded for all" in final or "failed partway" in final:
+                    break
+                time.sleep(_POLL_INTERVAL)
+
+            assert "loaded for all" in final, f"remediation job did not complete cleanly: {final}"
+
+            # The job must have created DISTINCT export IDs, one per window.
+            job = ExportTracker(str(rem_dir / "rapid7_bulk_export_tracking.db")).get_job(job_id)
+            eids = [c["export_id"] for c in job["chunks"]]
+            assert len(eids) == len(set(eids)) == expected_windows, f"windows collapsed: {eids}"
+            print(f"  ✓ {expected_windows} distinct window export IDs, no collapse")
+        finally:
+            mcp_server._DATA_DIR = orig_data_dir
+            mcp_server.db = orig_db
+
+        # ==================================================================
         # PHASE 4: Assert cross-export table coexistence (the original bug)
         # ==================================================================
         print("\n" + "=" * 70)

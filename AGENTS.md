@@ -101,9 +101,22 @@ Each step is non-blocking. The tracking DB (`rapid7_bulk_export_tracking.db`) re
 - `download_rapid7_export` handles this automatically based on `export_type`
 
 **Remediation exports**
-- API limit: 31 days per request — larger ranges are chunked automatically
-- Today-reuse logic is skipped for remediation (date-range scoped, not a snapshot)
-- All chunks load into a single `vulnerability_remediation` table via append mode
+- The platform allows only ONE export per type in flight at a time. Remediation
+  is date-range scoped, so concurrent windows cannot be created — they must be
+  produced strictly one at a time.
+- API limit: 31 days per request. A larger range is split into ≤31-day windows.
+- `start_rapid7_export(export_type="remediation", start_date, end_date)` hands the
+  whole range to a single background job that, per window, sequentially:
+  create → poll to COMPLETE → download → load (`append=True`). It returns a
+  `job_id` immediately; poll it with `check_rapid7_export_status(export_id=job_id)`.
+- If the platform reports another remediation export already in flight, the job
+  waits and recreates its OWN window rather than adopting the foreign export id
+  (that id may cover a different date range).
+- Today-reuse logic is skipped for remediation (date-range scoped, not a snapshot).
+- All windows append into a single `vulnerability_remediation` table.
+- Partial failure is explicit: if a window fails, the loaded windows are kept and
+  the job message names exactly which windows loaded and which are missing, so the
+  missing range can be re-run.
 
 **best_solution fields**
 - `bestSolutionType`, `bestSolutionSummary`, `bestSolutionFix` appear in the `vulnerabilities` table if the org is enabled
@@ -134,9 +147,9 @@ The actual tool names exposed by the server (use these exactly in tool calls):
 
 | Tool | Purpose |
 |---|---|
-| `start_rapid7_export` | Create an export job — returns an export ID immediately |
-| `check_rapid7_export_status` | Poll status of an export job once (non-blocking) |
-| `download_rapid7_export` | Download a completed export and load into DuckDB |
+| `start_rapid7_export` | Create an export job — returns an export ID (or a job ID for a multi-window remediation range) immediately |
+| `check_rapid7_export_status` | Poll status once (non-blocking): platform export status, local download/load phase, or multi-window job progress — accepts an export ID or a job ID |
+| `download_rapid7_export` | Start downloading a completed export and loading it into DuckDB in the background |
 | `load_rapid7_parquet` | Load existing Parquet files from `$DATA_DIR/imports/` |
 | `query_rapid7` | Execute SQL against loaded tables |
 | `get_rapid7_schema` | Return column names and types for all loaded tables |

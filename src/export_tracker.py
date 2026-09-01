@@ -5,6 +5,7 @@ This module manages a separate DuckDB database to track Rapid7 export metadata,
 allowing reuse of exports from the same day instead of creating new ones.
 """
 
+import json
 import os
 from datetime import date, datetime
 from typing import Any, Dict, List, Optional
@@ -66,6 +67,26 @@ class ExportTracker:
             conn.execute("""
                 CREATE INDEX IF NOT EXISTS idx_export_date_type
                 ON exports(export_date, export_type)
+            """)
+
+            # Multi-chunk load jobs (e.g. a remediation range split into
+            # <=31-day windows). One row groups the N per-chunk export IDs
+            # under a single logical job so the whole range is polled and
+            # resumed as one unit. `chunks` holds the ordered per-window plan
+            # as JSON: [{start, end, export_id, status}].
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS export_jobs (
+                    job_id VARCHAR PRIMARY KEY,
+                    export_type VARCHAR NOT NULL,
+                    start_date DATE NOT NULL,
+                    end_date DATE NOT NULL,
+                    status VARCHAR NOT NULL,
+                    current_index INTEGER,
+                    chunks VARCHAR NOT NULL,
+                    message VARCHAR,
+                    created_at TIMESTAMP NOT NULL,
+                    updated_at TIMESTAMP NOT NULL
+                )
             """)
 
     def get_today_export(self, export_type: str = "vulnerability") -> Optional[Dict[str, Any]]:
@@ -218,6 +239,100 @@ class ExportTracker:
                 """,
                 [status, phase_detail, message, row_count, now, export_id],
             )
+
+    def create_job(
+        self,
+        job_id: str,
+        export_type: str,
+        start_date: str,
+        end_date: str,
+        chunks: List[Dict[str, Any]],
+        status: str,
+    ) -> None:
+        """Create a multi-chunk load job row.
+
+        Args:
+            job_id: Unique job identifier.
+            export_type: Export type (currently only 'remediation' uses jobs).
+            start_date: Overall range start (YYYY-MM-DD).
+            end_date: Overall range end (YYYY-MM-DD).
+            chunks: Ordered per-window plan; each dict has start, end,
+                export_id (None until created), and status.
+            status: Initial job status.
+        """
+        now = datetime.now()
+        with duckdb_connection(self.db_path) as conn:
+            conn.execute(
+                """
+                INSERT INTO export_jobs (
+                    job_id, export_type, start_date, end_date, status,
+                    current_index, chunks, message, created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT (job_id) DO UPDATE SET
+                    export_type = EXCLUDED.export_type,
+                    start_date = EXCLUDED.start_date,
+                    end_date = EXCLUDED.end_date,
+                    status = EXCLUDED.status,
+                    current_index = EXCLUDED.current_index,
+                    chunks = EXCLUDED.chunks,
+                    message = EXCLUDED.message,
+                    updated_at = EXCLUDED.updated_at
+                """,
+                [job_id, export_type, start_date, end_date, status, 0, json.dumps(chunks), None, now, now],
+            )
+
+    def update_job(
+        self,
+        job_id: str,
+        status: Optional[str] = None,
+        current_index: Optional[int] = None,
+        chunks: Optional[List[Dict[str, Any]]] = None,
+        message: Optional[str] = None,
+    ) -> None:
+        """Update the mutable fields of a job. Omitted fields are left unchanged."""
+        now = datetime.now()
+        with duckdb_connection(self.db_path) as conn:
+            conn.execute(
+                """
+                UPDATE export_jobs
+                SET status = COALESCE(?, status),
+                    current_index = COALESCE(?, current_index),
+                    chunks = COALESCE(?, chunks),
+                    message = COALESCE(?, message),
+                    updated_at = ?
+                WHERE job_id = ?
+                """,
+                [status, current_index, json.dumps(chunks) if chunks is not None else None, message, now, job_id],
+            )
+
+    def get_job(self, job_id: str) -> Optional[Dict[str, Any]]:
+        """Return a job row with `chunks` decoded to a list, or None."""
+        with duckdb_connection(self.db_path) as conn:
+            result = conn.execute(
+                """
+                SELECT job_id, export_type, start_date, end_date, status,
+                       current_index, chunks, message, created_at, updated_at
+                FROM export_jobs
+                WHERE job_id = ?
+                """,
+                [job_id],
+            ).fetchone()
+
+        if not result:
+            return None
+
+        return {
+            "job_id": result[0],
+            "export_type": result[1],
+            "start_date": result[2],
+            "end_date": result[3],
+            "status": result[4],
+            "current_index": result[5],
+            "chunks": json.loads(result[6]) if result[6] else [],
+            "message": result[7],
+            "created_at": result[8],
+            "updated_at": result[9],
+        }
 
     def get_export_by_id(self, export_id: str) -> Optional[Dict[str, Any]]:
         """

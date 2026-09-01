@@ -14,6 +14,25 @@ from typing import Any, Dict, List, Optional, Tuple
 from .graphql_client import send_graphql_request
 
 
+class ExportInProgressError(ValueError):
+    """Raised when the platform rejects a create because an export of the same
+    type is already in flight.
+
+    The platform allows only one export per type at a time. For unparameterised
+    snapshot exports (vulnerability, policy, asset_software) the in-flight export
+    is an acceptable substitute, so those paths catch this and return
+    ``export_id``. For remediation the in-flight export is scoped to a date range
+    that may not match what was requested, so the caller must wait and recreate
+    its own chunk rather than adopt a foreign id.
+
+    Subclasses ValueError so existing ``except ValueError`` handlers still catch it.
+    """
+
+    def __init__(self, export_id: str):
+        self.export_id = export_id
+        super().__init__(f"An export of this type is already in progress: {export_id}")
+
+
 def _extract_in_progress_id(error_msg: str) -> Optional[str]:
     """Extract an in-progress export ID from a Rapid7 'already in-progress' error message."""
     if "already in-progress" in error_msg and "exportId:" in error_msg:
@@ -35,6 +54,9 @@ def _create_simple_export(config: Dict[str, str], mutation_name: str, response_k
     try:
         response = send_graphql_request(endpoint=config["endpoint"], api_key=config["api_key"], query=mutation)
         return response["data"][response_key]["id"]
+    except ExportInProgressError as e:
+        # Snapshot exports are unparameterised, so reusing the in-flight one is fine.
+        return e.export_id
     except ValueError as e:
         export_id = _extract_in_progress_id(str(e))
         if export_id:
@@ -128,8 +150,11 @@ def create_remediation_export(config: Dict[str, str], start_date: str, end_date:
     export job. The returned ID can be used to poll for status and retrieve
     download URLs when complete.
 
-    If an export is already in progress, returns the existing export ID from
-    the error message.
+    If an export of this type is already in flight, raises
+    ExportInProgressError carrying the in-flight export's ID (the platform
+    allows only one export per type at a time). The caller must wait and
+    recreate its own chunk rather than adopt that ID, since a remediation
+    export is scoped to a specific date range.
 
     Args:
         config: Configuration dictionary containing endpoint and api_key.
@@ -141,7 +166,8 @@ def create_remediation_export(config: Dict[str, str], start_date: str, end_date:
 
     Raises:
         ValueError: If date validation fails or the response contains
-            GraphQL errors (except in-progress)
+            GraphQL errors
+        ExportInProgressError: If an export of this type is already in flight
         requests.HTTPError: If the HTTP response status code is not 200
         requests.RequestException: If the network request fails
     """
@@ -187,7 +213,10 @@ def create_remediation_export(config: Dict[str, str], start_date: str, end_date:
     except ValueError as e:
         export_id = _extract_in_progress_id(str(e))
         if export_id:
-            return export_id
+            # A remediation export is scoped to a date range; the in-flight one
+            # may cover a different window, so we must NOT return it as if it
+            # were this chunk's. Signal the caller to wait and recreate.
+            raise ExportInProgressError(export_id) from e
         raise
 
 

@@ -1,7 +1,7 @@
 ---
 name: Rapid7 Bulk Export Analysis Expert
 description: Expert analysis of Rapid7 InsightVM data exported via Bulk Export API with strict MCP requirements
-version: 0.5.3
+version: 0.6.0
 author: Rapid7 Bulk Export MCP Tool
 tags: [security, vulnerabilities, rapid7, insightvm, bulk-export, analysis, policy, remediation]
 ---
@@ -21,9 +21,9 @@ This skill ONLY works with the Rapid7 MCP server. You must:
 1. **Verify MCP server is available** - Check if you have access to these tools:
    - `list_exports()` - Check available exports and their dates
    - `get_stats()` - Check if data is loaded (covers all tables)
-   - `start_export(export_type, start_date, end_date)` - Kick off any export type (instant, non-blocking)
-   - `check_export_status(export_id)` - Check export progress (instant)
-   - `download_and_load_export(export_id, export_type)` - Download and load a completed export
+   - `start_export(export_type, start_date, end_date)` - Kick off any export type (instant, non-blocking). For `remediation`, this starts a background job covering the whole date range and returns a job id.
+   - `check_export_status(export_id)` - Check progress once (instant, non-blocking). Reports the platform export status, the local download/load progress, or a remediation job's per-window progress. Accepts an export id or a remediation job id.
+   - `download_and_load_export(export_id, export_type)` - Start downloading a completed export and loading it in the background; poll `check_export_status(export_id)` until it reports the load is complete. (Not used for `remediation` — that is loaded by the job started in `start_export`.)
    - `query(sql)` - Execute SQL queries against all tables
    - `get_schema()` - View table schemas for all tables
 
@@ -35,7 +35,7 @@ This skill ONLY works with the Rapid7 MCP server. You must:
       - No data exists
       - Last export is older than 1 day
       - User requests fresh data
-   4. For a COMPLETE dataset, ensure all three export types have been run
+   4. For a COMPLETE dataset, ensure all four export types have been run
    ```
 
 3. **If MCP is not available**:
@@ -46,7 +46,7 @@ This skill ONLY works with the Rapid7 MCP server. You must:
 
 ## Data Source
 
-The data comes from Rapid7 InsightVM's Bulk Export API, which exports three types of data:
+The data comes from Rapid7 InsightVM's Bulk Export API, which exports four types of data:
 - **Asset & Vulnerability data**: All assets with agent-based scanning (including cloud identifiers for AWS, Azure, GCP) and all vulnerabilities found on assets (including CVSS v2/v3 scores, EPSS scores, exploit information, and best solution data if enabled for your org)
 - **Policy compliance data**: Agent-based and scan-based policy assessment results, including benchmark compliance status, rule pass/fail results, and remediation guidance
 - **Vulnerability remediation data**: Tracks vulnerability lifecycle — when vulnerabilities were first found, last detected, and last removed — for a specified date range
@@ -54,7 +54,7 @@ The data comes from Rapid7 InsightVM's Bulk Export API, which exports three type
 - **Export format**: Parquet files downloaded and loaded into DuckDB for SQL querying
 - **Data freshness**: Refreshed once daily by Rapid7; exports are retained for 30 days
 - **Schema**: Based on Rapid7's official Bulk Export API Parquet schema (see docs.rapid7.com/insightvm/bulk-export-api)
-- **Database tables**: Data is loaded into five tables: `assets`, `vulnerabilities`, `policies`, `vulnerability_remediation`, and `asset_software`
+- **Database tables**: Data is loaded into six tables: `assets`, `vulnerabilities`, `vulnerability_exceptions`, `policies`, `vulnerability_remediation`, and `asset_software`
 - **Export tracking**: The system tracks exports by type in `rapid7_bulk_export_tracking.db` to avoid redundant downloads
 
 ## Workflow - INTELLIGENT DATA LOADING
@@ -74,7 +74,7 @@ You should:
 
 ### Step 2: Start Exports (If Needed)
 ```
-To load a complete dataset, kick off all three exports, then poll and load each:
+To load a complete dataset, kick off all four exports, then poll and load each:
 
 1. Call start_export(export_type="vulnerability")
    → Save the vulnerability export_id
@@ -83,8 +83,12 @@ To load a complete dataset, kick off all three exports, then poll and load each:
    → Save the policy export_id
 
 3. Call start_export(export_type="remediation", start_date="YYYY-MM-DD", end_date="YYYY-MM-DD")
-   → Save the remediation export_id
+   → Save the remediation JOB ID (remediation returns a job id, not an export id)
    → Default to last 30 days if user doesn't specify dates
+   → A range longer than 31 days is split into ≤31-day windows and loaded
+     sequentially in the background as one job — you do NOT call
+     download_and_load_export for remediation; the job downloads and loads
+     every window itself and appends them into vulnerability_remediation.
 
 4. Call start_export(export_type="asset_software")
    → Save the asset_software export_id
@@ -99,13 +103,15 @@ All four calls return instantly with export IDs. Inform the user:
 4. Wait 30 seconds, then check each export:
    - check_export_status(export_id) for each
    - If still PENDING/PROCESSING, wait another 30 seconds and check again
-   - Repeat until all three are COMPLETE
+   - Repeat until all four are COMPLETE
 
 5. Once an export is COMPLETE, load it:
    - download_and_load_export(export_id, export_type="vulnerability")
    - download_and_load_export(export_id, export_type="policy")
-   - download_and_load_export(export_id, export_type="remediation")
    - download_and_load_export(export_id, export_type="asset_software")
+   Remediation is different: it was already started as a background job in
+   step 3. Poll it with check_export_status(job_id) until it reports the
+   whole range is loaded — do NOT call download_and_load_export for it.
 
 6. Inform the user:
    - "All exports loaded. X assets, Y vulnerabilities, Z policies,
@@ -318,7 +324,19 @@ The `vulnerability_remediation` table tracks the lifecycle of vulnerabilities �
 - `epssscore` (Double) - EPSS score (0-1, probability of exploitation in 30 days)
 - `epsspercentile` (Double) - EPSS percentile (0-1)
 
-### 5. Asset Software Table (`asset_software`)
+### 5. Vulnerability Exceptions Table (`vulnerability_exceptions`)
+
+The `vulnerability_exceptions` table lists findings that have been waived or
+accepted as risk (exceptions), so a finding present here is excluded from the
+active vulnerability posture. It is produced by the vulnerability export
+alongside `assets` and `vulnerabilities`. Join it to `vulnerabilities` on
+`assetId` + `vulnId` to distinguish live findings from accepted-risk ones.
+
+**Key fields:** `orgId`, `assetId`, `vulnId`, `checkId`, `key`, `port`,
+`protocol`, `nic`, `proof`, `firstFoundTimestamp`, `reintroducedTimestamp`,
+`exceptionDetails`
+
+### 6. Asset Software Table (`asset_software`)
 
 The `asset_software` table contains the installed software inventory for all IVM-managed assets. Each row represents one software package on one asset.
 
@@ -1045,7 +1063,7 @@ ORDER BY pciSeverity DESC;
 
 1. **Always check the schema first** - Use `get_schema()` to see available columns in all tables — especially important for `asset_software` and for confirming whether `bestSolution*` columns are present
 2. **Start with statistics** - Use `get_stats()` to understand the data distribution across all tables and confirm which tables are loaded
-3. **Know your tables** - Five tables: `assets`, `vulnerabilities`, `policies`, `vulnerability_remediation`, `asset_software`
+3. **Know your tables** - Six tables: `assets`, `vulnerabilities`, `vulnerability_exceptions`, `policies`, `vulnerability_remediation`, `asset_software`
 4. **Load all data types** - For comprehensive analysis, kick off all four exports: `start_export(export_type="vulnerability")`, `start_export(export_type="policy")`, `start_export(export_type="remediation")`, and `start_export(export_type="asset_software")`, then `check_export_status()` → `download_and_load_export()` for each.
 5. **Join when needed** - Use JOIN queries to correlate asset information with vulnerabilities, policies, or remediation data (all join on `assetId`)
 6. **Limit large queries** - Add `LIMIT` clauses when exploring data
@@ -1142,7 +1160,7 @@ If data seems stale:
 - **Check data freshness first**: Always call list_exports() and get_stats() before analysis
 - **Inform about data age**: Tell users which export date is being used
 - **Start with assets**: Understand your asset inventory before diving into vulnerabilities or policies
-- **Use all five tables**: Join `assets`, `vulnerabilities`, `policies`, `vulnerability_remediation`, and `asset_software` tables for comprehensive analysis
+- **Use all six tables**: Join `assets`, `vulnerabilities`, `vulnerability_exceptions`, `policies`, `vulnerability_remediation`, and `asset_software` tables for comprehensive analysis
 - **Prioritize by risk**: Combine cvssV3Score, severity, hasExploits, and epssscore for comprehensive risk assessment
 - **Consider context**: Asset criticality (from tags, assetGroups, riskScore) matters more than raw vulnerability count
 - **Track trends**: Compare current state to historical data using temporal fields

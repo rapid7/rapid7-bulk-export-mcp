@@ -14,7 +14,9 @@ import shutil
 import sys
 import tempfile
 import threading
+import time
 import traceback
+import uuid
 from pathlib import Path
 from typing import Optional
 
@@ -26,12 +28,14 @@ from .config import load_config
 from .download import download_all_files
 from .duckdb_loader import VulnerabilityDatabase
 from .export_manager import (
+    ExportInProgressError,
     build_remediation_date_chunks,
     create_asset_software_export,
     create_policy_export,
     create_remediation_export,
     create_vulnerability_export,
     get_export_status,
+    poll_until_complete,
 )
 from .export_tracker import ExportTracker
 
@@ -78,6 +82,18 @@ PHASE_FAILED = "FAILED"
 # States that mean a background load is actively touching the database, so a
 # second download must not start and reads should back off.
 _ACTIVE_PHASES = (PHASE_DOWNLOADING, PHASE_LOADING)
+
+# Multi-chunk job status values (export_jobs.status). A job spans N per-chunk
+# export IDs; these describe the job as a whole.
+JOB_RUNNING = "RUNNING"
+JOB_COMPLETE = "COMPLETE"
+JOB_FAILED = "FAILED"  # at least one chunk failed; loaded chunks remain
+
+# How long to wait between retries when the platform reports another export of
+# the same type already in flight, and how long to keep retrying before giving
+# up on a chunk.
+_IN_PROGRESS_RETRY_SECS = 30
+_IN_PROGRESS_MAX_WAIT_SECS = 20 * 60
 
 # Guards all access to the shared `db` connection (both the background
 # load and the read tools below) so a query can never run concurrently
@@ -312,31 +328,26 @@ def start_rapid7_export(
             if not end_date:
                 end_date = _dt.date.today().isoformat()
 
-            chunks = build_remediation_date_chunks(start_date, end_date)
-
-            export_ids = []
-            for chunk_start, chunk_end in chunks:
-                print(f"Creating remediation export: {chunk_start} → {chunk_end}", file=sys.stderr)
-                eid = create_remediation_export(config, chunk_start, chunk_end)
-                export_ids.append({"id": eid, "start": chunk_start, "end": chunk_end})
-                tracker.save_export(export_id=eid, status="PENDING", parquet_urls=[], export_type="remediation")
+            # A remediation range may span multiple ≤31-day windows, and the
+            # platform allows only one remediation export in flight at a time.
+            # Hand the whole range to a single background job that creates,
+            # polls, downloads, and loads each window sequentially and appends
+            # them into vulnerability_remediation. The caller polls one job id.
             tracker.close()
+            chunk_ranges = build_remediation_date_chunks(start_date, end_date)
+            job_id = _start_remediation_job(start_date, end_date)
 
-            lines = [
-                f"✓ Created {len(export_ids)} remediation export(s) covering {start_date} → {end_date}.\n",
-            ]
-            for i, info in enumerate(export_ids, 1):
-                lines.append(f"  {i}. {info['start']} → {info['end']}  Export ID: {info['id']}")
-
-            lines.append("")
-            lines.append("Each export takes ~3-5 minutes to process.")
-            lines.append('Check progress with: check_rapid7_export_status(export_id="...")')
-            lines.append(
-                'Once COMPLETE, load each with: download_rapid7_export(export_id="...", export_type="remediation")'
+            return (
+                f"▶️ Started loading remediation data for {start_date} → {end_date} "
+                f"in the background.\n\n"
+                f"Job ID: {job_id}\n"
+                f"Windows: {len(chunk_ranges)} (each ≤31 days, loaded sequentially)\n\n"
+                f"The platform allows only one remediation export at a time, so windows "
+                f"are processed one after another; this can take several minutes each.\n"
+                f"All windows append into the same vulnerability_remediation table.\n\n"
+                f"Check progress with: "
+                f'check_rapid7_export_status(export_id="{job_id}")'
             )
-            lines.append("All chunks load into the same vulnerability_remediation table.")
-
-            return "\n".join(lines)
 
         elif export_type == "asset_software":
             new_id = create_asset_software_export(config)
@@ -386,16 +397,24 @@ def check_rapid7_export_status(export_id: str) -> str:
     restart. Does NOT poll or wait.
 
     Args:
-        export_id: The export ID returned by start_rapid7_export.
+        export_id: The export ID returned by start_rapid7_export, or a
+            job ID returned by a multi-window remediation load.
 
     Returns:
         Current export/load status and next steps.
     """
     try:
+        # A multi-window remediation load is tracked as a job spanning N export
+        # IDs; if the id names a job, report the job's progress.
+        tracker = _tracker()
+        job = tracker.get_job(export_id)
+        if job is not None:
+            tracker.close()
+            return _format_job_status(job)
+
         # Local load phase takes precedence: if a background download/load is
         # active or has reached a terminal state, report that and skip the
         # (now-redundant) platform-side status call.
-        tracker = _tracker()
         local = tracker.get_export_by_id(export_id)
         tracker.close()
 
@@ -457,6 +476,68 @@ def check_rapid7_export_status(export_id: str) -> str:
         return f"✗ Error checking export status: {str(e)}"
 
 
+def _download_and_load_files(
+    export_type: str,
+    status_info: dict,
+    api_key: str,
+) -> tuple:
+    """Download an export's parquet files and load them into DuckDB.
+
+    Shared by the single-export worker and the multi-chunk remediation
+    orchestrator so the download/route/load path is not forked. Acquires
+    _db_lock around the load. Returns (row_count, row_counts, stats,
+    validation_warnings).
+    """
+    global db
+
+    parquet_urls = status_info["parquetFiles"]
+    file_data = download_all_files(parquet_urls, api_key)
+
+    temp_dir = tempfile.mkdtemp()
+    validation_warnings: list = []
+    try:
+        with _db_lock:
+            if db is None:
+                initialize_database()
+
+            result_list = status_info.get("result") or []
+            url_to_prefix = {}
+            for item in result_list:
+                prefix = item.get("prefix", "")
+                for url in item.get("urls", []):
+                    url_to_prefix[url] = prefix
+
+            prefix_file_map: dict = {}
+            for i, (url, data) in enumerate(zip(parquet_urls, file_data)):
+                temp_path = Path(temp_dir) / f"{export_type}_export_{i}.parquet"
+                temp_path.write_bytes(data)
+                prefix = url_to_prefix.get(url, "unknown")
+                prefix_file_map.setdefault(prefix, []).append(str(temp_path))
+                if len(data) < 100:
+                    validation_warnings.append(f"File {i + 1} (prefix={prefix}): unusually small ({len(data)} bytes)")
+
+            if export_type == "policy":
+                row_counts = db.load_parquet_files_by_prefix(prefix_file_map, skip_prefixes={"asset"})
+            elif export_type == "remediation":
+                row_counts = db.load_parquet_files_by_prefix(prefix_file_map, append=True)
+            else:
+                row_counts = db.load_parquet_files_by_prefix(prefix_file_map)
+
+            row_count = sum(row_counts.values())
+            if row_count == 0 and len(file_data) > 0:
+                validation_warnings.append(
+                    f"⚠️  {len(file_data)} file(s) downloaded but 0 rows loaded. "
+                    f"Prefixes received: {list(prefix_file_map.keys())}. "
+                    f"Check that prefixes match expected routing."
+                )
+
+            stats = db.get_stats()
+    finally:
+        shutil.rmtree(temp_dir, ignore_errors=True)
+
+    return row_count, row_counts, stats, validation_warnings
+
+
 def _run_download_and_load(export_id: str, export_type: str) -> None:
     """Background worker: download parquet files and load them into DuckDB.
 
@@ -468,8 +549,6 @@ def _run_download_and_load(export_id: str, export_type: str) -> None:
     duplicate response the way the synchronous version could when a client
     had already timed out and cancelled the request.
     """
-    global db
-
     tracker = _tracker()
     try:
         config = load_config()
@@ -482,61 +561,17 @@ def _run_download_and_load(export_id: str, export_type: str) -> None:
             phase_detail=f"0 / {len(parquet_urls)} files downloaded",
         )
         print(f"Downloading {len(parquet_urls)} {export_type} files...", file=sys.stderr)
-        file_data = download_all_files(parquet_urls, config["api_key"])
 
         tracker.set_phase(
             export_id,
             PHASE_LOADING,
-            phase_detail=f"{len(parquet_urls)} / {len(parquet_urls)} files downloaded, loading into database",
+            phase_detail=f"{len(parquet_urls)} files downloaded, loading into database",
         )
 
-        temp_dir = tempfile.mkdtemp()
-        validation_warnings = []
-
-        try:
-            with _db_lock:
-                if db is None:
-                    initialize_database()
-
-                result_list = status_info.get("result") or []
-
-                url_to_prefix = {}
-                for item in result_list:
-                    prefix = item.get("prefix", "")
-                    for url in item.get("urls", []):
-                        url_to_prefix[url] = prefix
-
-                prefix_file_map = {}
-                for i, (url, data) in enumerate(zip(parquet_urls, file_data)):
-                    temp_path = Path(temp_dir) / f"{export_type}_export_{i}.parquet"
-                    temp_path.write_bytes(data)
-                    prefix = url_to_prefix.get(url, "unknown")
-                    prefix_file_map.setdefault(prefix, []).append(str(temp_path))
-                    if len(data) < 100:
-                        validation_warnings.append(
-                            f"File {i + 1} (prefix={prefix}): unusually small ({len(data)} bytes)"
-                        )
-
-                if export_type == "policy":
-                    row_counts = db.load_parquet_files_by_prefix(prefix_file_map, skip_prefixes={"asset"})
-                elif export_type == "remediation":
-                    row_counts = db.load_parquet_files_by_prefix(prefix_file_map, append=True)
-                else:
-                    row_counts = db.load_parquet_files_by_prefix(prefix_file_map)
-
-                row_count = sum(row_counts.values())
-                row_info = f"Rows loaded: {row_count}\nPer-table row counts: {json.dumps(row_counts, default=str)}"
-
-                if row_count == 0 and len(file_data) > 0:
-                    validation_warnings.append(
-                        f"⚠️  {len(file_data)} file(s) downloaded but 0 rows loaded. "
-                        f"Prefixes received: {list(prefix_file_map.keys())}. "
-                        f"Check that prefixes match expected routing."
-                    )
-
-                stats = db.get_stats()
-        finally:
-            shutil.rmtree(temp_dir, ignore_errors=True)
+        row_count, row_counts, stats, validation_warnings = _download_and_load_files(
+            export_type, status_info, config["api_key"]
+        )
+        row_info = f"Rows loaded: {row_count}\nPer-table row counts: {json.dumps(row_counts, default=str)}"
 
         warnings_section = ""
         if validation_warnings:
@@ -575,6 +610,146 @@ def _run_download_and_load(export_id: str, export_type: str) -> None:
         tracker.set_phase(export_id, PHASE_FAILED, phase_detail=None, message=message)
     finally:
         tracker.close()
+
+
+def _create_remediation_chunk_waiting(config: dict, chunk_start: str, chunk_end: str) -> str:
+    """Create one remediation chunk, waiting out any foreign in-flight export.
+
+    The platform permits only one remediation export in flight at a time. If
+    another is running (this job's previous chunk, or an unrelated export),
+    create is rejected with ExportInProgressError. We must NOT adopt that
+    foreign id — it may cover a different date range — so we back off and
+    recreate THIS chunk's own range until the platform frees up.
+    """
+    deadline = time.monotonic() + _IN_PROGRESS_MAX_WAIT_SECS
+    while True:
+        try:
+            return create_remediation_export(config, chunk_start, chunk_end)
+        except ExportInProgressError:
+            if time.monotonic() >= deadline:
+                raise
+            print(
+                f"Remediation export slot busy; waiting to create {chunk_start} → {chunk_end}...",
+                file=sys.stderr,
+            )
+            time.sleep(_IN_PROGRESS_RETRY_SECS)
+
+
+def _run_remediation_job(job_id: str, chunks: list) -> None:
+    """Background worker: load a multi-window remediation range as one job.
+
+    Processes each ≤31-day window strictly sequentially (create → poll →
+    download → load append), because the platform serialises remediation
+    exports anyway. Per-chunk outcome is persisted on the export_jobs row so a
+    partial failure names exactly which windows loaded and which did not.
+    """
+    tracker = _tracker()
+    try:
+        config = load_config()
+        total = len(chunks)
+        total_rows = 0
+
+        for i, chunk in enumerate(chunks):
+            cs, ce = chunk["start"], chunk["end"]
+            window = f"{cs} → {ce}"
+
+            def _mark(state: str) -> None:
+                chunks[i]["status"] = state
+                tracker.update_job(
+                    job_id,
+                    current_index=i,
+                    chunks=chunks,
+                    message=f"chunk {i + 1}/{total} ({window}), {state}",
+                )
+
+            _mark("creating")
+            eid = _create_remediation_chunk_waiting(config, cs, ce)
+            chunks[i]["export_id"] = eid
+
+            _mark("waiting for export")
+            parquet_urls = poll_until_complete(config, eid)
+            status_info = get_export_status(config, eid)
+            if not parquet_urls:
+                status_info["parquetFiles"] = status_info.get("parquetFiles", [])
+
+            _mark("loading")
+            row_count, _, _, _ = _download_and_load_files("remediation", status_info, config["api_key"])
+            total_rows += row_count
+            chunks[i]["row_count"] = row_count
+            tracker.save_export(
+                export_id=eid,
+                status=PHASE_COMPLETE,
+                parquet_urls=parquet_urls,
+                row_count=row_count,
+                export_type="remediation",
+            )
+            _mark("loaded")
+
+        loaded = [f"{c['start']} → {c['end']} ({c.get('row_count', 0)} rows)" for c in chunks]
+        message = (
+            f"✓ Remediation data loaded for all {total} window(s).\n\n"
+            f"Total rows: {total_rows}\n"
+            f"Windows loaded:\n" + "\n".join(f"  {w}" for w in loaded) + "\n\n"
+            "Query the data with query_rapid7, get_rapid7_schema, or get_rapid7_stats."
+        )
+        tracker.update_job(job_id, status=JOB_COMPLETE, current_index=total - 1, chunks=chunks, message=message)
+
+    except Exception as e:
+        error_text = f"{e}\n{traceback.format_exc()}"
+        loaded = [f"{c['start']} → {c['end']}" for c in chunks if c.get("status") == "loaded"]
+        missing = [f"{c['start']} → {c['end']}" for c in chunks if c.get("status") != "loaded"]
+        message = (
+            f"✗ Remediation load failed partway through.\n\n"
+            f"Loaded windows (kept): {', '.join(loaded) or 'none'}\n"
+            f"Missing windows: {', '.join(missing) or 'none'}\n\n"
+            f"Re-run only the missing range with start_rapid7_export("
+            f'export_type="remediation", start_date="...", end_date="...").\n\n'
+            f"{error_text}"
+        )
+        tracker.update_job(job_id, status=JOB_FAILED, chunks=chunks, message=message)
+    finally:
+        tracker.close()
+
+
+def _start_remediation_job(start_date: str, end_date: str) -> str:
+    """Create and launch a multi-window remediation load job. Returns the job_id."""
+    chunk_ranges = build_remediation_date_chunks(start_date, end_date)
+    chunks = [{"start": cs, "end": ce, "export_id": None, "status": "pending"} for cs, ce in chunk_ranges]
+
+    job_id = f"remediation-{uuid.uuid4().hex[:12]}"
+    tracker = _tracker()
+    tracker.create_job(
+        job_id=job_id,
+        export_type="remediation",
+        start_date=start_date,
+        end_date=end_date,
+        chunks=chunks,
+        status=JOB_RUNNING,
+    )
+    tracker.close()
+
+    thread = threading.Thread(target=_run_remediation_job, args=(job_id, chunks), daemon=True)
+    thread.start()
+    return job_id
+
+
+def _format_job_status(job: dict) -> str:
+    """Render an export_jobs row for check_rapid7_export_status."""
+    status = job.get("status")
+    if status == JOB_COMPLETE:
+        return job.get("message") or f"✓ Remediation job {job['job_id']} complete."
+    if status == JOB_FAILED:
+        return job.get("message") or f"✗ Remediation job {job['job_id']} failed."
+
+    total = len(job.get("chunks") or [])
+    return (
+        f"⏳ Remediation load in progress.\n\n"
+        f"Job ID: {job['job_id']}\n"
+        f"Range: {job.get('start_date')} → {job.get('end_date')} ({total} window(s))\n"
+        f"{job.get('message', '')}\n\n"
+        f"Check again in 30-60 seconds with: "
+        f'check_rapid7_export_status(export_id="{job["job_id"]}")'
+    )
 
 
 @mcp.tool(

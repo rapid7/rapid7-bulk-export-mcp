@@ -19,6 +19,8 @@ This tool exports data from Rapid7 Command Platform, via the [Rapid7 Bulk Export
 - **Export Reuse**: Automatically reuses exports from the same day to avoid redundant API calls
 - **Natural Language Queries**: Ask questions in plain English
 - **SQL Query Execution**: Run complex SQL queries against vulnerability, asset and other data
+- **Multiple Export Types**: Vulnerabilities (with vulnerability exceptions), policies, remediations, and installed asset software
+- **Multi-Month Remediation**: Request any date range — it is split into ≤31-day windows and loaded for you in the background as a single job
 - **Schema Exploration**: Discover available data fields
 - **Statistics & Insights**: Get instant summaries and distributions
 - **Security Lockdown**: User queries are sandboxed — filesystem and network access disabled at the DuckDB engine level
@@ -465,15 +467,18 @@ What's the severity distribution across my cloud assets?
 
 ### `start_rapid7_export`
 
-Kicks off a new export job on Rapid7's servers. Returns immediately with an export ID. Supports three export types: `vulnerability`, `policy`, and `remediation`.
+Kicks off a new export job on Rapid7's servers. Returns immediately. Supports four export types: `vulnerability`, `policy`, `remediation`, and `asset_software`.
+
+For `remediation`, pass a `start_date` and `end_date` (YYYY-MM-DD). Rapid7 limits each remediation export to 31 days and allows only one in flight at a time, so a longer range is split into ≤31-day windows and processed sequentially in the background as a single job. The call returns a **job ID** you poll with `check_rapid7_export_status`; all windows append into one `vulnerability_remediation` table.
 
 ```
 Start a vulnerability export from Rapid7
+Load remediation data from 2026-01-01 to 2026-06-30
 ```
 
 ### `check_rapid7_export_status`
 
-Polls the Rapid7 API once for the current status of an export job. Use after `start_rapid7_export` to know when data is ready.
+Reports status once, without blocking. Depending on what the ID names, it returns the Rapid7 platform-side export status, the local download/load progress once you have started loading, or the progress of a multi-window remediation job (which window is loading, and which windows are done). Accepts either an export ID or a remediation job ID.
 
 ```
 Check the status of export abc-123
@@ -481,7 +486,7 @@ Check the status of export abc-123
 
 ### `download_rapid7_export`
 
-Downloads a completed export's Parquet files and loads them into the local DuckDB database. This is where data becomes queryable.
+Starts downloading a completed export's Parquet files and loading them into the local DuckDB database in the **background**, returning immediately — large exports can take longer than an AI client will wait on a single call. Poll `check_rapid7_export_status` with the same export ID until it reports the load is complete; that is when the data becomes queryable.
 
 ```
 Download and load export abc-123
@@ -499,7 +504,7 @@ Load parquet files from ~/.rapid7_mcp/imports/my-export/
 
 Executes SQL against the loaded data. The connection is locked down after loading — filesystem reads, writes, and network access are all blocked at the DuckDB engine level.
 
-Available tables: `assets`, `vulnerabilities`, `policies`, `vulnerability_remediation`.
+Available tables (depending on what you have loaded): `assets`, `vulnerabilities`, `vulnerability_exceptions`, `policies`, `vulnerability_remediation`, `asset_software`.
 
 ```
 Run: SELECT severity, COUNT(*) FROM vulnerabilities GROUP BY severity
