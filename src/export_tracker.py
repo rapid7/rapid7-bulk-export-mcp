@@ -44,14 +44,23 @@ class ExportTracker:
                 )
             """)
 
-            # Migrate schema: add export_type column for existing databases
-            try:
-                conn.execute("""
-                    ALTER TABLE exports ADD COLUMN export_type VARCHAR DEFAULT 'vulnerability'
-                """)
-            except Exception:
-                # Column already exists, ignore
-                pass  # nosec B110
+            # Migrate schema: add columns for existing databases. Each ALTER is
+            # idempotent — a second run raises because the column exists, which
+            # we swallow.
+            for column_ddl in (
+                "ADD COLUMN export_type VARCHAR DEFAULT 'vulnerability'",
+                # Human-readable progress detail for an in-flight load
+                # (e.g. "3 / 8 files downloaded"). NULL when not applicable.
+                "ADD COLUMN phase_detail VARCHAR",
+                # Full summary or error text produced once a load reaches a
+                # terminal state, so the status tools can echo it verbatim.
+                "ADD COLUMN message VARCHAR",
+            ):
+                try:
+                    conn.execute(f"ALTER TABLE exports {column_ddl}")
+                except Exception:
+                    # Column already exists, ignore
+                    pass  # nosec B110
 
             # Create index on export_date and export_type for fast lookups
             conn.execute("""
@@ -71,7 +80,12 @@ class ExportTracker:
         """
         today = date.today()
 
-        with duckdb_connection(self.db_path, read_only=True) as conn:
+        # NOTE: opened read-write (not read_only) on purpose. DuckDB refuses a
+        # read-only connection while a read-write connection to the same file
+        # is open in-process, and the background load holds a read-write
+        # handle while writing phase updates. A read-write handle for a
+        # SELECT is harmless and avoids that config-mismatch conflict.
+        with duckdb_connection(self.db_path) as conn:
             result = conn.execute(
                 """
                 SELECT
@@ -167,6 +181,44 @@ class ExportTracker:
                 ],
             )
 
+    def set_phase(
+        self,
+        export_id: str,
+        status: str,
+        phase_detail: Optional[str] = None,
+        message: Optional[str] = None,
+        row_count: Optional[int] = None,
+    ):
+        """Update only the live-phase fields of an already-tracked export.
+
+        Used by the background download/load worker to record progress
+        (DOWNLOADING, LOADING) and terminal outcomes (COMPLETE, FAILED)
+        without rewriting the parquet URLs or other metadata that
+        save_export owns. The row must already exist (start_rapid7_export
+        inserts it at PENDING); if it does not, this is a no-op update.
+
+        Args:
+            export_id: The Rapid7 export ID.
+            status: New status/phase value.
+            phase_detail: Optional human-readable progress string.
+            message: Optional terminal summary/error text.
+            row_count: Optional loaded-row count (set on COMPLETE).
+        """
+        now = datetime.now()
+        with duckdb_connection(self.db_path) as conn:
+            conn.execute(
+                """
+                UPDATE exports
+                SET status = ?,
+                    phase_detail = ?,
+                    message = ?,
+                    row_count = COALESCE(?, row_count),
+                    created_at = ?
+                WHERE export_id = ?
+                """,
+                [status, phase_detail, message, row_count, now, export_id],
+            )
+
     def get_export_by_id(self, export_id: str) -> Optional[Dict[str, Any]]:
         """
         Get export metadata by export ID.
@@ -177,7 +229,9 @@ class ExportTracker:
         Returns:
             Dictionary with export metadata if found, None otherwise
         """
-        with duckdb_connection(self.db_path, read_only=True) as conn:
+        # Read-write handle for a SELECT (see get_today_export note): avoids a
+        # DuckDB config-mismatch when the background load holds a write handle.
+        with duckdb_connection(self.db_path) as conn:
             result = conn.execute(
                 """
                 SELECT
@@ -188,7 +242,10 @@ class ExportTracker:
                     file_count,
                     row_count,
                     parquet_urls,
-                    local_files
+                    local_files,
+                    export_type,
+                    phase_detail,
+                    message
                 FROM exports
                 WHERE export_id = ?
             """,
@@ -205,6 +262,9 @@ class ExportTracker:
                 "row_count": result[5],
                 "parquet_urls": result[6],
                 "local_files": result[7],
+                "export_type": result[8],
+                "phase_detail": result[9],
+                "message": result[10],
             }
 
         return None
@@ -221,7 +281,8 @@ class ExportTracker:
             List of export metadata dictionaries
         """
         sql = """
-            SELECT export_id, export_date, created_at, status, file_count, row_count, export_type
+            SELECT export_id, export_date, created_at, status, file_count, row_count,
+                   export_type, phase_detail
             FROM exports
         """
         params: list = []
@@ -231,7 +292,9 @@ class ExportTracker:
         sql += " ORDER BY created_at DESC LIMIT ?"
         params.append(limit)
 
-        with duckdb_connection(self.db_path, read_only=True) as conn:
+        # Read-write handle for a SELECT (see get_today_export note): avoids a
+        # DuckDB config-mismatch when the background load holds a write handle.
+        with duckdb_connection(self.db_path) as conn:
             results = conn.execute(sql, params).fetchall()
 
         return [
@@ -243,6 +306,7 @@ class ExportTracker:
                 "file_count": row[4],
                 "row_count": row[5],
                 "export_type": row[6],
+                "phase_detail": row[7],
             }
             for row in results
         ]

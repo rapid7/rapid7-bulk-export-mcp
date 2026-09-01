@@ -16,7 +16,7 @@ import tempfile
 import threading
 import traceback
 from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import Optional
 
 import duckdb as _duckdb
 from fastmcp import FastMCP
@@ -61,31 +61,34 @@ VALID_EXPORT_TYPES = ("vulnerability", "policy", "remediation", "asset_software"
 #
 # To avoid this, download_rapid7_export() only *starts* the work in a
 # background thread and returns immediately. Progress and results are
-# tracked here and can be polled with check_download_status().
+# recorded as phase transitions on the durable ExportTracker row (not an
+# in-memory dict), so state survives a server restart and is reported by
+# the existing check_rapid7_export_status() and list_rapid7_exports()
+# tools — there is no separate status tool to poll.
 # ---------------------------------------------------------------------------
 
-# export_id -> job info dict. Guarded by _jobs_lock.
-_download_jobs: Dict[str, Dict[str, Any]] = {}
-_jobs_lock = threading.Lock()
+# Local load-phase values written to the tracker's `status` column. These
+# describe THIS server's download+load progress, distinct from the Rapid7
+# platform-side export status returned by the API (PENDING/PROCESSING/…).
+PHASE_DOWNLOADING = "DOWNLOADING"
+PHASE_LOADING = "LOADING"
+PHASE_COMPLETE = "COMPLETE"  # data loaded locally and queryable
+PHASE_FAILED = "FAILED"
+
+# States that mean a background load is actively touching the database, so a
+# second download must not start and reads should back off.
+_ACTIVE_PHASES = (PHASE_DOWNLOADING, PHASE_LOADING)
 
 # Guards all access to the shared `db` connection (both the background
 # load and the read tools below) so a query can never run concurrently
-# with a table being dropped/recreated mid-load.
-_db_lock = threading.Lock()
+# with a table being dropped/recreated mid-load. Re-entrant so a locked
+# section can safely call another helper that also acquires it.
+_db_lock = threading.RLock()
 
 
-def _set_job(export_id: str, **fields: Any) -> None:
-    """Create or update a job's tracked state."""
-    with _jobs_lock:
-        job = _download_jobs.setdefault(export_id, {})
-        job.update(fields)
-        job["updated_at"] = _dt.datetime.now().isoformat(timespec="seconds")
-
-
-def _get_job(export_id: str) -> Optional[Dict[str, Any]]:
-    with _jobs_lock:
-        job = _download_jobs.get(export_id)
-        return dict(job) if job is not None else None
+def _tracker() -> ExportTracker:
+    """Open a tracker handle on the standard tracking database."""
+    return ExportTracker(str(_DATA_DIR / "rapid7_bulk_export_tracking.db"))
 
 
 def initialize_database(db_path: Optional[str] = None) -> VulnerabilityDatabase:
@@ -151,7 +154,7 @@ def load_rapid7_parquet(parquet_path: str) -> str:
             return (
                 "⏳ A background download/load is currently in progress. "
                 "Try again shortly, or check "
-                "check_download_status(export_id=...) for progress."
+                "check_rapid7_export_status(export_id=...) for progress."
             )
         try:
             # Initialize database if needed
@@ -366,18 +369,57 @@ def start_rapid7_export(
     )
 )
 def check_rapid7_export_status(export_id: str) -> str:
-    """Check the current status of a Rapid7 export job.
+    """Check the status of a Rapid7 export, including local download/load progress.
 
-    This is a fast, non-blocking call that queries the Rapid7 API once
-    and returns the current status. Does NOT poll or wait.
+    Fast, non-blocking call. Reports whichever stage the export is in:
+
+      - While this server is downloading or loading the export in the
+        background, reports that local phase and per-file progress — and
+        skips the Rapid7 API call, since the platform-side export is
+        already known to be complete.
+      - Once loaded (COMPLETE) or failed (FAILED) locally, returns the
+        stored summary/error so no work is repeated.
+      - Otherwise queries the Rapid7 API once for the platform-side export
+        status (PENDING/PROCESSING/COMPLETE/FAILED).
+
+    Because local phase lives in the durable tracker, it survives a server
+    restart. Does NOT poll or wait.
 
     Args:
         export_id: The export ID returned by start_rapid7_export.
 
     Returns:
-        Current export status and next steps.
+        Current export/load status and next steps.
     """
     try:
+        # Local load phase takes precedence: if a background download/load is
+        # active or has reached a terminal state, report that and skip the
+        # (now-redundant) platform-side status call.
+        tracker = _tracker()
+        local = tracker.get_export_by_id(export_id)
+        tracker.close()
+
+        if local is not None:
+            local_status = local.get("status")
+
+            if local_status == PHASE_COMPLETE:
+                return local.get("message") or (
+                    f"✓ Data loaded and queryable.\n\nExport ID: {export_id}\nRows: {local.get('row_count')}"
+                )
+            if local_status == PHASE_FAILED:
+                return local.get("message") or f"✗ Download/load failed.\n\nExport ID: {export_id}"
+            if local_status in _ACTIVE_PHASES:
+                detail = local.get("phase_detail")
+                detail_line = f"\n{detail}" if detail else ""
+                return (
+                    f"⏳ Downloading/loading in progress locally ({local_status}).{detail_line}\n\n"
+                    f"Export ID: {export_id}\n"
+                    f"Last update: {local.get('created_at', 'unknown')}\n\n"
+                    f"Check again in 30-60 seconds with: "
+                    f'check_rapid7_export_status(export_id="{export_id}")'
+                )
+            # PENDING or any other value falls through to the platform-side check.
+
         config = load_config()
         status_info = get_export_status(config, export_id)
         current_status = status_info["status"]
@@ -385,7 +427,7 @@ def check_rapid7_export_status(export_id: str) -> str:
 
         if current_status in ["COMPLETE", "SUCCEEDED"]:
             return (
-                f"✓ Export is complete.\n\n"
+                f"✓ Export is complete on Rapid7's side and ready to download.\n\n"
                 f"Export ID: {export_id}\n"
                 f"Status: {current_status}\n"
                 f"Files ready: {file_count}\n\n"
@@ -418,26 +460,35 @@ def check_rapid7_export_status(export_id: str) -> str:
 def _run_download_and_load(export_id: str, export_type: str) -> None:
     """Background worker: download parquet files and load them into DuckDB.
 
-    Runs in its own thread. All progress/results are written to
-    _download_jobs[export_id] rather than returned, since nothing is
-    waiting on a function return here. Any exception is caught and stored
-    so check_download_status() can report it, instead of the process
-    crashing on a late/duplicate response the way the synchronous version
-    could when a client had already timed out and cancelled the request.
+    Runs in its own thread. All progress/results are written to the
+    ExportTracker row for this export_id rather than returned, since
+    nothing is waiting on a function return here. Any exception is caught
+    and recorded as a FAILED phase (with the error text) so the status
+    tools can report it, instead of the process crashing on a late/
+    duplicate response the way the synchronous version could when a client
+    had already timed out and cancelled the request.
     """
     global db
 
+    tracker = _tracker()
     try:
         config = load_config()
         status_info = get_export_status(config, export_id)
         parquet_urls = status_info["parquetFiles"]
 
-        _set_job(export_id, state="downloading", files_total=len(parquet_urls), files_done=0)
+        tracker.set_phase(
+            export_id,
+            PHASE_DOWNLOADING,
+            phase_detail=f"0 / {len(parquet_urls)} files downloaded",
+        )
         print(f"Downloading {len(parquet_urls)} {export_type} files...", file=sys.stderr)
         file_data = download_all_files(parquet_urls, config["api_key"])
-        _set_job(export_id, files_done=len(parquet_urls))
 
-        _set_job(export_id, state="loading")
+        tracker.set_phase(
+            export_id,
+            PHASE_LOADING,
+            phase_detail=f"{len(parquet_urls)} / {len(parquet_urls)} files downloaded, loading into database",
+        )
 
         temp_dir = tempfile.mkdtemp()
         validation_warnings = []
@@ -483,16 +534,6 @@ def _run_download_and_load(export_id: str, export_type: str) -> None:
                         f"Check that prefixes match expected routing."
                     )
 
-                tracker = ExportTracker(str(_DATA_DIR / "rapid7_bulk_export_tracking.db"))
-                tracker.save_export(
-                    export_id=export_id,
-                    status="COMPLETE",
-                    parquet_urls=parquet_urls,
-                    row_count=row_count,
-                    export_type=export_type,
-                )
-                tracker.close()
-
                 stats = db.get_stats()
         finally:
             shutil.rmtree(temp_dir, ignore_errors=True)
@@ -511,7 +552,15 @@ def _run_download_and_load(export_id: str, export_type: str) -> None:
             f"{json.dumps(stats, indent=2, default=str)}\n\n"
             f"Query the data with query_rapid7, get_rapid7_schema, or get_rapid7_stats."
         )
-        _set_job(export_id, state="complete", message=message, error=None)
+        # Record the completed load with its parquet URLs and final row count.
+        tracker.save_export(
+            export_id=export_id,
+            status=PHASE_COMPLETE,
+            parquet_urls=parquet_urls,
+            row_count=row_count,
+            export_type=export_type,
+        )
+        tracker.set_phase(export_id, PHASE_COMPLETE, phase_detail=None, message=message, row_count=row_count)
 
     except Exception as e:
         error_text = f"{e}\n{traceback.format_exc()}"
@@ -520,9 +569,12 @@ def _run_download_and_load(export_id: str, export_type: str) -> None:
             f"Export ID: {export_id}\n"
             f"Retry with: download_rapid7_export("
             f'export_id="{export_id}", '
-            f'export_type="{export_type}")'
+            f'export_type="{export_type}")\n\n'
+            f"{error_text}"
         )
-        _set_job(export_id, state="failed", message=message, error=error_text)
+        tracker.set_phase(export_id, PHASE_FAILED, phase_detail=None, message=message)
+    finally:
+        tracker.close()
 
 
 @mcp.tool(
@@ -541,7 +593,7 @@ def download_rapid7_export(export_id: str, export_type: str = "vulnerability") -
     This kicks off the download and load in the background and returns
     immediately — large exports (potentially millions of rows) can take
     several minutes to load, longer than most MCP clients will wait on a
-    single tool call. Poll progress with check_download_status(export_id).
+    single tool call. Poll progress with check_rapid7_export_status(export_id).
 
     Args:
         export_id: The export ID of a completed export.
@@ -576,23 +628,33 @@ def download_rapid7_export(export_id: str, export_type: str = "vulnerability") -
             return f"✗ Export complete but has no files.\n\nExport ID: {export_id}"
 
         # Don't start a second job for the same export if one's already running.
-        existing = _get_job(export_id)
-        if existing is not None and existing.get("state") in ("downloading", "loading"):
+        tracker = _tracker()
+        existing = tracker.get_export_by_id(export_id)
+        if existing is not None and existing.get("status") in _ACTIVE_PHASES:
+            tracker.close()
             return (
                 f"⏳ A download for this export is already in progress "
-                f"(state: {existing['state']}).\n\n"
+                f"(status: {existing['status']}).\n\n"
                 f"Export ID: {export_id}\n"
-                f'Check progress with: check_download_status(export_id="{export_id}")'
+                f'Check progress with: check_rapid7_export_status(export_id="{export_id}")'
             )
 
-        _set_job(
-            export_id,
-            state="queued",
+        # Record the initial phase durably. The row usually already exists at
+        # PENDING (start_rapid7_export inserts it); save_export upserts so a
+        # directly-supplied export_id is tracked too.
+        parquet_urls = status_info["parquetFiles"]
+        tracker.save_export(
+            export_id=export_id,
+            status=PHASE_DOWNLOADING,
+            parquet_urls=parquet_urls,
             export_type=export_type,
-            message=None,
-            error=None,
-            started_at=_dt.datetime.now().isoformat(timespec="seconds"),
         )
+        tracker.set_phase(
+            export_id,
+            PHASE_DOWNLOADING,
+            phase_detail=f"0 / {len(parquet_urls)} files downloaded",
+        )
+        tracker.close()
 
         thread = threading.Thread(
             target=_run_download_and_load,
@@ -604,9 +666,9 @@ def download_rapid7_export(export_id: str, export_type: str = "vulnerability") -
         return (
             f"▶️ Started downloading and loading {export_type} export in the background.\n\n"
             f"Export ID: {export_id}\n"
-            f"Files: {len(status_info['parquetFiles'])}\n\n"
+            f"Files: {len(parquet_urls)}\n\n"
             f"This can take several minutes for large exports. Check progress with:\n"
-            f'check_download_status(export_id="{export_id}")'
+            f'check_rapid7_export_status(export_id="{export_id}")'
         )
 
     except Exception as e:
@@ -617,66 +679,6 @@ def download_rapid7_export(export_id: str, export_type: str = "vulnerability") -
             f'export_id="{export_id}", '
             f'export_type="{export_type}")'
         )
-
-
-@mcp.tool(
-    annotations=ToolAnnotations(
-        title="Check Rapid7 Download Status",
-        readOnlyHint=True,
-        destructiveHint=False,
-        idempotentHint=True,
-        openWorldHint=False,
-    )
-)
-def check_download_status(export_id: str) -> str:
-    """Check the status of a background download/load job started by download_rapid7_export.
-
-    This is a fast, non-blocking call — it just reports the current state
-    of the in-memory job tracker. Does not wait for the job to finish.
-
-    Args:
-        export_id: The export ID passed to download_rapid7_export.
-
-    Returns:
-        Current job state, and full results/statistics once complete.
-    """
-    job = _get_job(export_id)
-
-    if job is None:
-        return (
-            f"No background download job found for export ID: {export_id}\n\n"
-            f"Either it hasn't been started yet (start with download_rapid7_export), "
-            f"or the server process was restarted since it ran — job tracking is "
-            f"in-memory only and does not survive a restart. If you believe the data "
-            f"already loaded successfully before a restart, try get_rapid7_stats() "
-            f"directly to check."
-        )
-
-    state = job.get("state")
-
-    if state == "complete":
-        return job.get("message", "✓ Load completed, but no summary message was recorded.")
-
-    if state == "failed":
-        return job.get("message", "✗ Load failed, but no error message was recorded.")
-
-    if state in ("queued", "downloading", "loading"):
-        files_total = job.get("files_total")
-        files_done = job.get("files_done")
-        progress = ""
-        if files_total:
-            progress = f"\nFiles downloaded: {files_done or 0} / {files_total}"
-
-        return (
-            f"⏳ Job is {state}.\n\n"
-            f"Export ID: {export_id}\n"
-            f"Started: {job.get('started_at', 'unknown')}\n"
-            f"Last update: {job.get('updated_at', 'unknown')}{progress}\n\n"
-            f"Check again in 30-60 seconds with: "
-            f'check_download_status(export_id="{export_id}")'
-        )
-
-    return f"Unknown job state '{state}' for export ID: {export_id}"
 
 
 @mcp.tool(
@@ -747,7 +749,7 @@ def query_rapid7(sql: str) -> str:
         return (
             "⏳ A background download/load is currently in progress, so the "
             "database can't be safely queried right now. Try again shortly, "
-            "or check check_download_status(export_id=...) for progress."
+            "or check check_rapid7_export_status(export_id=...) for progress."
         )
     try:
         results = db.query(sql)
@@ -789,7 +791,7 @@ def get_rapid7_schema() -> str:
         return (
             "⏳ A background download/load is currently in progress, so the "
             "schema can't be safely read right now. Try again shortly, or "
-            "check check_download_status(export_id=...) for progress."
+            "check check_rapid7_export_status(export_id=...) for progress."
         )
     try:
         schema = db.get_schema()
@@ -831,7 +833,7 @@ def get_rapid7_stats() -> str:
         return (
             "⏳ A background download/load is currently in progress, so "
             "statistics can't be safely read right now. Try again shortly, "
-            "or check check_download_status(export_id=...) for progress."
+            "or check check_rapid7_export_status(export_id=...) for progress."
         )
     try:
         stats = db.get_stats()
@@ -869,12 +871,21 @@ def purge_rapid7_data() -> str:
     """
     global db
 
+    # Refuse to purge while a background load holds the database — dropping the
+    # file mid-load would corrupt the in-flight load and leave stale tracker
+    # rows. Non-blocking to match the read tools.
+    if not _db_lock.acquire(blocking=False):
+        return (
+            "⏳ A background download/load is currently in progress, so the "
+            "database can't be purged right now. Try again once it finishes "
+            "(check_rapid7_export_status(export_id=...) shows progress)."
+        )
     try:
         # Purge main database
         if db is not None:
             db.purge()
 
-        # Purge tracking database
+        # Purge tracking database (also clears all export/phase rows)
         tracker = ExportTracker(str(_DATA_DIR / "rapid7_bulk_export_tracking.db"))
         tracker.purge()
 
@@ -888,6 +899,8 @@ def purge_rapid7_data() -> str:
 
     except Exception as e:
         return f"✗ Error purging data: {str(e)}"
+    finally:
+        _db_lock.release()
 
 
 @mcp.tool(
@@ -912,6 +925,9 @@ def list_rapid7_exports(limit: int = 10) -> str:
         Formatted list of recent exports
     """
     try:
+        # Reads only the local tracker DB (not the shared query database), so
+        # it needs no _db_lock guard and is safe to call during a load — that
+        # is in fact how you watch a background load progress.
         tracker = ExportTracker(str(_DATA_DIR / "rapid7_bulk_export_tracking.db"))
         exports = tracker.list_exports(limit=limit)
         tracker.close()
@@ -926,6 +942,8 @@ def list_rapid7_exports(limit: int = 10) -> str:
             result += f"  Date: {exp['export_date']}\n"
             result += f"  Created: {exp['created_at']}\n"
             result += f"  Status: {exp['status']}\n"
+            if exp.get("phase_detail"):
+                result += f"  Progress: {exp['phase_detail']}\n"
             result += f"  Files: {exp['file_count']}\n"
             result += f"  Rows: {exp['row_count']}\n\n"
 
