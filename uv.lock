@@ -1331,7 +1331,7 @@ wheels = [
 
 [[package]]
 name = "rapid7-vulnerability-export"
-version = "0.6.0"
+version = "0.6.1"
 source = { editable = "." }
 dependencies = [
     { name = "authlib" },
@@ -1362,6 +1362,7 @@ dev = [
 dev = [
     { name = "bandit" },
     { name = "hypothesis" },
+    { name = "jsonschema" },
     { name = "pytest" },
     { name = "responses" },
     { name = "ruff" },
@@ -1394,6 +1395,7 @@ provides-extras = ["dev"]
 dev = [
     { name = "bandit", specifier = ">=1.9.4" },
     { name = "hypothesis", specifier = ">=6.82.0" },
+    { name = "jsonschema", specifier = ">=4.0.0" },
     { name = "pytest", specifier = ">=7.4.0" },
     { name = "responses", specifier = ">=0.23.0" },
     { name = "ruff", specifier = ">=0.14.0" },

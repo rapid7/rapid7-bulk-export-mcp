@@ -46,8 +46,12 @@ mcp = FastMCP("rapid7-bulk-export")
 db: Optional[VulnerabilityDatabase] = None
 
 # Data directory — resolved once at startup, used for all database paths.
-# Defaults to ~/.rapid7_mcp so relative-path writes never hit a read-only CWD.
-_DATA_DIR: Path = Path(os.environ.get("DATA_DIR", "~/.rapid7_mcp")).expanduser().resolve()
+# Precedence: explicit DATA_DIR wins (existing installs unaffected), then the
+# plugin host's PLUGIN_DATA (Agent Plugins spec: per-install, writable, survives
+# updates), then ~/.rapid7_mcp so relative-path writes never hit a read-only CWD.
+_DATA_DIR: Path = (
+    Path(os.environ.get("DATA_DIR") or os.environ.get("PLUGIN_DATA") or "~/.rapid7_mcp").expanduser().resolve()
+)
 
 VALID_EXPORT_TYPES = ("vulnerability", "policy", "remediation", "asset_software")
 
@@ -1197,6 +1201,7 @@ def main():
         print("  RAPID7_API_KEY    Your Rapid7 InsightVM API key (required)")
         print("  RAPID7_REGION     Your Rapid7 region: us, eu, ca, au, or ap (required)")
         print("  DATA_DIR          Directory for database files (default: ~/.rapid7_mcp)")
+        print("  PLUGIN_DATA       Plugin-host data dir; used when DATA_DIR is unset")
         print("  MCP_TRANSPORT     Transport protocol: 'stdio' (default) or 'http'")
         print("  MCP_HOST          HTTP bind address (default: 0.0.0.0)")
         print("  MCP_PORT          HTTP port (default: 8000)")

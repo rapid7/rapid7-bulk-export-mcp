@@ -1,5 +1,31 @@
 # Changelog
 
+## 0.6.1
+
+### Changed
+
+- **Adopted the [Agent Plugins](https://agent-plugins.org/) packaging format.** The
+  repository now ships a root `plugin.json` + `mcp.json` and a `skills/rapid7-bulk-export/`
+  directory. Kiro and other conformant clients install the MCP server and skill together
+  as one power. The `manifest.json` (MCPB) bundle for Claude Desktop connector install is
+  unchanged.
+- **Removed the legacy `power-rapid7-bulk-export/` (`POWER.md`) layout**, superseded by
+  the Agent Plugins format for the same client. Existing installs of the old-format power
+  keep working until they are re-pulled; re-install from the repository URL to move to the
+  new format.
+
+### Added
+
+- **`PLUGIN_DATA` support for the database location.** When `DATA_DIR` is not set, the
+  server now uses the plugin host's `PLUGIN_DATA` directory (per-install, writable,
+  survives updates) before falling back to `~/.rapid7_mcp`. An explicit `DATA_DIR` still
+  takes precedence, so existing installs are unaffected. This also benefits MCPB installs.
+
+### Fixed
+
+- Reconciled the skill's tool references to the real prefixed tool names
+  (`query_rapid7`, `load_rapid7_parquet`) so documentation matches the server.
+
 ## 0.6.0
 
 ### Fixed

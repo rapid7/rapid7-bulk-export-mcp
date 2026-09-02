@@ -34,7 +34,7 @@ make help        # list all targets
 **Version management**
 ```bash
 make version                  # print current version
-make check-version            # verify manifest.json, pyproject.toml, SKILL.md are in sync
+make check-version            # verify manifest.json, pyproject.toml, plugin.json, SKILL.md are in sync
 make bump-version V=0.5.0     # bump all three version files atomically + uv lock
 ```
 

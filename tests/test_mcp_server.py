@@ -594,3 +594,50 @@ class TestRemediationRangeIdempotency:
         result = mcp_server.start_rapid7_export(export_type="remediation", start_date=start, end_date=end)
         assert started["called"], "a FAILED prior job should allow a fresh retry"
         assert "Started loading remediation" in result
+
+
+class TestDataDirResolution:
+    """_DATA_DIR is resolved once at import time from the environment.
+
+    Precedence: an explicit DATA_DIR wins (so existing installs are
+    unaffected), then the plugin host's PLUGIN_DATA, then the
+    ~/.rapid7_mcp default.
+    """
+
+    @staticmethod
+    def _reload_data_dir(monkeypatch, data_dir, plugin_data):
+        import importlib
+
+        for name, value in (("DATA_DIR", data_dir), ("PLUGIN_DATA", plugin_data)):
+            if value is None:
+                monkeypatch.delenv(name, raising=False)
+            else:
+                monkeypatch.setenv(name, value)
+        reloaded = importlib.reload(mcp_server)
+        try:
+            return reloaded._DATA_DIR
+        finally:
+            # Restore module-level state for subsequent tests.
+            importlib.reload(mcp_server)
+
+    def test_data_dir_wins_over_plugin_data(self, monkeypatch, tmp_path):
+        data_dir = tmp_path / "explicit"
+        plugin_data = tmp_path / "plugin"
+        resolved = self._reload_data_dir(monkeypatch, str(data_dir), str(plugin_data))
+        assert resolved == data_dir.resolve()
+
+    def test_plugin_data_used_when_data_dir_unset(self, monkeypatch, tmp_path):
+        plugin_data = tmp_path / "plugin"
+        resolved = self._reload_data_dir(monkeypatch, None, str(plugin_data))
+        assert resolved == plugin_data.resolve()
+
+    def test_default_when_both_unset(self, monkeypatch):
+        from pathlib import Path
+
+        resolved = self._reload_data_dir(monkeypatch, None, None)
+        assert resolved == Path("~/.rapid7_mcp").expanduser().resolve()
+
+    def test_empty_data_dir_falls_through_to_plugin_data(self, monkeypatch, tmp_path):
+        plugin_data = tmp_path / "plugin"
+        resolved = self._reload_data_dir(monkeypatch, "", str(plugin_data))
+        assert resolved == plugin_data.resolve()
