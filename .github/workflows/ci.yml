@@ -69,8 +69,10 @@ jobs:
       # and validate the committed manifests against them.
       - name: Fetch v1.0.0 schemas
         run: |
-          curl -fsSL https://agent-plugins.org/schemas/1.0.0/plugin.schema.json -o /tmp/plugin.schema.json
-          curl -fsSL https://agent-plugins.org/schemas/1.0.0/mcp.schema.json -o /tmp/mcp.schema.json
+          curl -fsSL --retry 3 --retry-all-errors --connect-timeout 10 --max-time 30 \
+            https://agent-plugins.org/schemas/1.0.0/plugin.schema.json -o /tmp/plugin.schema.json
+          curl -fsSL --retry 3 --retry-all-errors --connect-timeout 10 --max-time 30 \
+            https://agent-plugins.org/schemas/1.0.0/mcp.schema.json -o /tmp/mcp.schema.json
 
       - name: Validate plugin.json and mcp.json
         run: |
