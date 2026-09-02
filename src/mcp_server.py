@@ -1215,8 +1215,11 @@ def main():
         print("See README.md for configuration details.")
         sys.exit(0)
 
-    # Ensure data directory exists
+    # Ensure data directory exists, including the imports/ subdir that
+    # load_rapid7_parquet reads from (its allowed root), so a fresh
+    # DATA_DIR/PLUGIN_DATA has the path users are told to copy files into.
     _DATA_DIR.mkdir(parents=True, exist_ok=True)
+    (_DATA_DIR / "imports").mkdir(parents=True, exist_ok=True)
 
     # Get database path from args or use default
     db_path = sys.argv[1] if len(sys.argv) > 1 else str(_DATA_DIR / "rapid7_bulk_export.db")

@@ -607,17 +607,27 @@ class TestDataDirResolution:
     @staticmethod
     def _reload_data_dir(monkeypatch, data_dir, plugin_data):
         import importlib
+        import os
 
-        for name, value in (("DATA_DIR", data_dir), ("PLUGIN_DATA", plugin_data)):
-            if value is None:
-                monkeypatch.delenv(name, raising=False)
-            else:
-                monkeypatch.setenv(name, value)
+        # Capture the real environment so the final reload restores the module
+        # to its true state rather than leaving it pinned to a test value.
+        original = {name: os.environ.get(name) for name in ("DATA_DIR", "PLUGIN_DATA")}
+
+        def _apply(values):
+            for name, value in values.items():
+                if value is None:
+                    monkeypatch.delenv(name, raising=False)
+                else:
+                    monkeypatch.setenv(name, value)
+
+        _apply({"DATA_DIR": data_dir, "PLUGIN_DATA": plugin_data})
         reloaded = importlib.reload(mcp_server)
         try:
             return reloaded._DATA_DIR
         finally:
-            # Restore module-level state for subsequent tests.
+            # Restore the original env, then reload so the module's _DATA_DIR
+            # reflects reality for subsequent tests (no order-dependent pinning).
+            _apply(original)
             importlib.reload(mcp_server)
 
     def test_data_dir_wins_over_plugin_data(self, monkeypatch, tmp_path):
