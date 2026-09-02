@@ -99,15 +99,18 @@ def _wait_for_phase(tmp_path, export_id, target_states, timeout=5.0):
 
 class TestDownloadRapid7ExportIsNonBlocking:
     def test_returns_immediately_with_started_message(self, monkeypatch, tmp_path):
-        """The whole point of the fix: this call must not block on the load."""
-        fake_db = FakeDB(load_delay=0.3)
+        """The whole point of the fix: this call must not block on the load.
+        The fake load takes 2s; a non-blocking call returns well under that
+        even under CI load, so a 1s threshold cleanly separates the two
+        without flaking on runner jitter."""
+        fake_db = FakeDB(load_delay=2.0)
         _patch_common(monkeypatch, db=fake_db)
 
         start = time.time()
         result = mcp_server.download_rapid7_export(export_id="exp-immediate", export_type="vulnerability")
         elapsed = time.time() - start
 
-        assert elapsed < 0.5, f"download_rapid7_export blocked for {elapsed}s instead of returning immediately"
+        assert elapsed < 1.0, f"download_rapid7_export blocked for {elapsed}s instead of returning immediately"
         assert "Started downloading and loading" in result
         assert "check_rapid7_export_status" in result
 
