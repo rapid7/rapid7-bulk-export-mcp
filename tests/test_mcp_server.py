@@ -546,3 +546,51 @@ class TestReadToolsLockBeforeHasData:
         monkeypatch.setattr(mcp_server, "db", self.ExplodingHasData())
         result = self._held_on_other_thread(mcp_server.get_rapid7_stats)
         assert "background download/load is currently in progress" in result
+
+
+class TestRemediationRangeIdempotency:
+    """A repeated remediation call for the same range must not start a second
+    appending job (addresses the duplicate-append review findings)."""
+
+    def _seed_job(self, tmp_path, status, start="2026-01-01", end="2026-02-01"):
+        tracker = _tracker(tmp_path)
+        tracker.create_job(
+            job_id=f"remediation-seed-{status}",
+            export_type="remediation",
+            start_date=start,
+            end_date=end,
+            chunks=[{"start": start, "end": end, "export_id": "e1", "status": "loaded"}],
+            status=status,
+        )
+        return start, end
+
+    def test_running_job_for_same_range_is_reused(self, monkeypatch, tmp_path):
+        monkeypatch.setattr(mcp_server, "load_config", lambda: {"api_key": "k", "endpoint": "https://x"})
+        start, end = self._seed_job(tmp_path, mcp_server.JOB_RUNNING)
+        result = mcp_server.start_rapid7_export(export_type="remediation", start_date=start, end_date=end)
+        assert "already in progress" in result
+        assert "remediation-seed-RUNNING" in result
+
+    def test_complete_job_for_same_range_returns_stored_result_not_rerun(self, monkeypatch, tmp_path):
+        monkeypatch.setattr(mcp_server, "load_config", lambda: {"api_key": "k", "endpoint": "https://x"})
+        # If the guard failed and it tried to start a job, this would raise.
+        monkeypatch.setattr(
+            mcp_server,
+            "_start_remediation_job",
+            lambda s, e: pytest.fail("must not start a new job for COMPLETE range"),
+        )
+        start, end = self._seed_job(tmp_path, mcp_server.JOB_COMPLETE)
+        result = mcp_server.start_rapid7_export(export_type="remediation", start_date=start, end_date=end)
+        assert "already loaded" in result
+        assert "remediation-seed-COMPLETE" in result
+
+    def test_failed_job_for_same_range_starts_fresh(self, monkeypatch, tmp_path):
+        monkeypatch.setattr(mcp_server, "load_config", lambda: {"api_key": "k", "endpoint": "https://x"})
+        started = {"called": False}
+        monkeypatch.setattr(
+            mcp_server, "_start_remediation_job", lambda s, e: started.update(called=True) or "remediation-new"
+        )
+        start, end = self._seed_job(tmp_path, mcp_server.JOB_FAILED)
+        result = mcp_server.start_rapid7_export(export_type="remediation", start_date=start, end_date=end)
+        assert started["called"], "a FAILED prior job should allow a fresh retry"
+        assert "Started loading remediation" in result

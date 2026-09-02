@@ -384,11 +384,48 @@ class ExportTracker:
                 )
             if active_job_statuses:
                 placeholders = ", ".join("?" for _ in active_job_statuses)
-                conn.execute(
-                    f"UPDATE export_jobs SET status = 'FAILED', message = ?, updated_at = ? "  # nosec B608
+                rows = conn.execute(
+                    f"SELECT job_id, start_date, end_date, chunks FROM export_jobs "  # nosec B608
                     f"WHERE status IN ({placeholders})",
-                    [reason, now, *active_job_statuses],
-                )
+                    active_job_statuses,
+                ).fetchall()
+                for job_id, jstart, jend, chunks_json in rows:
+                    chunks = json.loads(chunks_json) if chunks_json else []
+                    loaded = [f"{c['start']} → {c['end']}" for c in chunks if c.get("status") == "loaded"]
+                    missing = [f"{c['start']} → {c['end']}" for c in chunks if c.get("status") != "loaded"]
+                    # Report per-window state so the user re-runs ONLY the
+                    # missing windows, never the whole range (which would
+                    # duplicate already-appended rows).
+                    job_msg = (
+                        f"✗ Interrupted by a server restart. "
+                        f"Loaded windows (kept): {', '.join(loaded) or 'none'}. "
+                        f"Missing windows: {', '.join(missing) or 'none'}. "
+                        f"Re-run only the missing range(s) with "
+                        f'start_rapid7_export(export_type="remediation", start_date=..., end_date=...).'
+                    )
+                    conn.execute(
+                        "UPDATE export_jobs SET status = 'FAILED', message = ?, updated_at = ? WHERE job_id = ?",
+                        [job_msg, now, job_id],
+                    )
+
+    def find_job_by_range(self, export_type: str, start_date: str, end_date: str) -> Optional[Dict[str, Any]]:
+        """Return the most recent job for an exact export_type + date range, or None.
+
+        Lets the remediation tool be idempotent: a repeated call for the same
+        range can reuse a RUNNING job or return a COMPLETE job's result rather
+        than starting a second worker that would append the windows again.
+        """
+        with duckdb_connection(self.db_path) as conn:
+            result = conn.execute(
+                """
+                SELECT job_id FROM export_jobs
+                WHERE export_type = ? AND start_date = ? AND end_date = ?
+                ORDER BY created_at DESC
+                LIMIT 1
+                """,
+                [export_type, start_date, end_date],
+            ).fetchone()
+        return self.get_job(result[0]) if result else None
 
     def get_export_by_id(self, export_id: str) -> Optional[Dict[str, Any]]:
         """

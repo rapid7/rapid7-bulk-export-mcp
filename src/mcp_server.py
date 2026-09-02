@@ -329,6 +329,28 @@ def start_rapid7_export(
             if not end_date:
                 end_date = _dt.date.today().isoformat()
 
+            # Idempotency: this MCP tool may be retried. A remediation job
+            # appends its windows, so starting a second job for the SAME range
+            # would double the rows. Reuse an existing job for the exact range —
+            # report progress if it's still RUNNING, or its stored result if
+            # COMPLETE — and only start a fresh job when none exists or the
+            # prior one FAILED (an intended retry).
+            existing = tracker.find_job_by_range("remediation", start_date, end_date)
+            if existing is not None and existing.get("status") in (JOB_RUNNING, JOB_COMPLETE):
+                tracker.close()
+                jid = existing["job_id"]
+                if existing["status"] == JOB_COMPLETE:
+                    return (
+                        f"♻️ Remediation data for {start_date} → {end_date} is already loaded "
+                        f"(job {jid}). Not re-running (that would duplicate rows).\n\n"
+                        f'See results with: check_rapid7_export_status(export_id="{jid}")'
+                    )
+                return (
+                    f"⏳ A remediation load for {start_date} → {end_date} is already in progress "
+                    f"(job {jid}).\n\n"
+                    f'Check progress with: check_rapid7_export_status(export_id="{jid}")'
+                )
+
             # A remediation range may span multiple ≤31-day windows, and the
             # platform allows only one remediation export in flight at a time.
             # Hand the whole range to a single background job that creates,
