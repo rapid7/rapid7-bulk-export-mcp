@@ -448,3 +448,96 @@ class TestMultiChunkRemediation:
         result = mcp_server.check_rapid7_export_status(export_id="remediation-abc")
         assert "in progress" in result
         assert "2026-02-01 → 2026-03-01" in result
+
+
+class TestPurgeRefusesActiveWork:
+    def test_purge_refused_while_a_job_is_running(self, monkeypatch, tmp_path):
+        """C2: purge must refuse while a multi-window job is RUNNING, even
+        though _db_lock is free between windows."""
+        fake_db = FakeDB()
+        monkeypatch.setattr(mcp_server, "db", fake_db)
+        tracker = _tracker(tmp_path)
+        tracker.create_job(
+            job_id="remediation-active",
+            export_type="remediation",
+            start_date="2026-01-01",
+            end_date="2026-02-01",
+            chunks=[{"start": "2026-01-01", "end": "2026-02-01", "export_id": None, "status": "loading"}],
+            status=mcp_server.JOB_RUNNING,
+        )
+
+        result = mcp_server.purge_rapid7_data()
+
+        assert "still active" in result
+        assert fake_db.has_data_value is True, "purge ran despite an active job"
+
+    def test_purge_refused_while_an_export_is_downloading(self, monkeypatch, tmp_path):
+        fake_db = FakeDB()
+        monkeypatch.setattr(mcp_server, "db", fake_db)
+        tracker = _tracker(tmp_path)
+        tracker.save_export(
+            export_id="exp-dl",
+            status=mcp_server.PHASE_DOWNLOADING,
+            parquet_urls=["u1"],
+            export_type="vulnerability",
+        )
+
+        result = mcp_server.purge_rapid7_data()
+
+        assert "still active" in result
+        assert fake_db.has_data_value is True
+
+    def test_purge_succeeds_when_no_active_work(self, monkeypatch, tmp_path):
+        fake_db = FakeDB()
+        monkeypatch.setattr(mcp_server, "db", fake_db)
+
+        result = mcp_server.purge_rapid7_data()
+
+        assert "purged" in result
+        assert fake_db.has_data_value is False
+
+
+class TestReadToolsLockBeforeHasData:
+    """I3: the busy response must win even though has_data() opens its own
+    DuckDB connection — the lock has to be held before has_data() is called.
+    A FakeDB whose has_data() raises stands in for the RO/RW config conflict a
+    real load would trigger; if the tool checked has_data() before locking, the
+    exception would surface instead of the busy message."""
+
+    class ExplodingHasData(FakeDB):
+        def has_data(self):
+            raise RuntimeError("DuckDB config conflict (simulated)")
+
+    def _held_on_other_thread(self, fn):
+        import threading
+
+        holding, release = threading.Event(), threading.Event()
+
+        def holder():
+            with mcp_server._db_lock:
+                holding.set()
+                release.wait(timeout=5)
+
+        t = threading.Thread(target=holder, daemon=True)
+        t.start()
+        holding.wait(timeout=5)
+        try:
+            return fn()
+        finally:
+            release.set()
+            t.join(timeout=5)
+
+    def test_query_busy_before_has_data(self, monkeypatch):
+        monkeypatch.setattr(mcp_server, "db", self.ExplodingHasData())
+        result = self._held_on_other_thread(lambda: mcp_server.query_rapid7(sql="SELECT 1"))
+        assert "background download/load is currently in progress" in result
+
+    def test_schema_busy_before_has_data(self, monkeypatch):
+        monkeypatch.setattr(mcp_server, "db", self.ExplodingHasData())
+        result = self._held_on_other_thread(mcp_server.get_rapid7_schema)
+        assert "background download/load is currently in progress" in result
+
+    def test_stats_busy_before_has_data(self, monkeypatch):
+        monkeypatch.setattr(mcp_server, "db", self.ExplodingHasData())
+        result = self._held_on_other_thread(mcp_server.get_rapid7_stats)
+        assert "background download/load is currently in progress" in result

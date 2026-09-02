@@ -56,6 +56,9 @@ class ExportTracker:
                 # Full summary or error text produced once a load reaches a
                 # terminal state, so the status tools can echo it verbatim.
                 "ADD COLUMN message VARCHAR",
+                # Last phase-transition time. Kept separate from created_at so
+                # a load's progress updates never overwrite its creation time.
+                "ADD COLUMN updated_at TIMESTAMP",
             ):
                 try:
                     conn.execute(f"ALTER TABLE exports {column_ddl}")
@@ -234,7 +237,7 @@ class ExportTracker:
                     phase_detail = ?,
                     message = ?,
                     row_count = COALESCE(?, row_count),
-                    created_at = ?
+                    updated_at = ?
                 WHERE export_id = ?
                 """,
                 [status, phase_detail, message, row_count, now, export_id],
@@ -334,6 +337,59 @@ class ExportTracker:
             "updated_at": result[9],
         }
 
+    def has_active_work(self, active_export_statuses: List[str], active_job_statuses: List[str]) -> bool:
+        """Return True if any export or job is in an active (in-flight) state.
+
+        Used to refuse a purge while a background download/load or a
+        multi-window job is still running — the caller's DB lock only covers
+        the load phase, not the polling/downloading/between-window gaps.
+        """
+        with duckdb_connection(self.db_path) as conn:
+            if active_export_statuses:
+                placeholders = ", ".join("?" for _ in active_export_statuses)
+                row = conn.execute(
+                    f"SELECT COUNT(*) FROM exports WHERE status IN ({placeholders})",  # nosec B608
+                    active_export_statuses,
+                ).fetchone()
+                if row and row[0] > 0:
+                    return True
+            if active_job_statuses:
+                placeholders = ", ".join("?" for _ in active_job_statuses)
+                row = conn.execute(
+                    f"SELECT COUNT(*) FROM export_jobs WHERE status IN ({placeholders})",  # nosec B608
+                    active_job_statuses,
+                ).fetchone()
+                if row and row[0] > 0:
+                    return True
+        return False
+
+    def reconcile_interrupted(
+        self, active_export_statuses: List[str], active_job_statuses: List[str], reason: str
+    ) -> None:
+        """Flip rows left in an active phase by a crash/restart to FAILED.
+
+        Background workers are daemon threads with no resume, so an export
+        interrupted mid-run would otherwise sit in DOWNLOADING/LOADING/RUNNING
+        forever and block retry as "already in progress". Called once at
+        startup.
+        """
+        now = datetime.now()
+        with duckdb_connection(self.db_path) as conn:
+            if active_export_statuses:
+                placeholders = ", ".join("?" for _ in active_export_statuses)
+                conn.execute(
+                    f"UPDATE exports SET status = 'FAILED', message = ?, updated_at = ? "  # nosec B608
+                    f"WHERE status IN ({placeholders})",
+                    [reason, now, *active_export_statuses],
+                )
+            if active_job_statuses:
+                placeholders = ", ".join("?" for _ in active_job_statuses)
+                conn.execute(
+                    f"UPDATE export_jobs SET status = 'FAILED', message = ?, updated_at = ? "  # nosec B608
+                    f"WHERE status IN ({placeholders})",
+                    [reason, now, *active_job_statuses],
+                )
+
     def get_export_by_id(self, export_id: str) -> Optional[Dict[str, Any]]:
         """
         Get export metadata by export ID.
@@ -360,7 +416,8 @@ class ExportTracker:
                     local_files,
                     export_type,
                     phase_detail,
-                    message
+                    message,
+                    updated_at
                 FROM exports
                 WHERE export_id = ?
             """,
@@ -380,6 +437,7 @@ class ExportTracker:
                 "export_type": result[8],
                 "phase_detail": result[9],
                 "message": result[10],
+                "updated_at": result[11],
             }
 
         return None
