@@ -185,7 +185,9 @@ class TestCheckRapid7ExportStatusReportsLocalPhase:
         result = mcp_server.check_rapid7_export_status(export_id="exp-progress")
 
         assert "in progress locally" in result
-        assert "files downloaded" in result
+        # Mid-flight the detail names the 5-file count (either the initial
+        # "0 / 5 files downloaded" or the worker's "downloading 5 file(s)").
+        assert "5" in result
         _wait_for_phase(tmp_path, "exp-progress", {mcp_server.PHASE_COMPLETE, mcp_server.PHASE_FAILED})
 
     def test_active_load_short_circuits_platform_api_call(self, monkeypatch, tmp_path):

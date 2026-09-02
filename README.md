@@ -627,6 +627,8 @@ uv run pytest
 | `RAPID7_API_KEY` | Yes | — | Rapid7 InsightVM API key |
 | `RAPID7_REGION` | Yes | `us` | API region: `us`, `us2`, `us3`, `eu`, `ca`, `au`, `ap` |
 | `DATA_DIR` | No | `~/.rapid7_mcp` | Directory for database files; must be writable. Manual parquet imports must be placed in `$DATA_DIR/imports/` |
+| `DUCKDB_MEMORY_LIMIT` | No | `4GB` | Size of DuckDB's buffer pool, e.g. `4GB`, `512MB`. This bounds the buffer pool, **not** total process memory: peak usage runs roughly 1.8x this value with `DUCKDB_THREADS=2` and up to 3.4x at the default thread count. Size it to about a third of the memory available to the container. Invalid values fall back to the default. Spill files are written to `$DATA_DIR` alongside the database |
+| `DUCKDB_THREADS` | No | CPU count | Worker threads DuckDB may use. Each carries its own buffers, so lowering this is the most effective way to cut peak memory on a large load. `2` roughly halves peak memory for about 30% more load time. Values that are not a positive integer are ignored |
 | `MCP_TRANSPORT` | No | `stdio` | Transport protocol: `stdio` or `http` |
 | `MCP_HOST` | No | `0.0.0.0` | HTTP bind address (only when `MCP_TRANSPORT=http`) |
 | `MCP_PORT` | No | `8000` | HTTP port (only when `MCP_TRANSPORT=http`) |

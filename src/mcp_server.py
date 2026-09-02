@@ -840,7 +840,7 @@ def download_rapid7_export(export_id: str, export_type: str = "vulnerability") -
         tracker.set_phase(
             export_id,
             PHASE_DOWNLOADING,
-            phase_detail=f"0 / {len(parquet_urls)} files downloaded",
+            phase_detail=f"queued: {len(parquet_urls)} file(s) to download",
         )
         tracker.close()
 

@@ -454,11 +454,11 @@ def test_VulnerabilityDatabase_VulnLoadPreservesPolicyData(
         db.close()
 
 
-def test_append_returns_per_call_inserted_counts(sample_remediation_parquet_file):
+def test_append_returns_per_call_inserted_counts(sample_remediation_parquet_file, tmp_path):
     """Append mode must report rows inserted BY THIS CALL, not the table's
     cumulative total. Regression for the multi-window remediation sum bug
     where three 2-row windows reported 2, 4, 6 (total 12) instead of 2, 2, 2."""
-    db = VulnerabilityDatabase()
+    db = VulnerabilityDatabase(str(tmp_path / "append_delta.db"))
     prefix_map = {"vulnerability_remediation": [sample_remediation_parquet_file]}
 
     first = db.load_parquet_files_by_prefix(prefix_map, append=True)
