@@ -8,7 +8,20 @@ querying status, and polling for completion.
 import pytest
 import responses
 
-from src.export_manager import create_asset_software_export, create_vulnerability_export, get_export_status
+from src.export_manager import (
+    ExportInProgressError,
+    create_asset_software_export,
+    create_remediation_export,
+    create_vulnerability_export,
+    get_export_status,
+)
+
+_ENDPOINT = "https://us.api.insight.rapid7.com/export/graphql"
+
+
+def _in_progress_response(export_id: str = "abc123XYZ=="):
+    """A GraphQL 'already in-progress' error body carrying an in-flight export id."""
+    return {"errors": [{"message": f"Export already in-progress exportId: {export_id}"}]}
 
 
 class TestCreateVulnerabilityExport:
@@ -756,3 +769,33 @@ class TestCreateAssetSoftwareExport:
 
         with pytest.raises(ValueError, match="GraphQL errors.*Unauthorized"):
             create_asset_software_export(config)
+
+
+class TestInProgressHandling:
+    """The platform allows one export per type at a time. Snapshot exports may
+    reuse the in-flight export; remediation must not (it is date-range scoped)."""
+
+    @responses.activate
+    def test_remediation_raises_export_in_progress_with_extracted_id(self):
+        responses.add(responses.POST, _ENDPOINT, json=_in_progress_response("XyZ789plusEQ=="), status=200)
+        config = {"endpoint": _ENDPOINT, "api_key": "k"}
+
+        with pytest.raises(ExportInProgressError) as excinfo:
+            create_remediation_export(config, "2026-01-01", "2026-01-15")
+
+        assert excinfo.value.export_id == "XyZ789plusEQ=="
+
+    @responses.activate
+    def test_vulnerability_snapshot_returns_in_flight_id_unchanged(self):
+        """Regression guard on the deliberate asymmetry: snapshots reuse the id."""
+        responses.add(responses.POST, _ENDPOINT, json=_in_progress_response("snapABC123=="), status=200)
+        config = {"endpoint": _ENDPOINT, "api_key": "k"}
+
+        assert create_vulnerability_export(config) == "snapABC123=="
+
+    @responses.activate
+    def test_asset_software_snapshot_returns_in_flight_id_unchanged(self):
+        responses.add(responses.POST, _ENDPOINT, json=_in_progress_response("assetXYZ456=="), status=200)
+        config = {"endpoint": _ENDPOINT, "api_key": "k"}
+
+        assert create_asset_software_export(config) == "assetXYZ456=="

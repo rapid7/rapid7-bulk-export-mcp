@@ -452,3 +452,29 @@ def test_VulnerabilityDatabase_VulnLoadPreservesPolicyData(
         assert policy_rows_after == 2, f"Policy rows lost after vulnerability load: expected 2, got {policy_rows_after}"
 
         db.close()
+
+
+def test_append_returns_per_call_inserted_counts(sample_remediation_parquet_file, tmp_path):
+    """Append mode must report rows inserted BY THIS CALL, not the table's
+    cumulative total. Regression for the multi-window remediation sum bug
+    where three 2-row windows reported 2, 4, 6 (total 12) instead of 2, 2, 2."""
+    db = VulnerabilityDatabase(str(tmp_path / "append_delta.db"))
+    prefix_map = {"vulnerability_remediation": [sample_remediation_parquet_file]}
+
+    first = db.load_parquet_files_by_prefix(prefix_map, append=True)
+    second = db.load_parquet_files_by_prefix(prefix_map, append=True)
+    third = db.load_parquet_files_by_prefix(prefix_map, append=True)
+
+    # Each call inserted the same 2 rows — the returned count is the delta.
+    assert first["vulnerability_remediation"] == 2
+    assert second["vulnerability_remediation"] == 2
+    assert third["vulnerability_remediation"] == 2
+
+    # Summing per-call counts gives the true total (2+2+2=6), not 2+4+6=12.
+    total = (
+        first["vulnerability_remediation"] + second["vulnerability_remediation"] + third["vulnerability_remediation"]
+    )
+    assert total == 6
+    # And the table really does hold 6 rows.
+    assert db.query("SELECT COUNT(*) AS c FROM vulnerability_remediation")[0]["c"] == 6
+    db.close()

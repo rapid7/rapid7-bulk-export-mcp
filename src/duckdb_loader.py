@@ -127,7 +127,9 @@ class VulnerabilityDatabase:
                 Default False preserves snapshot-replace behavior.
 
         Returns:
-            Dict mapping table names to total row counts loaded.
+            Dict mapping table names to the number of rows inserted by THIS
+            call (a delta, not the table's cumulative total) — so appended
+            windows report only their own rows.
         """
         if skip_prefixes is None:
             skip_prefixes = set()
@@ -163,6 +165,15 @@ class VulnerabilityDatabase:
             preexisting: Set[str] = {
                 row[0] for row in conn.execute("SELECT table_name FROM information_schema.tables").fetchall()
             }
+
+            # Row count of each pre-existing table BEFORE this call's inserts, so
+            # the returned counts are rows-inserted-this-call (a delta), not the
+            # table's cumulative total. Critical for append mode: without this,
+            # N appended windows of R rows each would report R, 2R, 3R, ...
+            counts_before: Dict[str, int] = {}
+            for table_name in preexisting:
+                result = conn.execute(f"SELECT COUNT(*) FROM {table_name}").fetchone()  # nosec B608
+                counts_before[table_name] = result[0] if result else 0
 
             for prefix, file_paths in prefix_file_map.items():
                 if prefix in skip_prefixes:
@@ -209,10 +220,12 @@ class VulnerabilityDatabase:
                         )
                         continue
 
-            # Collect row counts only for tables we actually touched
+            # Report rows inserted BY THIS CALL: current total minus the
+            # pre-call baseline (0 for tables created in this call).
             for table_name in tables_touched:
                 result = conn.execute(f"SELECT COUNT(*) FROM {table_name}").fetchone()  # nosec B608
-                row_counts[table_name] = result[0] if result else 0
+                after = result[0] if result else 0
+                row_counts[table_name] = after - counts_before.get(table_name, 0)
 
         # Reclaim disk space from dropped tables. DuckDB does not shrink the file
         # on DROP TABLE or VACUUM — the only way is to copy to a fresh database.

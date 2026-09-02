@@ -128,3 +128,49 @@ def test_context_manager(temp_db):
 
     # Connection should be closed after context
     # We can't easily test this without accessing private attributes
+
+
+def test_find_job_by_range(temp_db):
+    """find_job_by_range returns the job matching an exact export_type + range."""
+    tracker = ExportTracker(temp_db)
+    tracker.create_job(
+        job_id="job-a",
+        export_type="remediation",
+        start_date="2026-01-01",
+        end_date="2026-03-01",
+        chunks=[{"start": "2026-01-01", "end": "2026-02-01", "export_id": None, "status": "pending"}],
+        status="RUNNING",
+    )
+    found = tracker.find_job_by_range("remediation", "2026-01-01", "2026-03-01")
+    assert found is not None and found["job_id"] == "job-a"
+    # A different range does not match.
+    assert tracker.find_job_by_range("remediation", "2026-01-01", "2026-02-01") is None
+
+
+def test_reconcile_interrupted_job_names_loaded_and_missing_windows(temp_db):
+    """A RUNNING job reconciled at restart must report per-window state, not a
+    blanket re-run of the whole range (which would duplicate loaded windows)."""
+    tracker = ExportTracker(temp_db)
+    tracker.create_job(
+        job_id="job-interrupted",
+        export_type="remediation",
+        start_date="2026-01-01",
+        end_date="2026-03-04",
+        chunks=[
+            {"start": "2026-01-01", "end": "2026-02-01", "export_id": "e1", "status": "loaded"},
+            {"start": "2026-02-01", "end": "2026-03-04", "export_id": None, "status": "loading"},
+        ],
+        status="RUNNING",
+    )
+
+    tracker.reconcile_interrupted(
+        active_export_statuses=["DOWNLOADING", "LOADING"],
+        active_job_statuses=["RUNNING"],
+        reason="Interrupted by a server restart.",
+    )
+
+    job = tracker.get_job("job-interrupted")
+    assert job["status"] == "FAILED"
+    assert "2026-01-01 → 2026-02-01" in job["message"]  # loaded window named as kept
+    assert "2026-02-01 → 2026-03-04" in job["message"]  # missing window named
+    assert "only the missing" in job["message"]
