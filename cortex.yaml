@@ -9,7 +9,7 @@ info:
   x-cortex-tag: rapid7-bulk-export-mcp
   x-cortex-type: service
   x-cortex-domain-parents:
-    - tag: surface-command-platform
+    - tag: bulk-export
   x-cortex-groups:
     - target:not-deployed
     - strategy:cloud
