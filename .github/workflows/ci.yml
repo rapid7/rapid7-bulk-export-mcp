@@ -27,7 +27,9 @@ jobs:
         run: |
           CHANGED=$(git diff --name-only origin/main...HEAD -- \
             src/ \
-            rapid7-bulk-export-skill/ \
+            skills/ \
+            plugin.json \
+            mcp.json \
             pyproject.toml \
             manifest.json \
             requirements.txt)
@@ -47,6 +49,57 @@ jobs:
             echo "::error::Release $TAG already exists. Bump the version with: make bump-version V=x.y.z"
             exit 1
           fi
+
+  schema:
+    name: Plugin schema validation
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+
+      - uses: astral-sh/setup-uv@22695119d769bdb6f7032ad67b9bca0ef8c4a174 # v5.4.0
+        with:
+          enable-cache: false
+
+      # The Agent Plugins spec requires clients not to fetch a schema while
+      # loading a plugin, so fetch the pinned v1.0.0 schemas here at CI time
+      # and validate the committed manifests against them.
+      - name: Fetch v1.0.0 schemas
+        run: |
+          curl -fsSL --retry 3 --retry-all-errors --connect-timeout 10 --max-time 30 \
+            https://agent-plugins.org/schemas/1.0.0/plugin.schema.json -o /tmp/plugin.schema.json
+          curl -fsSL --retry 3 --retry-all-errors --connect-timeout 10 --max-time 30 \
+            https://agent-plugins.org/schemas/1.0.0/mcp.schema.json -o /tmp/mcp.schema.json
+
+      - name: Validate plugin.json and mcp.json
+        run: |
+          uv run --group dev python - <<'PY'
+          import json
+          import sys
+
+          import jsonschema
+
+          checks = [
+              ("plugin.json", "/tmp/plugin.schema.json"),
+              ("mcp.json", "/tmp/mcp.schema.json"),
+          ]
+          failed = False
+          for instance_path, schema_path in checks:
+              with open(instance_path) as f:
+                  instance = json.load(f)
+              with open(schema_path) as f:
+                  schema = json.load(f)
+              try:
+                  jsonschema.validate(instance=instance, schema=schema)
+                  print(f"OK: {instance_path} validates against {schema_path}")
+              except jsonschema.ValidationError as exc:
+                  failed = True
+                  print(f"FAIL: {instance_path}: {exc.message}")
+          sys.exit(1 if failed else 0)
+          PY
 
   lint:
     name: Lint

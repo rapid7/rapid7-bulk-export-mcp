@@ -34,8 +34,8 @@ make help        # list all targets
 **Version management**
 ```bash
 make version                  # print current version
-make check-version            # verify manifest.json, pyproject.toml, SKILL.md are in sync
-make bump-version V=0.5.0     # bump all three version files atomically + uv lock
+make check-version            # verify manifest.json, pyproject.toml, plugin.json, SKILL.md are in sync
+make bump-version V=0.5.0     # bump all version files (manifest.json, pyproject.toml, plugin.json, SKILL.md) atomically + uv lock
 ```
 
 **Packaging and release**
@@ -187,10 +187,10 @@ make test       # must pass
 
 ## Pull requests
 
-Before opening a PR, bump the version — CI will fail if `manifest.json`, `pyproject.toml`, and `SKILL.md` are out of sync or unchanged from the last release:
+Before opening a PR, bump the version — CI will fail if `manifest.json`, `pyproject.toml`, `plugin.json`, and `SKILL.md` are out of sync or unchanged from the last release:
 
 ```bash
-make bump-version V=x.y.z   # bumps all three files and runs uv lock atomically
+make bump-version V=x.y.z   # bumps all version files and runs uv lock atomically
 ```
 
 Then run the full pre-commit checklist above, commit the version bump, and open the PR. The version bump commit should be separate from the feature/fix commits so it's easy to revert if needed.

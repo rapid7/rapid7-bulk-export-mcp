@@ -131,19 +131,21 @@ Create or edit `.kiro/settings/mcp.json`:
 }
 ```
 
-#### Install the Agent Skill
+#### Install the Power (MCP + Skill)
 
-1. Open the Kiro Skills panel (Command Palette → "Kiro: Open Skills")
-2. Click "Install from GitHub"
-3. Enter the repository URL: `https://github.com/rapid7/rapid7-bulk-export-mcp/rapid7-bulk-export-skill`
+This repository is packaged as an [Agent Plugins](https://agent-plugins.org/) power (`plugin.json` + `mcp.json` + `skills/`), so Kiro installs the MCP server declaration and the skill together:
 
-Activate the skill in chat with `#rapid7-bulk-export-skill`.
+1. Open the Kiro Powers panel → **Add Custom Power**
+2. Select **Import power from GitHub**
+3. Enter the repository URL: `https://github.com/rapid7/rapid7-bulk-export-mcp`
+
+Kiro reads the `keywords` in `plugin.json` and activates the power automatically when you mention terms like "rapid7", "vulnerability", or "remediation". The power's `mcp.json` declares the `rapid7-mcp-server` stdio server; set `RAPID7_API_KEY` and `RAPID7_REGION` in your environment (the server inherits your shell; on macOS it can also read the key from Keychain). If you prefer to configure the MCP server by hand instead of via the power, use the `.kiro/settings/mcp.json` snippet shown above.
 
 #### Verify
 
 1. Restart or reconnect MCP servers (Command Palette → "MCP: Reconnect All Servers")
 2. Check MCP panel for "rapid7-bulk-export" server (should show "Connected")
-3. Try: `#rapid7-bulk-export-skill Load the latest vulnerability data from Rapid7`
+3. Try: `Load the latest vulnerability data from Rapid7`
 
 </details>
 
@@ -196,12 +198,12 @@ Use `--scope user` for cross-project access or `--scope project` for team sharin
 ```bash
 # User-level (available in all projects)
 mkdir -p ~/.claude/skills/rapid7-bulk-export
-curl -sL https://raw.githubusercontent.com/rapid7/rapid7-bulk-export-mcp/main/rapid7-bulk-export-skill/SKILL.md \
+curl -sL https://raw.githubusercontent.com/rapid7/rapid7-bulk-export-mcp/main/skills/rapid7-bulk-export/SKILL.md \
   -o ~/.claude/skills/rapid7-bulk-export/SKILL.md
 
 # Or project-level (only in current project)
 mkdir -p .claude/skills/rapid7-bulk-export
-curl -sL https://raw.githubusercontent.com/rapid7/rapid7-bulk-export-mcp/main/rapid7-bulk-export-skill/SKILL.md \
+curl -sL https://raw.githubusercontent.com/rapid7/rapid7-bulk-export-mcp/main/skills/rapid7-bulk-export/SKILL.md \
   -o .claude/skills/rapid7-bulk-export/SKILL.md
 ```
 
@@ -261,12 +263,12 @@ Edit MCP settings in VS Code:
 ```bash
 # Project-level (recommended, stored in repository)
 mkdir -p .github/skills/rapid7-bulk-export
-curl -sL https://raw.githubusercontent.com/rapid7/rapid7-bulk-export-mcp/main/rapid7-bulk-export-skill/SKILL.md \
+curl -sL https://raw.githubusercontent.com/rapid7/rapid7-bulk-export-mcp/main/skills/rapid7-bulk-export/SKILL.md \
   -o .github/skills/rapid7-bulk-export/SKILL.md
 
 # Or user-level (available across all projects)
 mkdir -p ~/.copilot/skills/rapid7-bulk-export
-curl -sL https://raw.githubusercontent.com/rapid7/rapid7-bulk-export-mcp/main/rapid7-bulk-export-skill/SKILL.md \
+curl -sL https://raw.githubusercontent.com/rapid7/rapid7-bulk-export-mcp/main/skills/rapid7-bulk-export/SKILL.md \
   -o ~/.copilot/skills/rapid7-bulk-export/SKILL.md
 ```
 

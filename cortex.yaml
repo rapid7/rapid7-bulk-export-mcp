@@ -1,7 +1,7 @@
 openapi: 3.0.0
 info:
   title: rapid7-bulk-export-mcp
-  description: An MCP for the Bulk Export API Created by Craig Roberts via the GitHub Connector
+  description: An MCP for the Bulk Export API
   x-cortex-git:
     github:
       alias: r7org
