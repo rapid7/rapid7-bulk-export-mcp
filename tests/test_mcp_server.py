@@ -594,3 +594,60 @@ class TestRemediationRangeIdempotency:
         result = mcp_server.start_rapid7_export(export_type="remediation", start_date=start, end_date=end)
         assert started["called"], "a FAILED prior job should allow a fresh retry"
         assert "Started loading remediation" in result
+
+
+class TestDataDirResolution:
+    """_DATA_DIR is resolved once at import time from the environment.
+
+    Precedence: an explicit DATA_DIR wins (so existing installs are
+    unaffected), then the plugin host's PLUGIN_DATA, then the
+    ~/.rapid7_mcp default.
+    """
+
+    @staticmethod
+    def _reload_data_dir(monkeypatch, data_dir, plugin_data):
+        import importlib
+        import os
+
+        # Capture the real environment so the final reload restores the module
+        # to its true state rather than leaving it pinned to a test value.
+        original = {name: os.environ.get(name) for name in ("DATA_DIR", "PLUGIN_DATA")}
+
+        def _apply(values):
+            for name, value in values.items():
+                if value is None:
+                    monkeypatch.delenv(name, raising=False)
+                else:
+                    monkeypatch.setenv(name, value)
+
+        _apply({"DATA_DIR": data_dir, "PLUGIN_DATA": plugin_data})
+        reloaded = importlib.reload(mcp_server)
+        try:
+            return reloaded._DATA_DIR
+        finally:
+            # Restore the original env, then reload so the module's _DATA_DIR
+            # reflects reality for subsequent tests (no order-dependent pinning).
+            _apply(original)
+            importlib.reload(mcp_server)
+
+    def test_data_dir_wins_over_plugin_data(self, monkeypatch, tmp_path):
+        data_dir = tmp_path / "explicit"
+        plugin_data = tmp_path / "plugin"
+        resolved = self._reload_data_dir(monkeypatch, str(data_dir), str(plugin_data))
+        assert resolved == data_dir.resolve()
+
+    def test_plugin_data_used_when_data_dir_unset(self, monkeypatch, tmp_path):
+        plugin_data = tmp_path / "plugin"
+        resolved = self._reload_data_dir(monkeypatch, None, str(plugin_data))
+        assert resolved == plugin_data.resolve()
+
+    def test_default_when_both_unset(self, monkeypatch):
+        from pathlib import Path
+
+        resolved = self._reload_data_dir(monkeypatch, None, None)
+        assert resolved == Path("~/.rapid7_mcp").expanduser().resolve()
+
+    def test_empty_data_dir_falls_through_to_plugin_data(self, monkeypatch, tmp_path):
+        plugin_data = tmp_path / "plugin"
+        resolved = self._reload_data_dir(monkeypatch, "", str(plugin_data))
+        assert resolved == plugin_data.resolve()

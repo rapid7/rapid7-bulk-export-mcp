@@ -39,4 +39,4 @@ venv/
 *.db.wal
 
 # Skill folder (separate distribution)
-rapid7-bulk-export-skill/
+skills/

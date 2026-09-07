@@ -20,8 +20,10 @@ rapid7-bulk-export-mcp/
 │   ├── test_export_tracker.py
 │   ├── test_graphql_client.py
 │   └── test_setup.py
-├── rapid7-bulk-export-skill/     # Agent Skill content (SKILL.md + README)
-├── power-rapid7-bulk-export/     # Kiro Power (POWER.md + mcp.json + steering/)
+├── plugin.json                   # Agent Plugins manifest (name, version, activation keywords)
+├── mcp.json                      # Agent Plugins stdio server declaration
+├── skills/                       # Agent Plugins skill bundle
+│   └── rapid7-bulk-export/       # SKILL.md + README + references/analysis-workflows.md
 ├── docs/                         # Demo GIFs for README
 ├── run_server.py                 # Thin entry point for MCPB/uv direct execution
 ├── pyproject.toml                # Package metadata, dependencies, tool config

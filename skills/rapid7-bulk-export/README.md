@@ -149,7 +149,7 @@ To update the skill:
 
 ```bash
 # Download new version
-curl -O https://raw.githubusercontent.com/rapid7/rapid7-bulk-export-mcp/main/rapid7-bulk-export-skill/SKILL.md
+curl -O https://raw.githubusercontent.com/rapid7/rapid7-bulk-export-mcp/main/skills/rapid7-bulk-export/SKILL.md
 
 # Copy to skills directory
 cp SKILL.md ~/.kiro/skills/rapid7-bulk-export.md

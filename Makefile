@@ -20,15 +20,20 @@ version: ## Print the current version
 check-version: ## Verify all version files are in sync
 	@MANIFEST_VER=$(VERSION); \
 	TOML_VER=$$(grep '^version' pyproject.toml | head -1 | sed 's/.*"\(.*\)".*/\1/'); \
-	SKILL_VER=$$(grep '^version:' rapid7-bulk-export-skill/SKILL.md | head -1 | sed 's/version: *//'); \
+	SKILL_VER=$$(grep '^version:' skills/rapid7-bulk-export/SKILL.md | head -1 | sed 's/version: *//'); \
+	PLUGIN_VER=$$(jq -r '.version' plugin.json); \
 	echo "manifest.json:  $$MANIFEST_VER"; \
 	echo "pyproject.toml: $$TOML_VER"; \
 	echo "SKILL.md:       $$SKILL_VER"; \
+	echo "plugin.json:    $$PLUGIN_VER"; \
 	if [ "$$MANIFEST_VER" != "$$TOML_VER" ]; then \
 		echo "ERROR: manifest.json ($$MANIFEST_VER) != pyproject.toml ($$TOML_VER)"; exit 1; \
 	fi; \
 	if [ "$$MANIFEST_VER" != "$$SKILL_VER" ]; then \
 		echo "ERROR: manifest.json ($$MANIFEST_VER) != SKILL.md ($$SKILL_VER)"; exit 1; \
+	fi; \
+	if [ "$$MANIFEST_VER" != "$$PLUGIN_VER" ]; then \
+		echo "ERROR: manifest.json ($$MANIFEST_VER) != plugin.json ($$PLUGIN_VER)"; exit 1; \
 	fi; \
 	echo "All versions in sync: $$MANIFEST_VER"
 
@@ -40,8 +45,9 @@ bump-version: ## Set a new version: make bump-version V=0.3.0
 		echo "Error: Version must be semver (e.g., 0.3.0)"; exit 1; \
 	fi
 	jq --arg v "$(V)" '.version = $$v' manifest.json > manifest.tmp && mv manifest.tmp manifest.json
+	jq --arg v "$(V)" '.version = $$v' plugin.json > plugin.tmp && mv plugin.tmp plugin.json
 	sed -i.bak 's/^version = ".*"/version = "$(V)"/' pyproject.toml && rm -f pyproject.toml.bak
-	sed -i.bak 's/^version: .*/version: $(V)/' rapid7-bulk-export-skill/SKILL.md && rm -f rapid7-bulk-export-skill/SKILL.md.bak
+	sed -i.bak 's/^version: .*/version: $(V)/' skills/rapid7-bulk-export/SKILL.md && rm -f skills/rapid7-bulk-export/SKILL.md.bak
 	uv lock
 	@echo "Bumped to $(V)"
 
@@ -146,7 +152,7 @@ package-mcpb: ## Build the MCPB bundle
 	echo "Built $$MCPB"
 
 package-skill: ## Zip the agent skill directory
-	cd rapid7-bulk-export-skill && zip -r "../rapid7-bulk-export-skill-$(VERSION).zip" .
+	cd skills/rapid7-bulk-export && zip -r "../../rapid7-bulk-export-skill-$(VERSION).zip" .
 	@echo "Built rapid7-bulk-export-skill-$(VERSION).zip"
 
 package: package-mcpb package-skill ## Build all release artifacts

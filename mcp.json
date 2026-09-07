@@ -1,0 +1,10 @@
+{
+  "$schema": "https://agent-plugins.org/schemas/1.0.0/mcp.schema.json",
+  "mcpServers": {
+    "rapid7-bulk-export": {
+      "type": "stdio",
+      "command": "rapid7-mcp-server",
+      "args": []
+    }
+  }
+}

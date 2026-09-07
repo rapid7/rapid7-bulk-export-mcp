@@ -1,0 +1,24 @@
+{
+  "$schema": "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
+  "name": "rapid7-bulk-export",
+  "version": "0.6.1",
+  "description": "Export and analyze Rapid7 InsightVM vulnerability, asset, policy, and remediation data via SQL queries",
+  "author": {
+    "name": "Rapid7",
+    "url": "https://github.com/rapid7/rapid7-bulk-export-mcp"
+  },
+  "homepage": "https://github.com/rapid7/rapid7-bulk-export-mcp",
+  "repository": "https://github.com/rapid7/rapid7-bulk-export-mcp.git",
+  "license": "MIT",
+  "keywords": [
+    "rapid7",
+    "insightvm",
+    "vulnerability",
+    "security",
+    "bulk-export",
+    "cve",
+    "epss",
+    "compliance",
+    "remediation"
+  ]
+}

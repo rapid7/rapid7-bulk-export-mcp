@@ -1,7 +1,7 @@
 ---
 name: Rapid7 Bulk Export Analysis Expert
 description: Expert analysis of Rapid7 InsightVM data exported via Bulk Export API with strict MCP requirements
-version: 0.6.0
+version: 0.6.1
 author: Rapid7 Bulk Export MCP Tool
 tags: [security, vulnerabilities, rapid7, insightvm, bulk-export, analysis, policy, remediation]
 ---
@@ -1094,10 +1094,10 @@ The MCP server provides these tools:
 **Data Management Tools:**
 - `list_rapid7_exports(limit=10)` - List recent exports with dates, types, and metadata (check this FIRST)
 - `get_rapid7_stats()` - Get summary statistics for all tables and verify data is loaded
-- `load_from_parquet(parquet_path)` - Load from existing Parquet files (advanced use)
+- `load_rapid7_parquet(parquet_path)` - Load from existing Parquet files (advanced use)
 
 **Query Tools:**
-- `query(sql="...")` - Execute SQL queries against all tables (`assets`, `vulnerabilities`, `policies`, `vulnerability_remediation`, `asset_software`)
+- `query_rapid7(sql="...")` - Execute SQL queries against all tables (`assets`, `vulnerabilities`, `policies`, `vulnerability_remediation`, `asset_software`)
 - `get_rapid7_schema()` - Get table schema for all existing tables
 
 **Recommended Workflow:**
@@ -1110,7 +1110,7 @@ The MCP server provides these tools:
    d. `start_rapid7_export(export_type="asset_software")` → save export_id
    e. Wait 30s, then `check_rapid7_export_status(export_id)` for each
    f. Once COMPLETE: `download_rapid7_export(export_id, export_type="...")` for each
-4. Proceed with `query()`, `get_rapid7_schema()`, `get_rapid7_stats()`
+4. Proceed with `query_rapid7()`, `get_rapid7_schema()`, `get_rapid7_stats()`
 
 ## Error Handling
 

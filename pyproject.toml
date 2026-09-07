@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "rapid7-vulnerability-export"
-version = "0.6.0"
+version = "0.6.1"
 description = "Python script to export vulnerability data from Rapid7 InsightVM using the Bulk Export API"
 requires-python = ">=3.10"
 dependencies = [
@@ -45,6 +45,7 @@ dev = [
     "responses>=0.23.0",
     "ruff>=0.14.0",
     "bandit>=1.9.4",
+    "jsonschema>=4.0.0",
 ]
 
 [tool.pytest.ini_options]
