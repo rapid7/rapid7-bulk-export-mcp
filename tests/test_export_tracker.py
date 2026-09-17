@@ -174,3 +174,67 @@ def test_reconcile_interrupted_job_names_loaded_and_missing_windows(temp_db):
     assert "2026-01-01 → 2026-02-01" in job["message"]  # loaded window named as kept
     assert "2026-02-01 → 2026-03-04" in job["message"]  # missing window named
     assert "only the missing" in job["message"]
+
+
+def test_ExportTracker_TodayExportIsScopedToOneOrg(temp_db):
+    """One org's same-day export must never be handed back for another org.
+
+    Without org_label in the reuse key, the second org in a fan-out gets the first
+    org's export ID, and that one tenant's data is reported as two.
+    """
+    tracker = ExportTracker(temp_db)
+    tracker.save_export(export_id="export-org-a", status="COMPLETE", parquet_urls=["a.parquet"], org_label="org-a")
+
+    assert tracker.get_today_export(org_label="org-a")["export_id"] == "export-org-a"
+    assert tracker.get_today_export(org_label="org-b") is None
+
+    tracker.save_export(export_id="export-org-b", status="COMPLETE", parquet_urls=["b.parquet"], org_label="org-b")
+    assert tracker.get_today_export(org_label="org-b")["export_id"] == "export-org-b"
+    assert tracker.get_today_export(org_label="org-a")["export_id"] == "export-org-a"
+    tracker.close()
+
+
+def test_ExportTracker_SingleOrgReuseIgnoresLabelledExports(temp_db):
+    """An unlabelled lookup matches only unlabelled exports.
+
+    Single-org callers pass no label. They must not pick up an export recorded for a
+    named org, because that export covers a different tenant.
+    """
+    tracker = ExportTracker(temp_db)
+    tracker.save_export(export_id="export-org-a", status="COMPLETE", parquet_urls=["a.parquet"], org_label="org-a")
+
+    assert tracker.get_today_export() is None
+
+    tracker.save_export(export_id="export-plain", status="COMPLETE", parquet_urls=["p.parquet"])
+    assert tracker.get_today_export()["export_id"] == "export-plain"
+    tracker.close()
+
+
+def test_ExportTracker_OrgLabelSurvivesLaterLifecycleUpserts(temp_db):
+    """Later upserts that omit the label must not clear it.
+
+    An export is saved several times as it progresses (PENDING, DOWNLOADING,
+    COMPLETE) and only the first call knows the org. If the label were cleared, the
+    export would disappear from its own org and be offered to an unlabelled caller
+    as that caller's data.
+    """
+    tracker = ExportTracker(temp_db)
+    tracker.save_export(export_id="export-1", status="PENDING", parquet_urls=[], org_label="payments")
+
+    tracker.save_export(export_id="export-1", status="DOWNLOADING", parquet_urls=["a.parquet"])
+    tracker.save_export(export_id="export-1", status="COMPLETE", parquet_urls=["a.parquet"], row_count=10)
+
+    assert tracker.get_export_by_id("export-1")["org_label"] == "payments"
+    assert tracker.get_today_export(org_label="payments")["export_id"] == "export-1"
+    assert tracker.get_today_export() is None, "a labelled export must never answer an unlabelled lookup"
+    tracker.close()
+
+
+def test_ExportTracker_OrgLabelReadableByIdAndList(temp_db):
+    """The org label reads back, so a download can pick that org's API key."""
+    tracker = ExportTracker(temp_db)
+    tracker.save_export(export_id="export-org-a", status="COMPLETE", parquet_urls=["a.parquet"], org_label="org-a")
+
+    assert tracker.get_export_by_id("export-org-a")["org_label"] == "org-a"
+    assert tracker.list_exports(limit=1)[0]["org_label"] == "org-a"
+    tracker.close()

@@ -1,11 +1,12 @@
 """Unit tests for the configuration module."""
 
+import json
 import os
 from unittest.mock import MagicMock, patch
 
 import pytest
 
-from src.config import REGION_ENDPOINTS, _get_key_from_keychain, load_config
+from src.config import REGION_ENDPOINTS, _get_key_from_keychain, load_config, load_org_configs
 
 
 class TestLoadConfig:
@@ -118,3 +119,131 @@ class TestKeychainFallback:
 
         result = _get_key_from_keychain("RAPID7_API_KEY")
         assert result is None
+
+
+class TestLoadOrgConfigs:
+    """Tests for load_org_configs(), which supplies one credential per organization."""
+
+    @staticmethod
+    def _write_orgs(tmp_path, orgs):
+        path = tmp_path / "orgs.json"
+        path.write_text(json.dumps({"orgs": orgs}), encoding="utf-8")
+        return str(path)
+
+    def test_falls_back_to_single_org_when_file_unset(self):
+        """With no orgs file, the single-org config is returned as a one-entry list."""
+        with patch.dict(os.environ, {"RAPID7_API_KEY": "single-key", "RAPID7_REGION": "eu"}, clear=True):
+            configs = load_org_configs()
+
+        assert len(configs) == 1
+        assert configs[0]["label"] is None
+        assert configs[0]["api_key"] == "single-key"
+        assert configs[0]["region"] == "eu"
+
+    def test_loads_one_credential_per_org(self, tmp_path):
+        """Each org resolves its own key and endpoint."""
+        orgs_file = self._write_orgs(
+            tmp_path,
+            [
+                {"label": "northern-retail", "key_ref": "R7_KEY_NR", "region": "us"},
+                {"label": "payments", "key_ref": "R7_KEY_PAY", "region": "eu"},
+            ],
+        )
+        env = {
+            "RAPID7_ORGS_FILE": orgs_file,
+            "R7_KEY_NR": "key-nr",
+            "R7_KEY_PAY": "key-pay",
+        }
+        with patch.dict(os.environ, env, clear=True):
+            configs = load_org_configs()
+
+        assert [c["label"] for c in configs] == ["northern-retail", "payments"]
+        assert [c["api_key"] for c in configs] == ["key-nr", "key-pay"]
+        assert configs[1]["endpoint"] == REGION_ENDPOINTS["eu"]
+
+    def test_region_defaults_to_environment(self, tmp_path):
+        """An org without a region inherits RAPID7_REGION."""
+        orgs_file = self._write_orgs(tmp_path, [{"label": "one", "key_ref": "R7_KEY_ONE"}])
+        env = {"RAPID7_ORGS_FILE": orgs_file, "R7_KEY_ONE": "key-one", "RAPID7_REGION": "ca"}
+        with patch.dict(os.environ, env, clear=True):
+            configs = load_org_configs()
+
+        assert configs[0]["region"] == "ca"
+
+    def test_duplicate_label_is_rejected(self, tmp_path):
+        """Labels key the export cache, so a repeat would silently overwrite an org."""
+        orgs_file = self._write_orgs(
+            tmp_path,
+            [
+                {"label": "same", "key_ref": "R7_KEY_A"},
+                {"label": "same", "key_ref": "R7_KEY_B"},
+            ],
+        )
+        env = {"RAPID7_ORGS_FILE": orgs_file, "R7_KEY_A": "a", "R7_KEY_B": "b"}
+        with patch.dict(os.environ, env, clear=True), pytest.raises(ValueError, match="reuses the label"):
+            load_org_configs()
+
+    def test_inline_api_key_is_rejected(self, tmp_path):
+        """Keys must not be written into the orgs file."""
+        orgs_file = self._write_orgs(tmp_path, [{"label": "one", "key_ref": "R7_KEY_ONE", "api_key": "oops"}])
+        with (
+            patch.dict(os.environ, {"RAPID7_ORGS_FILE": orgs_file}, clear=True),
+            pytest.raises(ValueError, match="inline api_key"),
+        ):
+            load_org_configs()
+
+    @patch("src.config._get_key_from_keychain", return_value=None)
+    def test_unresolved_key_names_the_org(self, _mock_keychain, tmp_path):
+        """A missing key fails the whole load and names which org is short.
+
+        Loading a subset of the tenant would report part of the portfolio as all of it.
+        """
+        orgs_file = self._write_orgs(
+            tmp_path,
+            [
+                {"label": "present", "key_ref": "R7_KEY_PRESENT"},
+                {"label": "absent", "key_ref": "R7_KEY_ABSENT"},
+            ],
+        )
+        env = {"RAPID7_ORGS_FILE": orgs_file, "R7_KEY_PRESENT": "here"}
+        with patch.dict(os.environ, env, clear=True), pytest.raises(ValueError) as excinfo:
+            load_org_configs()
+
+        assert "absent" in str(excinfo.value)
+        assert "here" not in str(excinfo.value), "error text must not leak a resolved key"
+
+    def test_two_labels_sharing_one_key_are_rejected(self, tmp_path):
+        """Two labels resolving to the same key would export one org twice.
+
+        Both loads cover the same tenant, the second overwrites the first, and the
+        report looks complete while an org is missing from it.
+        """
+        orgs_file = self._write_orgs(
+            tmp_path,
+            [
+                {"label": "payments", "key_ref": "R7_KEY_PAY"},
+                {"label": "retail", "key_ref": "R7_KEY_RETAIL"},
+            ],
+        )
+        env = {"RAPID7_ORGS_FILE": orgs_file, "R7_KEY_PAY": "same-key", "R7_KEY_RETAIL": "same-key"}
+        with patch.dict(os.environ, env, clear=True), pytest.raises(ValueError) as excinfo:
+            load_org_configs()
+
+        assert "same API key" in str(excinfo.value)
+        assert "same-key" not in str(excinfo.value), "error text must not leak the key"
+
+    def test_invalid_region_is_rejected(self, tmp_path):
+        """An unknown region has no endpoint, so it cannot be exported from."""
+        orgs_file = self._write_orgs(tmp_path, [{"label": "one", "key_ref": "R7_KEY_ONE", "region": "mars"}])
+        env = {"RAPID7_ORGS_FILE": orgs_file, "R7_KEY_ONE": "key-one"}
+        with patch.dict(os.environ, env, clear=True), pytest.raises(ValueError, match="invalid region"):
+            load_org_configs()
+
+    def test_empty_orgs_array_is_rejected(self, tmp_path):
+        """An empty list is a misconfiguration, not a valid zero-org tenant."""
+        orgs_file = self._write_orgs(tmp_path, [])
+        with (
+            patch.dict(os.environ, {"RAPID7_ORGS_FILE": orgs_file}, clear=True),
+            pytest.raises(ValueError, match="non-empty 'orgs' array"),
+        ):
+            load_org_configs()

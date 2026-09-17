@@ -1,8 +1,9 @@
 """Tests for DuckDB connection resource limits."""
 
+import duckdb
 import pytest
 
-from src.db_utils import DEFAULT_MEMORY_LIMIT, _resolve_memory_limit, duckdb_connection
+from src.db_utils import DEFAULT_MEMORY_LIMIT, _resolve_memory_limit, connect_with_retry, duckdb_connection
 
 
 def _current_setting(conn, name):
@@ -84,6 +85,50 @@ def test_invalid_threads_leaves_duckdb_default(tmp_path, monkeypatch, configured
     monkeypatch.setenv("DUCKDB_THREADS", configured)
     with duckdb_connection(db_path) as conn:
         assert _current_setting(conn, "threads") == default
+
+
+def test_connect_retries_in_process_handle_conflict(tmp_path, monkeypatch):
+    """A concurrent handle in the same process is transient, so it must be retried.
+
+    DuckDB raises this as a BinderException, not an IOException. It happens when several
+    org loads write tracker phase updates at once during a multi-org fan-out; without
+    the retry the load thread dies and that org silently never finishes.
+    """
+    db_path = str(tmp_path / "conflict.db")
+    attempts = []
+    real_connect = duckdb.connect
+
+    def flaky_connect(path, read_only=False):
+        attempts.append(path)
+        if len(attempts) == 1:
+            raise duckdb.BinderException(
+                'Binder Error: Unique file handle conflict: Cannot attach "x" - '
+                'the database file "y" is already attached by database "x"'
+            )
+        return real_connect(path, read_only=read_only)
+
+    monkeypatch.setattr(duckdb, "connect", flaky_connect)
+
+    conn = connect_with_retry(db_path)
+    try:
+        assert len(attempts) == 2, "the first conflict should have been retried"
+    finally:
+        conn.close()
+
+
+def test_connect_does_not_retry_unrelated_binder_error(tmp_path, monkeypatch):
+    """A genuine schema or query error must surface at once, not be retried."""
+    attempts = []
+
+    def always_failing_connect(path, read_only=False):
+        attempts.append(path)
+        raise duckdb.BinderException('Binder Error: Referenced column "nope" not found')
+
+    monkeypatch.setattr(duckdb, "connect", always_failing_connect)
+
+    with pytest.raises(duckdb.BinderException):
+        connect_with_retry(str(tmp_path / "other.db"))
+    assert len(attempts) == 1, "an unrelated binder error must not be retried"
 
 
 def test_limits_applied_before_external_access_disabled(tmp_path, monkeypatch):

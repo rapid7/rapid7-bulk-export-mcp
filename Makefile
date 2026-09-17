@@ -93,6 +93,26 @@ local-test: ## Run end-to-end live test against the real Rapid7 API (requires RA
 	@echo "Running live end-to-end test against Rapid7 API (region: $${RAPID7_REGION:-us})..."
 	uv run pytest tests/test_local_e2e.py -v -s --tb=short
 
+local-multi-org-test: ## Run live multi-org fan-out test (requires RAPID7_ORGS_FILE)
+	@if [ -z "$$RAPID7_ORGS_FILE" ]; then \
+		echo ""; \
+		echo "RAPID7_ORGS_FILE is not set."; \
+		echo ""; \
+		echo "  export RAPID7_ORGS_FILE=~/.rapid7_mcp/orgs.json"; \
+		echo "  make local-multi-org-test"; \
+		echo ""; \
+		echo "That file lists one entry per organization and names where each key lives:"; \
+		echo '  {"orgs": [{"label": "lab-a", "key_ref": "R7_KEY_LAB_A", "region": "us"}]}'; \
+		echo ""; \
+		echo "Each key_ref resolves from the environment, then the macOS Keychain:"; \
+		echo "  security add-generic-password -s R7_KEY_LAB_A -a rapid7 -w '<key>'"; \
+		echo ""; \
+		echo "See docs/multi-org-demo.md."; \
+		exit 1; \
+	fi
+	@echo "Running live multi-org fan-out against Rapid7 API (orgs file: $$RAPID7_ORGS_FILE)..."
+	uv run pytest tests/test_local_multi_org_e2e.py -v -s --tb=short
+
 # ---------------------------------------------------------------------------
 # Docker
 # ---------------------------------------------------------------------------

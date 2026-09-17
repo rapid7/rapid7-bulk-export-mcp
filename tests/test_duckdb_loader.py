@@ -478,3 +478,223 @@ def test_append_returns_per_call_inserted_counts(sample_remediation_parquet_file
     # And the table really does hold 6 rows.
     assert db.query("SELECT COUNT(*) AS c FROM vulnerability_remediation")[0]["c"] == 6
     db.close()
+
+
+def _write_org_parquet(directory, org_id, vuln_ids):
+    """Write a vulnerability Parquet file scoped to one org, and return its path."""
+    table = pa.table(
+        {
+            "orgId": [org_id] * len(vuln_ids),
+            "vulnId": list(vuln_ids),
+            "assetId": [f"ASSET-{i}" for i in range(len(vuln_ids))],
+            "severity": ["Critical"] * len(vuln_ids),
+        }
+    )
+    path = Path(directory) / f"{org_id}-{len(vuln_ids)}.parquet"
+    pq.write_table(table, path)
+    return str(path)
+
+
+def test_VulnerabilityDatabase_OrgScopedLoadPreservesOtherOrgs():
+    """An org-scoped load adds a tenant without discarding the tenants already loaded."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        db = VulnerabilityDatabase(str(Path(tmpdir) / "multi_org.db"))
+        org_a = _write_org_parquet(tmpdir, "ORG-A", ["V1", "V2"])
+        org_b = _write_org_parquet(tmpdir, "ORG-B", ["V3"])
+
+        db.load_parquet_files_by_prefix({"asset_vulnerability": [org_a]})
+        db.load_parquet_files_by_prefix({"asset_vulnerability": [org_b]}, org_scoped=True)
+
+        by_org = {
+            row["orgId"]: row["c"]
+            for row in db.query('SELECT "orgId", COUNT(*) AS c FROM vulnerabilities GROUP BY "orgId"')
+        }
+        assert by_org == {"ORG-A": 2, "ORG-B": 1}
+        db.close()
+
+
+def test_VulnerabilityDatabase_OrgScopedReloadReplacesOnlyThatOrg():
+    """Re-running one org refreshes that org's rows and leaves the others untouched."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        db = VulnerabilityDatabase(str(Path(tmpdir) / "refresh_one.db"))
+        db.load_parquet_files_by_prefix({"asset_vulnerability": [_write_org_parquet(tmpdir, "ORG-A", ["V1", "V2"])]})
+        db.load_parquet_files_by_prefix(
+            {"asset_vulnerability": [_write_org_parquet(tmpdir, "ORG-B", ["V3"])]}, org_scoped=True
+        )
+
+        # ORG-A comes back with a different finding count, as a real refresh would.
+        refreshed = _write_org_parquet(tmpdir, "ORG-A", ["V1", "V2", "V9"])
+        counts = db.load_parquet_files_by_prefix({"asset_vulnerability": [refreshed]}, org_scoped=True)
+
+        by_org = {
+            row["orgId"]: row["c"]
+            for row in db.query('SELECT "orgId", COUNT(*) AS c FROM vulnerabilities GROUP BY "orgId"')
+        }
+        assert by_org == {"ORG-A": 3, "ORG-B": 1}, "refresh must replace ORG-A, not duplicate or drop ORG-B"
+        # The reported count is the rows inserted for this org, not the table total.
+        assert counts["vulnerabilities"] == 3
+        db.close()
+
+
+def test_VulnerabilityDatabase_OrgScopedLoadRejectsFileWithoutOrgColumn(sample_parquet_file):
+    """A file with no org column cannot be loaded org-scoped, because its tenant is unknown."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        db = VulnerabilityDatabase(str(Path(tmpdir) / "no_org_column.db"))
+        db.load_parquet_files_by_prefix({"asset_vulnerability": [sample_parquet_file]})
+
+        with pytest.raises(ValueError, match="no org identifier column"):
+            db.load_parquet_files_by_prefix({"asset_vulnerability": [sample_parquet_file]}, org_scoped=True)
+        db.close()
+
+
+def test_VulnerabilityDatabase_AppendAndOrgScopedAreMutuallyExclusive():
+    """append never removes rows and org_scoped must, so the pair is rejected outright."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        db = VulnerabilityDatabase(str(Path(tmpdir) / "exclusive.db"))
+        with pytest.raises(ValueError, match="mutually exclusive"):
+            db.load_parquet_files_by_prefix({}, append=True, org_scoped=True)
+        db.close()
+
+
+def test_VulnerabilityDatabase_OrgScopedLoadAbortsOnUnreadableFile():
+    """An org-scoped load that loses a file leaves the org as it was.
+
+    A delete that landed without its insert would show as a genuine drop in every
+    chart, which is the failure mode a multi-tenant report must not have.
+    """
+    with tempfile.TemporaryDirectory() as tmpdir:
+        db = VulnerabilityDatabase(str(Path(tmpdir) / "rollback.db"))
+        db.load_parquet_files_by_prefix({"asset_vulnerability": [_write_org_parquet(tmpdir, "ORG-A", ["V1", "V2"])]})
+
+        good = _write_org_parquet(tmpdir, "ORG-A", ["V1", "V2", "V3"])
+        broken = Path(tmpdir) / "broken.parquet"
+        broken.write_text("not a parquet file")
+
+        with pytest.raises(ValueError, match="aborted before any change"):
+            db.load_parquet_files_by_prefix(
+                {"asset_vulnerability": [good, str(broken)]},
+                org_scoped=True,
+            )
+
+        surviving = db.query("SELECT COUNT(*) AS c FROM vulnerabilities")[0]["c"]
+        assert surviving == 2, f"ORG-A must keep its previous 2 rows, found {surviving}"
+        db.close()
+
+
+def test_VulnerabilityDatabase_OrgScopedLoadRejectsNullOrgRows():
+    """Rows with no org identifier are refused rather than duplicated.
+
+    The delete is keyed on the org, so a NULL-org row is never removed and every
+    refresh adds another copy. The policy datasets emit shared content rows with a
+    NULL orgId on purpose, so this is a real file shape, not a hypothetical one.
+    """
+    with tempfile.TemporaryDirectory() as tmpdir:
+        db = VulnerabilityDatabase(str(Path(tmpdir) / "null_org.db"))
+        db.load_parquet_files_by_prefix({"asset_vulnerability": [_write_org_parquet(tmpdir, "ORG-A", ["V1"])]})
+
+        mixed = pa.table(
+            {
+                "orgId": ["ORG-A", None],
+                "vulnId": ["V1", "V2"],
+                "assetId": ["ASSET-0", "ASSET-1"],
+                "severity": ["Critical", "Critical"],
+            }
+        )
+        mixed_path = Path(tmpdir) / "mixed.parquet"
+        pq.write_table(mixed, mixed_path)
+
+        with pytest.raises(ValueError, match="NULL 'orgId'"):
+            db.load_parquet_files_by_prefix({"asset_vulnerability": [str(mixed_path)]}, org_scoped=True)
+
+        assert db.query("SELECT COUNT(*) AS c FROM vulnerabilities")[0]["c"] == 1
+        db.close()
+
+
+def test_VulnerabilityDatabase_OrgScopedLoadRejectsUnknownPrefix():
+    """An unrecognised prefix aborts the load instead of dropping that dataset.
+
+    Snapshot mode warns and skips. Doing that here would silently remove the org's
+    rows for a whole dataset and report success.
+    """
+    with tempfile.TemporaryDirectory() as tmpdir:
+        db = VulnerabilityDatabase(str(Path(tmpdir) / "unknown_prefix.db"))
+        org_file = _write_org_parquet(tmpdir, "ORG-A", ["V1"])
+
+        with pytest.raises(ValueError, match="unknown prefix"):
+            db.load_parquet_files_by_prefix({"future_dataset": [org_file]}, org_scoped=True)
+        db.close()
+
+
+def test_VulnerabilityDatabase_OrgScopedPolicyRefreshKeepsOtherSource():
+    """Refreshing an org's agent policies must not delete its scan policies.
+
+    Both prefixes land in the one policies table, so the delete has to be narrowed
+    by source as well as by org.
+    """
+    with tempfile.TemporaryDirectory() as tmpdir:
+        db = VulnerabilityDatabase(str(Path(tmpdir) / "policy_sources.db"))
+
+        def policy_file(name, rule_ids):
+            table = pa.table(
+                {
+                    "orgId": ["ORG-A"] * len(rule_ids),
+                    "assetId": [f"ASSET-{i}" for i in range(len(rule_ids))],
+                    "ruleId": list(rule_ids),
+                }
+            )
+            path = Path(tmpdir) / f"{name}.parquet"
+            pq.write_table(table, path)
+            return str(path)
+
+        db.load_parquet_files_by_prefix(
+            {
+                "asset_policy": [policy_file("agent", ["R1", "R2"])],
+                "asset_scan_policy": [policy_file("scan", ["R3"])],
+            }
+        )
+
+        # Refresh the agent policies only, as an export for that prefix would.
+        db.load_parquet_files_by_prefix(
+            {"asset_policy": [policy_file("agent-refreshed", ["R1", "R2", "R4"])]},
+            org_scoped=True,
+        )
+
+        by_source = {
+            row["source"]: row["c"] for row in db.query("SELECT source, COUNT(*) AS c FROM policies GROUP BY source")
+        }
+        assert by_source == {"agent": 3, "scan": 1}, f"scan policies must survive an agent refresh, found {by_source}"
+        db.close()
+
+
+def test_VulnerabilityDatabase_OrgScopedLoadRollsBackOnColumnDrift():
+    """An org whose export has extra columns fails the load without losing the other orgs.
+
+    Export features are enabled per org, so two orgs in one tenant can legitimately
+    produce different column sets. The insert then fails, and the already-loaded orgs
+    must survive it.
+    """
+    with tempfile.TemporaryDirectory() as tmpdir:
+        db = VulnerabilityDatabase(str(Path(tmpdir) / "column_drift.db"))
+        db.load_parquet_files_by_prefix({"asset_vulnerability": [_write_org_parquet(tmpdir, "ORG-A", ["V1", "V2"])]})
+
+        wider = pa.table(
+            {
+                "orgId": ["ORG-B"],
+                "vulnId": ["V3"],
+                "assetId": ["ASSET-0"],
+                "severity": ["Critical"],
+                "epssScore": [0.42],
+            }
+        )
+        wider_path = Path(tmpdir) / "org-b-wider.parquet"
+        pq.write_table(wider, wider_path)
+
+        with pytest.raises(ValueError, match="rolled back"):
+            db.load_parquet_files_by_prefix({"asset_vulnerability": [str(wider_path)]}, org_scoped=True)
+
+        by_org = {
+            row["orgId"]: row["c"]
+            for row in db.query('SELECT "orgId", COUNT(*) AS c FROM vulnerabilities GROUP BY "orgId"')
+        }
+        assert by_org == {"ORG-A": 2}, f"ORG-A must survive ORG-B failing to load, found {by_org}"
+        db.close()
