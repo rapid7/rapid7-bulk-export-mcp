@@ -57,7 +57,66 @@ The data comes from Rapid7 InsightVM's Bulk Export API, which exports four types
 - **Database tables**: Data is loaded into six tables: `assets`, `vulnerabilities`, `vulnerability_exceptions`, `policies`, `vulnerability_remediation`, and `asset_software`
 - **Export tracking**: The system tracks exports by type in `rapid7_bulk_export_tracking.db` to avoid redundant downloads
 
+## Multi-Organization Reporting
+
+Use this section INSTEAD of the single-org workflow below whenever the user asks about
+more than one organization: a portfolio view, comparing organizations, totals "across
+all orgs", or reporting for a customer that splits its estate across organizations.
+
+The platform scopes every export to the single organization in the calling token. There
+is no request that returns several organizations, and a platform admin token does not
+change that. So a portfolio view is one export per organization, each downloaded and
+unioned locally on the `orgId` column. Every organization needs its own organization
+API key, listed in the file named by `RAPID7_ORGS_FILE`.
+
+```
+1. list_rapid7_orgs()
+   → Confirms every configured organization's key resolves. If it reports a problem,
+     STOP and tell the user. Do not start exports with a broken org list.
+
+2. start_rapid7_multi_org_export()
+   → Starts one vulnerability export per organization in a single call. Exports from
+     today are reused, not duplicated.
+
+3. check_rapid7_multi_org_export()
+   → Repeat every 30-60 seconds. Each organization downloads and loads as it
+     completes. Stop when it reports "Loaded: <n>" with none in progress.
+
+4. get_rapid7_org_coverage()
+   → MANDATORY before you state any portfolio number. It compares the organizations
+     configured against the distinct orgIds actually loaded. If it warns of a
+     shortfall, report that to the user and do NOT present the totals as complete —
+     a missing organization reads as a fall in the numbers, not as an error.
+
+5. Analyse with query_rapid7(), grouping or filtering by "orgId".
+```
+
+Rules that matter for correctness:
+
+- **Always GROUP BY `"orgId"`** for per-organization figures, and always say how many
+  organizations a total covers.
+- **Only `vulnerability` can be exported per organization today.** Policy exports carry
+  shared content rows with a NULL `orgId` that cannot be attributed to a tenant, so
+  they would duplicate once per organization; the tool refuses them per org. Remediation
+  loads additively across date windows, which conflicts with per-organization replace.
+- **Never compute totals yourself.** Write SQL and let the database count, so the
+  figures are reproducible.
+- **`orgId` is a UUID, not a name.** The export carries no organization name. Map it to
+  the labels from `list_rapid7_orgs()` when presenting results, and say which label
+  belongs to which `orgId` if it is not obvious.
+- **If one organization fails to load**, name it. Retry just that one with
+  `download_rapid7_export(export_id=...)`.
+
+Known gaps to state plainly if asked, rather than approximating in silence: there is no
+per-organization risk score in the export (the risk score present is vulnerability
+content level and identical for every organization), no CISA KEV column, and no
+assessment-coverage data without the assessed-asset dataset, which this tool does not
+expose yet.
+
 ## Workflow - INTELLIGENT DATA LOADING
+
+Use this for a single organization. For more than one, use the multi-organization
+section above.
 
 ### Step 1: Check Data Availability
 ```
