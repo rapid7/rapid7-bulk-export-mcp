@@ -58,6 +58,50 @@ def _normalize_prefix(prefix: str) -> str:
     return prefix
 
 
+# Org identifier column, in the spellings the export datasets use. Every current
+# dataset emits 'orgId'; 'org_id' is accepted so the unified findings datasets do
+# not silently fall through if they are added later.
+ORG_COLUMN_CANDIDATES = ("orgId", "org_id")
+
+
+def _resolve_org_column(conn, file_path: str) -> str:
+    """Return the org identifier column of a Parquet file.
+
+    Raises:
+        ValueError: If the file carries no recognised org column. An org-scoped
+            load must fail here rather than proceed, because a load that cannot
+            identify its tenant would delete the wrong rows or none at all.
+    """
+    rows = conn.execute(f"DESCRIBE SELECT * FROM read_parquet('{file_path}')").fetchall()  # nosec B608
+    by_lowercase = {row[0].lower(): row[0] for row in rows}
+    for candidate in ORG_COLUMN_CANDIDATES:
+        if candidate.lower() in by_lowercase:
+            return by_lowercase[candidate.lower()]
+    raise ValueError(
+        f"Parquet file '{file_path}' has no org identifier column "
+        f"(looked for {', '.join(ORG_COLUMN_CANDIDATES)}). "
+        f"Refusing an org-scoped load."
+    )
+
+
+def _distinct_org_ids(conn, file_path: str, org_column: str) -> List[Any]:
+    """Return the distinct org identifiers present in a Parquet file."""
+    rows = conn.execute(
+        f"SELECT DISTINCT \"{org_column}\" FROM read_parquet('{file_path}')"  # nosec B608
+        f' WHERE "{org_column}" IS NOT NULL'
+    ).fetchall()
+    return [row[0] for row in rows]
+
+
+def _null_org_row_count(conn, file_path: str, org_column: str) -> int:
+    """Count rows in a Parquet file that carry no org identifier."""
+    result = conn.execute(
+        f"SELECT COUNT(*) FROM read_parquet('{file_path}')"  # nosec B608
+        f' WHERE "{org_column}" IS NULL'
+    ).fetchone()
+    return result[0] if result else 0
+
+
 class VulnerabilityDatabase:
     """
     Manages a DuckDB database for vulnerability data.
@@ -98,6 +142,7 @@ class VulnerabilityDatabase:
         prefix_file_map: Dict[str, List[str]],
         skip_prefixes: Set[str] = None,
         append: bool = False,
+        org_scoped: bool = False,
     ) -> Dict[str, int]:
         """
         Load Parquet files into tables based on prefix routing.
@@ -125,12 +170,29 @@ class VulnerabilityDatabase:
             append: When True, insert rows into existing tables rather than dropping
                 and recreating them. Use for additive loads (e.g. remediation chunks).
                 Default False preserves snapshot-replace behavior.
+            org_scoped: When True, replace only the rows whose org identifier appears
+                in the incoming files, leaving every other org in the table intact.
+                Use for multi-org loads, where a per-org export must refresh that org
+                without discarding the tenants loaded before it. Mutually exclusive
+                with append. Does not compact the database file, because a fan-out
+                across many orgs would otherwise compact once per org; call compact()
+                after the batch instead.
+
+        Raises:
+            ValueError: If both append and org_scoped are True, or if an org-scoped
+                load meets a file with no org identifier column.
 
         Returns:
             Dict mapping table names to the number of rows inserted by THIS
             call (a delta, not the table's cumulative total) — so appended
             windows report only their own rows.
         """
+        if append and org_scoped:
+            raise ValueError(
+                "append and org_scoped are mutually exclusive: append never removes rows, "
+                "org_scoped removes the incoming org's rows before inserting"
+            )
+
         if skip_prefixes is None:
             skip_prefixes = set()
 
@@ -141,7 +203,7 @@ class VulnerabilityDatabase:
             # Determine which tables this load will write to, so we can drop
             # only those in snapshot mode (preserving unrelated tables).
             tables_to_replace: Set[str] = set()
-            if not append:
+            if not append and not org_scoped:
                 for prefix in prefix_file_map:
                     if prefix in skip_prefixes:
                         continue
@@ -161,10 +223,86 @@ class VulnerabilityDatabase:
             # Tables we write to in this call (tracks CREATE vs INSERT decisions).
             tables_touched: Set[str] = set()
 
+            # Files this call could not read. Tolerated in snapshot and append mode
+            # (pre-existing behaviour), fatal in org-scoped mode.
+            failed_files: List[str] = []
+
             # Pre-existing tables (after any drops above) for append-mode decisions.
             preexisting: Set[str] = {
                 row[0] for row in conn.execute("SELECT table_name FROM information_schema.tables").fetchall()
             }
+
+            # Org-scoped mode: remove only the incoming orgs' rows, so this load
+            # refreshes that tenant and leaves every other tenant in place. Runs
+            # before the baseline counts below so the returned figures stay
+            # rows-inserted-by-this-call. Wrapped in a transaction with the inserts,
+            # because a delete that commits without its insert would leave the org
+            # silently absent from every query.
+            if org_scoped:
+                # Resolve every file's tenant BEFORE opening the transaction. A file
+                # that cannot be read must abort the load having changed nothing,
+                # rather than fail midway and rely on a rollback.
+                deletions: List[Tuple[str, str, Optional[str], List[Any]]] = []
+                for prefix, file_paths in prefix_file_map.items():
+                    if prefix in skip_prefixes:
+                        continue
+                    normalized = _normalize_prefix(prefix)
+                    if normalized in skip_prefixes:
+                        continue
+                    mapping = PREFIX_TABLE_MAP.get(normalized)
+                    if mapping is None:
+                        # Snapshot and append mode warn and skip. An org-scoped load must
+                        # not: skipping a prefix drops that whole dataset for the org, and
+                        # a quietly smaller report is the failure this mode exists to stop.
+                        raise ValueError(
+                            f"Org-scoped load aborted before any change: unknown prefix '{prefix}'. "
+                            f"Known prefixes: {', '.join(sorted(PREFIX_TABLE_MAP))}"
+                        )
+                    if isinstance(mapping, tuple):
+                        table_name, source_value = mapping
+                    else:
+                        table_name, source_value = mapping, None
+                    for file_path in file_paths:
+                        try:
+                            org_column = _resolve_org_column(conn, file_path)
+                            org_ids = _distinct_org_ids(conn, file_path, org_column)
+                            null_org_rows = _null_org_row_count(conn, file_path, org_column)
+                        except ValueError:
+                            raise
+                        except Exception as e:
+                            raise ValueError(
+                                f"Org-scoped load aborted before any change: could not read '{file_path}': {e}"
+                            ) from e
+                        if null_org_rows:
+                            # A row with no org cannot be attributed to a tenant, so the
+                            # delete never removes it and every refresh adds another copy.
+                            # The policy datasets emit shared content rows with a NULL
+                            # orgId on purpose, so they need their own decision before
+                            # they can be loaded per org.
+                            raise ValueError(
+                                f"Org-scoped load aborted before any change: '{file_path}' has "
+                                f"{null_org_rows} row(s) with a NULL '{org_column}'. Rows without an "
+                                f"org cannot be refreshed per org and would duplicate on every load."
+                            )
+                        if org_ids and table_name in preexisting:
+                            deletions.append((table_name, org_column, source_value, org_ids))
+
+                conn.begin()
+                try:
+                    for table_name, org_column, source_value, org_ids in deletions:
+                        placeholders = ", ".join("?" * len(org_ids))
+                        sql = f'DELETE FROM {table_name} WHERE "{org_column}" IN ({placeholders})'  # nosec B608
+                        params: List[Any] = list(org_ids)
+                        if source_value is not None:
+                            # Two prefixes share the policies table. Without narrowing by
+                            # source, refreshing an org's agent policies would also delete
+                            # its scan policies, which this call is not replacing.
+                            sql += " AND source = ?"
+                            params.append(source_value)
+                        conn.execute(sql, params)
+                except Exception:
+                    conn.rollback()
+                    raise
 
             # Row count of each pre-existing table BEFORE this call's inserts, so
             # the returned counts are rows-inserted-this-call (a delta), not the
@@ -218,7 +356,20 @@ class VulnerabilityDatabase:
                             f"Warning: Failed to read Parquet file '{file_path}': {e}",
                             file=sys.stderr,
                         )
+                        failed_files.append(file_path)
                         continue
+
+            # An org-scoped load that lost a file would leave that org partially
+            # represented, which reads as a real drop in every chart. Roll back the
+            # whole refresh so the org keeps its previous data and the caller retries.
+            if org_scoped:
+                if failed_files:
+                    conn.rollback()
+                    raise ValueError(
+                        "Org-scoped load rolled back: could not read "
+                        f"{len(failed_files)} file(s): {', '.join(failed_files)}"
+                    )
+                conn.commit()
 
             # Report rows inserted BY THIS CALL: current total minus the
             # pre-call baseline (0 for tables created in this call).
@@ -233,6 +384,14 @@ class VulnerabilityDatabase:
             self._compact()
 
         return row_counts
+
+    def compact(self) -> None:
+        """Reclaim disk space after org-scoped loads.
+
+        Org-scoped loads skip compaction so a fan-out across many orgs does not
+        compact the whole database once per org. Call this once after the batch.
+        """
+        self._compact()
 
     def _compact(self) -> None:
         """Compact the database file by copying all data to a fresh file.

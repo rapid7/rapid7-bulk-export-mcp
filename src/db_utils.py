@@ -48,11 +48,21 @@ def _apply_resource_limits(conn: duckdb.DuckDBPyConnection, db_path: str) -> Non
     conn.execute(f"SET temp_directory = '{temp_directory}'")  # nosec B608
 
 
+# Transient conditions worth retrying rather than surfacing:
+#   "Could not set lock on file"   another PROCESS holds the write lock.
+#   "Unique file handle conflict"  another handle in THIS process has the file
+#                                  attached, raised as a BinderException. Hit when
+#                                  several org loads write phase updates to the
+#                                  tracker at once during a multi-org fan-out.
+_RETRYABLE_CONNECT_ERRORS = ("Could not set lock on file", "Unique file handle conflict")
+
+
 def connect_with_retry(db_path: str, read_only: bool = False, max_retries: int = 5) -> duckdb.DuckDBPyConnection:
     """Open a DuckDB connection, retrying with exponential backoff on lock errors.
 
-    Handles transient write-lock contention when multiple processes compete
-    for the same database file.
+    Handles transient write-lock contention when several processes compete for the same
+    database file, and the in-process equivalent when concurrent threads each open a
+    short-lived handle to it.
 
     Args:
         db_path: Path to the DuckDB database file.
@@ -63,8 +73,9 @@ def connect_with_retry(db_path: str, read_only: bool = False, max_retries: int =
     for attempt in range(max_retries):
         try:
             return duckdb.connect(db_path, read_only=read_only)
-        except duckdb.IOException as e:
-            if "Could not set lock on file" not in str(e) or attempt == max_retries - 1:
+        except (duckdb.IOException, duckdb.BinderException) as e:
+            retryable = any(marker in str(e) for marker in _RETRYABLE_CONNECT_ERRORS)
+            if not retryable or attempt == max_retries - 1:
                 raise
             time.sleep(delay)
             delay = min(delay * 2, 2.0)

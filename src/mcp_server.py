@@ -24,7 +24,7 @@ import duckdb as _duckdb
 from fastmcp import FastMCP
 from mcp.types import ToolAnnotations
 
-from .config import load_config
+from .config import load_config, load_org_configs
 from .download import download_all_files
 from .duckdb_loader import VulnerabilityDatabase
 from .export_manager import (
@@ -54,6 +54,29 @@ _DATA_DIR: Path = (
 )
 
 VALID_EXPORT_TYPES = ("vulnerability", "policy", "remediation", "asset_software")
+
+# Export types that can be loaded per org today. The bulk export API scopes every
+# export to the org in the calling token, so multi-org means one export per org
+# unioned locally on orgId. Only 'vulnerability' qualifies so far:
+#   policy         — its SQL selects shared content rows with a NULL orgId, which
+#                    cannot be attributed to a tenant and would duplicate per org.
+#   remediation    — loads with append=True across date windows, which is mutually
+#                    exclusive with the org-scoped replace.
+#   asset_software — not needed for exposure reporting.
+MULTI_ORG_EXPORT_TYPES = ("vulnerability",)
+
+# How many org downloads may run at once during a fan-out. download_all_files buffers
+# each export's files in memory before writing them, so an uncapped fan-out of twenty
+# large exports can exhaust the host's RAM (DUCKDB_MEMORY_LIMIT caps DuckDB's buffer
+# pool, not the interpreter). Loads serialize on _db_lock anyway, so a small cap costs
+# little: the platform-side exports still ran in parallel.
+_MAX_CONCURRENT_ORG_LOADS = 3
+
+# Longest a single check call will wait for outstanding work. MCP clients such as Claude
+# Desktop hard-cancel a tool call at roughly four minutes (see the note below), so this
+# stays well inside that while still saving the operator a dozen manual polls.
+MAX_CHECK_WAIT_SECONDS = 180
+_CHECK_POLL_INTERVAL_SECONDS = 10.0
 
 # ---------------------------------------------------------------------------
 # Background download/load job tracking
@@ -110,6 +133,53 @@ _db_lock = threading.RLock()
 def _tracker() -> ExportTracker:
     """Open a tracker handle on the standard tracking database."""
     return ExportTracker(str(_DATA_DIR / "rapid7_bulk_export_tracking.db"))
+
+
+def _normalize_org_label(org_label: str) -> Optional[str]:
+    """Treat an empty tool argument as 'no org', since MCP tool args are strings."""
+    label = (org_label or "").strip()
+    return label or None
+
+
+def _config_for_org(org_label: Optional[str]) -> dict:
+    """Return the API configuration for one configured org.
+
+    Args:
+        org_label: A label from RAPID7_ORGS_FILE, or None for the single-org config.
+
+    Raises:
+        ValueError: If the label is not configured. Falling back to the default
+            credential here would export the wrong tenant under the right name.
+    """
+    if org_label is None:
+        return load_config()
+
+    configs = {config["label"]: config for config in load_org_configs()}
+    if org_label not in configs:
+        known = ", ".join(sorted(label for label in configs if label)) or "none configured"
+        raise ValueError(f"Unknown org label '{org_label}'. Configured orgs: {known}")
+    return configs[org_label]
+
+
+def _latest_export_for_org(tracker: ExportTracker, export_type: str, org_label: str) -> Optional[dict]:
+    """Return today's most recent tracked export for one org, whatever its status.
+
+    get_today_export only returns COMPLETE rows, so without this a PENDING or
+    in-flight export looks like no export at all and the caller starts a duplicate.
+
+    Restricted to today on purpose. The platform keeps exports for 30 days, so an
+    older row would still download, and reloading yesterday's data while reporting it
+    as today's is worse than having no data at all.
+    """
+    today = _dt.date.today()
+    for row in tracker.list_exports(limit=200, export_type=export_type):
+        if row.get("org_label") != org_label:
+            continue
+        export_date = row.get("export_date")
+        if export_date is not None and export_date != today:
+            continue
+        return row
+    return None
 
 
 def initialize_database(db_path: Optional[str] = None) -> VulnerabilityDatabase:
@@ -236,6 +306,7 @@ def start_rapid7_export(
     export_type: str = "vulnerability",
     start_date: str = "",
     end_date: str = "",
+    org_label: str = "",
 ) -> str:
     """Start a new Rapid7 export job (non-blocking).
 
@@ -261,6 +332,10 @@ def start_rapid7_export(
                     Defaults to 30 days ago if not specified.
         end_date: End date in YYYY-MM-DD format (only for remediation exports).
                   Defaults to today if not specified.
+        org_label: Which configured organization to export, naming an entry in
+                   RAPID7_ORGS_FILE. Leave empty for single-org use. Each org needs
+                   its own organization API key, because the platform scopes an
+                   export to the org in the calling token.
 
     Returns:
         The export ID and next steps.
@@ -268,18 +343,26 @@ def start_rapid7_export(
     if export_type not in VALID_EXPORT_TYPES:
         return f"✗ Invalid export_type: '{export_type}'. Valid values are: {', '.join(VALID_EXPORT_TYPES)}"
 
+    label = _normalize_org_label(org_label)
+    if label is not None and export_type not in MULTI_ORG_EXPORT_TYPES:
+        return (
+            f"✗ export_type '{export_type}' cannot be exported per org yet. "
+            f"Supported per org: {', '.join(MULTI_ORG_EXPORT_TYPES)}."
+        )
+
     try:
-        config = load_config()
+        config = _config_for_org(label)
 
         tracker = ExportTracker(str(_DATA_DIR / "rapid7_bulk_export_tracking.db"))
 
         # Return a cached export from today unless it's remediation (which is date-range keyed)
-        today_export = tracker.get_today_export(export_type=export_type)
+        today_export = tracker.get_today_export(export_type=export_type, org_label=label)
         if today_export and export_type != "remediation":
             tracker.close()
             eid = today_export["export_id"]
+            org_suffix = f" for org '{label}'" if label else ""
             return (
-                f"♻️ A {export_type} export from today already exists.\n\n"
+                f"♻️ A {export_type} export from today already exists{org_suffix}.\n\n"
                 f"Export ID: {eid}\n"
                 f"Status: COMPLETE\n"
                 f"Created: {today_export['created_at']}\n"
@@ -295,11 +378,18 @@ def start_rapid7_export(
             print("Creating new vulnerability export...", file=sys.stderr)
             new_id = create_vulnerability_export(config)
             print(f"Created {export_type} export with ID: {new_id}", file=sys.stderr)
-            tracker.save_export(export_id=new_id, status="PENDING", parquet_urls=[], export_type=export_type)
+            tracker.save_export(
+                export_id=new_id,
+                status="PENDING",
+                parquet_urls=[],
+                export_type=export_type,
+                org_label=label,
+            )
             tracker.close()
 
+            created_for = f" for org '{label}'" if label else ""
             return (
-                f"✓ Vulnerability export job created.\n\n"
+                f"✓ Vulnerability export job created{created_for}.\n\n"
                 f"Export ID: {new_id}\n"
                 f"Status: PENDING\n\n"
                 f"The export is now processing on Rapid7's servers "
@@ -467,7 +557,8 @@ def check_rapid7_export_status(export_id: str) -> str:
                 )
             # PENDING or any other value falls through to the platform-side check.
 
-        config = load_config()
+        # A labelled export is only visible to its own org's key.
+        config = _config_for_org(local.get("org_label") if local else None)
         status_info = get_export_status(config, export_id)
         current_status = status_info["status"]
         file_count = len(status_info.get("parquetFiles", []))
@@ -509,6 +600,7 @@ def _download_and_load_files(
     status_info: dict,
     api_key: str,
     on_downloaded=None,
+    org_scoped: bool = False,
 ) -> tuple:
     """Download an export's parquet files and load them into DuckDB.
 
@@ -516,8 +608,10 @@ def _download_and_load_files(
     orchestrator so the download/route/load path is not forked. Acquires
     _db_lock around the load. If provided, on_downloaded() is called once
     the files are actually downloaded and before the load begins, so a
-    caller can record the LOADING phase honestly. Returns (row_count,
-    row_counts, stats, validation_warnings).
+    caller can record the LOADING phase honestly. When org_scoped is set, the load
+    replaces only the rows of the orgs present in the files, so loading one org does
+    not discard the orgs already loaded. Returns (row_count, row_counts, stats,
+    validation_warnings).
     """
     global db
 
@@ -549,7 +643,19 @@ def _download_and_load_files(
                 if len(data) < 100:
                     validation_warnings.append(f"File {i + 1} (prefix={prefix}): unusually small ({len(data)} bytes)")
 
-            if export_type == "policy":
+            # org_scoped is checked first and fails closed. If it were ordered after the
+            # per-type branches, a labelled export carrying a mismatched export_type
+            # would fall into a snapshot branch, and the snapshot would drop the table
+            # and take every other org's rows with it.
+            if org_scoped:
+                if export_type not in MULTI_ORG_EXPORT_TYPES:
+                    raise ValueError(
+                        f"Refusing to load export_type '{export_type}' for a single org: "
+                        f"only {', '.join(MULTI_ORG_EXPORT_TYPES)} can be loaded per org, and any "
+                        f"other mode would replace the whole table and discard the other orgs."
+                    )
+                row_counts = db.load_parquet_files_by_prefix(prefix_file_map, org_scoped=True)
+            elif export_type == "policy":
                 row_counts = db.load_parquet_files_by_prefix(prefix_file_map, skip_prefixes={"asset"})
             elif export_type == "remediation":
                 row_counts = db.load_parquet_files_by_prefix(prefix_file_map, append=True)
@@ -584,7 +690,13 @@ def _run_download_and_load(export_id: str, export_type: str) -> None:
     """
     tracker = _tracker()
     try:
-        config = load_config()
+        # The org this export belongs to was recorded when it was created. It selects
+        # both the credential (an export id is only visible to its own org's key) and
+        # the org-scoped load mode.
+        existing = tracker.get_export_by_id(export_id)
+        org_label = existing.get("org_label") if existing else None
+
+        config = _config_for_org(org_label)
         status_info = get_export_status(config, export_id)
         parquet_urls = status_info["parquetFiles"]
 
@@ -603,7 +715,11 @@ def _run_download_and_load(export_id: str, export_type: str) -> None:
             )
 
         row_count, row_counts, stats, validation_warnings = _download_and_load_files(
-            export_type, status_info, config["api_key"], on_downloaded=_mark_loading
+            export_type,
+            status_info,
+            config["api_key"],
+            on_downloaded=_mark_loading,
+            org_scoped=org_label is not None,
         )
         row_info = f"Rows loaded: {row_count}\nPer-table row counts: {json.dumps(row_counts, default=str)}"
 
@@ -611,8 +727,9 @@ def _run_download_and_load(export_id: str, export_type: str) -> None:
         if validation_warnings:
             warnings_section = "\nValidation Warnings:\n" + "\n".join(f"  {w}" for w in validation_warnings) + "\n"
 
+        loaded_for = f" for org '{org_label}'" if org_label else ""
         message = (
-            f"✓ {export_type.capitalize()} data loaded successfully.\n\n"
+            f"✓ {export_type.capitalize()} data loaded successfully{loaded_for}.\n\n"
             f"Export ID: {export_id}\n"
             f"Files processed: {len(parquet_urls)}\n"
             f"{row_info}\n"
@@ -628,6 +745,7 @@ def _run_download_and_load(export_id: str, export_type: str) -> None:
             parquet_urls=parquet_urls,
             row_count=row_count,
             export_type=export_type,
+            org_label=org_label,
         )
         tracker.set_phase(export_id, PHASE_COMPLETE, phase_detail=None, message=message, row_count=row_count)
 
@@ -822,7 +940,31 @@ def download_rapid7_export(export_id: str, export_type: str = "vulnerability") -
         return f"✗ Invalid export_type: '{export_type}'. Valid values are: {', '.join(VALID_EXPORT_TYPES)}"
 
     try:
-        config = load_config()
+        # Resolve the owning org first: an export id is only visible to the key that
+        # created it, so a labelled export must be polled with that org's credential.
+        tracker = _tracker()
+        known = tracker.get_export_by_id(export_id)
+        tracker.close()
+        org_label = known.get("org_label") if known else None
+
+        # The tracked type wins over the argument. Accepting a mismatched export_type
+        # would pick the wrong load mode for this export's files, and for a labelled
+        # export that means a snapshot load which discards every other org.
+        tracked_type = known.get("export_type") if known else None
+        if tracked_type is not None and tracked_type != export_type:
+            return (
+                f"✗ Export '{export_id}' is a {tracked_type} export, not {export_type}.\n\n"
+                f"Retry with: download_rapid7_export("
+                f'export_id="{export_id}", export_type="{tracked_type}")'
+            )
+        if org_label is not None and export_type not in MULTI_ORG_EXPORT_TYPES:
+            return (
+                f"✗ Export '{export_id}' belongs to org '{org_label}', and export_type "
+                f"'{export_type}' cannot be loaded per org. Supported per org: "
+                f"{', '.join(MULTI_ORG_EXPORT_TYPES)}."
+            )
+
+        config = _config_for_org(org_label)
 
         # Quick call — just confirms the export is ready, doesn't download anything.
         status_info = get_export_status(config, export_id)
@@ -842,6 +984,8 @@ def download_rapid7_export(export_id: str, export_type: str = "vulnerability") -
             return f"✗ Export complete but has no files.\n\nExport ID: {export_id}"
 
         # Don't start a second job for the same export if one's already running.
+        # Re-read rather than reuse the snapshot above: the platform status call in
+        # between takes long enough for another caller to have started one.
         tracker = _tracker()
         existing = tracker.get_export_by_id(export_id)
         if existing is not None and existing.get("status") in _ACTIVE_PHASES:
@@ -862,6 +1006,7 @@ def download_rapid7_export(export_id: str, export_type: str = "vulnerability") -
             status=PHASE_DOWNLOADING,
             parquet_urls=parquet_urls,
             export_type=export_type,
+            org_label=org_label,
         )
         tracker.set_phase(
             export_id,
@@ -1177,6 +1322,8 @@ def list_rapid7_exports(limit: int = 10) -> str:
             result += f"  Status: {exp['status']}\n"
             if exp.get("phase_detail"):
                 result += f"  Progress: {exp['phase_detail']}\n"
+            if exp.get("org_label"):
+                result += f"  Org: {exp['org_label']}\n"
             result += f"  Files: {exp['file_count']}\n"
             result += f"  Rows: {exp['row_count']}\n\n"
 
@@ -1184,6 +1331,405 @@ def list_rapid7_exports(limit: int = 10) -> str:
 
     except Exception as e:
         return f"✗ Error listing exports: {str(e)}"
+
+
+@mcp.tool(
+    annotations=ToolAnnotations(
+        title="List Rapid7 Organizations",
+        readOnlyHint=True,
+        destructiveHint=False,
+        idempotentHint=True,
+        openWorldHint=False,
+    )
+)
+def list_rapid7_orgs() -> str:
+    """List the organizations configured for multi-org reporting.
+
+    Reads RAPID7_ORGS_FILE and confirms every organization's API key resolves. Run
+    this first when reporting across organizations: it fails here, before any export
+    is started, if a key is missing or two organizations share one key.
+
+    Returns:
+        The configured organization labels and regions, or an explanation of why the
+        configuration is not usable.
+    """
+    try:
+        configs = load_org_configs()
+    except Exception as e:
+        return f"✗ Organization configuration is not usable: {str(e)}"
+
+    labelled = [config for config in configs if config.get("label")]
+    if not labelled:
+        return (
+            "No organizations configured. Running in single-org mode with RAPID7_API_KEY.\n\n"
+            "For multi-org reporting, point RAPID7_ORGS_FILE at a JSON file:\n"
+            '  {"orgs": [{"label": "payments", "key_ref": "R7_KEY_PAYMENTS", "region": "us"}]}\n\n'
+            "Each org needs its own organization API key, because the platform scopes "
+            "every export to the org in the calling token."
+        )
+
+    result = f"Configured organizations ({len(labelled)}), all keys resolved:\n\n"
+    for config in labelled:
+        result += f"  {config['label']} (region: {config['region']})\n"
+    result += (
+        "\nStart exports for all of them with: start_rapid7_multi_org_export()\n"
+        "Then check progress with: check_rapid7_multi_org_export()"
+    )
+    return result
+
+
+@mcp.tool(
+    annotations=ToolAnnotations(
+        title="Start Rapid7 Multi-Org Export",
+        readOnlyHint=False,
+        destructiveHint=False,
+        idempotentHint=True,
+        openWorldHint=True,
+    )
+)
+def start_rapid7_multi_org_export(export_type: str = "vulnerability") -> str:
+    """Start one export per configured organization, in a single call.
+
+    The platform scopes an export to the organization in the calling token, so a
+    portfolio view needs one export per organization. This starts them all so the
+    platform processes them in parallel, rather than one agent round trip per org.
+
+    Exports already created today are reused rather than duplicated. Poll them all
+    with check_rapid7_multi_org_export(), which also loads each one as it completes.
+
+    Args:
+        export_type: Type of export. Only "vulnerability" can be loaded per org today.
+
+    Returns:
+        A per-organization list of export IDs, and any organizations that failed.
+    """
+    if export_type not in MULTI_ORG_EXPORT_TYPES:
+        return (
+            f"✗ export_type '{export_type}' cannot be exported per org yet. "
+            f"Supported per org: {', '.join(MULTI_ORG_EXPORT_TYPES)}."
+        )
+
+    try:
+        configs = [config for config in load_org_configs() if config.get("label")]
+    except Exception as e:
+        return f"✗ Organization configuration is not usable: {str(e)}"
+
+    if not configs:
+        return (
+            "✗ No organizations configured. Set RAPID7_ORGS_FILE, or use "
+            "start_rapid7_export() for single-org exports. See list_rapid7_orgs()."
+        )
+
+    started: list = []
+    failed: list = []
+    for config in configs:
+        label = config["label"]
+        outcome = start_rapid7_export(export_type=export_type, org_label=label)
+        if outcome.startswith("✗"):
+            failed.append(f"  {label}: {outcome.splitlines()[0]}")
+        else:
+            started.append(f"  {label}: {outcome.splitlines()[0]}")
+
+    result = f"Started {export_type} exports for {len(started)} of {len(configs)} organization(s).\n\n"
+    if started:
+        result += "Started or reused:\n" + "\n".join(started) + "\n\n"
+    if failed:
+        # Named rather than summarised: a report built from a subset of the
+        # organizations, presented as the whole portfolio, is the failure to avoid.
+        result += "Failed:\n" + "\n".join(failed) + "\n\n"
+        result += "Resolve these before reporting, or the portfolio totals will be short.\n\n"
+    result += "Poll and load with: check_rapid7_multi_org_export()"
+    return result
+
+
+@mcp.tool(
+    annotations=ToolAnnotations(
+        title="Check Rapid7 Multi-Org Export",
+        readOnlyHint=False,
+        destructiveHint=False,
+        idempotentHint=True,
+        openWorldHint=True,
+    )
+)
+def check_rapid7_multi_org_export(export_type: str = "vulnerability", wait_seconds: int = 90) -> str:
+    """Check every organization's export, load the ones that are ready, and wait.
+
+    Call this after start_rapid7_multi_org_export(). For each organization it reports the
+    current phase, and when the platform-side export is complete it starts that
+    organization's download and load in the background. Loading is org-scoped, so each
+    organization is added without discarding the others.
+
+    By default it waits up to 90 seconds for outstanding work before answering, so a
+    whole fan-out takes a handful of calls rather than dozens. It returns as soon as
+    every organization is settled. It never waits longer than MAX_CHECK_WAIT_SECONDS,
+    which is kept well inside the roughly four-minute tool-call timeout that MCP clients
+    such as Claude Desktop enforce.
+
+    Args:
+        export_type: Type of export. Only "vulnerability" can be loaded per org today.
+        wait_seconds: How long to wait for outstanding work before answering. 0 answers
+            immediately. Values above MAX_CHECK_WAIT_SECONDS are clamped.
+
+    Returns:
+        A per-organization status line, and whether the portfolio is ready to query.
+    """
+    if export_type not in MULTI_ORG_EXPORT_TYPES:
+        return (
+            f"✗ export_type '{export_type}' cannot be exported per org yet. "
+            f"Supported per org: {', '.join(MULTI_ORG_EXPORT_TYPES)}."
+        )
+
+    try:
+        configs = [config for config in load_org_configs() if config.get("label")]
+    except Exception as e:
+        return f"✗ Organization configuration is not usable: {str(e)}"
+
+    if not configs:
+        return "✗ No organizations configured. See list_rapid7_orgs()."
+
+    budget = max(0, min(int(wait_seconds), MAX_CHECK_WAIT_SECONDS))
+    deadline = time.time() + budget
+    while True:
+        result, pending = _scan_orgs_once(configs, export_type)
+        if pending == 0 or time.time() >= deadline:
+            return result
+        time.sleep(min(_CHECK_POLL_INTERVAL_SECONDS, max(1.0, deadline - time.time())))
+
+
+def _scan_orgs_once(configs: list, export_type: str) -> tuple:
+    """Report every org's phase, starting loads for any that are ready.
+
+    Returns (report text, count of orgs with outstanding work).
+    """
+    tracker = _tracker()
+    try:
+        lines: list = []
+        loaded = 0
+        pending = 0
+        missing = 0
+        queued = 0
+
+        # Count the loads already running before starting any more, so repeated polls
+        # do not stack up downloads past the cap.
+        active = sum(
+            1
+            for config in configs
+            for row in [_latest_export_for_org(tracker, export_type, config["label"])]
+            if row is not None and row.get("status") in _ACTIVE_PHASES
+        )
+
+        for config in configs:
+            label = config["label"]
+            row = tracker.get_today_export(export_type=export_type, org_label=label)
+            if row is None:
+                # get_today_export only returns COMPLETE rows, so look for an
+                # in-flight one before declaring the org missing.
+                in_flight = _latest_export_for_org(tracker, export_type, label)
+                if in_flight is None:
+                    lines.append(f"  {label}: no export today. Run start_rapid7_multi_org_export().")
+                    missing += 1
+                    continue
+                export_id = in_flight["export_id"]
+                status = in_flight.get("status")
+                if status in _ACTIVE_PHASES:
+                    detail = in_flight.get("phase_detail") or status
+                    lines.append(f"  {label}: loading locally ({detail})")
+                    pending += 1
+                elif status == PHASE_FAILED:
+                    lines.append(f"  {label}: FAILED. Retry with download_rapid7_export('{export_id}').")
+                    missing += 1
+                elif active >= _MAX_CONCURRENT_ORG_LOADS:
+                    lines.append(f"  {label}: ready, queued behind {active} running load(s)")
+                    queued += 1
+                else:
+                    outcome = download_rapid7_export(export_id=export_id, export_type=export_type)
+                    lines.append(f"  {label}: {outcome.splitlines()[0]}")
+                    pending += 1
+                    active += 1
+            else:
+                lines.append(f"  {label}: loaded ({row.get('row_count')} rows)")
+                loaded += 1
+    finally:
+        tracker.close()
+
+    # A queued org still needs another poll, so it counts as outstanding work.
+    pending += queued
+
+    result = f"{export_type.capitalize()} exports across {len(configs)} organization(s):\n\n"
+    result += "\n".join(lines) + "\n\n"
+    result += f"Loaded: {loaded}   In progress: {pending}   Needs attention: {missing}\n\n"
+    if pending:
+        result += "Still working. Call check_rapid7_multi_org_export() again to keep waiting."
+    elif missing:
+        result += (
+            "Some organizations are not loaded. Fix those before reporting, "
+            "or portfolio totals will be short. Confirm with get_rapid7_org_coverage()."
+        )
+    else:
+        result += "All organizations loaded. Confirm with get_rapid7_org_coverage(), then query_rapid7()."
+    return result, pending
+
+
+@mcp.tool(
+    annotations=ToolAnnotations(
+        title="Compact Rapid7 Database",
+        readOnlyHint=False,
+        destructiveHint=False,
+        idempotentHint=True,
+        openWorldHint=False,
+    )
+)
+def compact_rapid7_database() -> str:
+    """Reclaim disk space after refreshing organizations.
+
+    DuckDB does not release pages when rows are deleted, and an org-scoped refresh
+    deletes that organization's previous rows before inserting the new ones. Repeated
+    daily refreshes therefore grow the file without bound. Org-scoped loads skip
+    compaction on purpose, because a fan-out would otherwise compact the whole database
+    once per organization, so run this once after a wave has finished loading.
+
+    Not needed after a first load into an empty database, since nothing was deleted.
+
+    Returns:
+        The file size before and after.
+    """
+    global db
+    if not _db_lock.acquire(blocking=False):
+        return (
+            "⏳ A background download/load is in progress, so the database can't be "
+            "compacted right now. Wait until check_rapid7_multi_org_export() reports "
+            "everything loaded, then try again."
+        )
+    try:
+        if db is None:
+            initialize_database()
+        path = Path(db.db_path)
+        before = path.stat().st_size if path.exists() else 0
+        db.compact()
+        after = path.stat().st_size if path.exists() else 0
+    except Exception as e:
+        return f"✗ Error compacting the database: {str(e)}"
+    finally:
+        _db_lock.release()
+
+    reclaimed = before - after
+    return (
+        f"✓ Database compacted.\n\n"
+        f"Before: {before / 1_000_000:.1f} MB\n"
+        f"After:  {after / 1_000_000:.1f} MB\n"
+        f"Reclaimed: {reclaimed / 1_000_000:.1f} MB"
+    )
+
+
+@mcp.tool(
+    annotations=ToolAnnotations(
+        title="Get Rapid7 Org Coverage",
+        readOnlyHint=True,
+        destructiveHint=False,
+        idempotentHint=True,
+        openWorldHint=False,
+    )
+)
+def get_rapid7_org_coverage() -> str:
+    """Report which organizations are actually present in the loaded data.
+
+    Run this before presenting any portfolio number. It compares the organizations
+    configured against the distinct orgIds in the database, so an organization that
+    failed to load shows as missing rather than as a fall in the totals.
+
+    Returns:
+        Per-organization row and asset counts, plus any configured organization with
+        no data loaded.
+    """
+    global db
+
+    # Coverage is the gate before any portfolio number is quoted, so it must never
+    # read a half-loaded table: mid-load it could report a shortfall that is not real,
+    # or worse, report a match before the last org has finished.
+    if not _db_lock.acquire(blocking=False):
+        return (
+            "⏳ A background download/load is currently in progress, so org coverage "
+            "can't be read yet. Check progress with check_rapid7_multi_org_export() "
+            "and confirm coverage once every org has finished loading."
+        )
+    try:
+        if db is None:
+            initialize_database()
+        if not db.has_data():
+            return "No data loaded yet. Run start_rapid7_multi_org_export(), then check_rapid7_multi_org_export()."
+
+        rows = db.query(
+            'SELECT "orgId" AS org_id, COUNT(*) AS findings, COUNT(DISTINCT "assetId") AS assets'
+            ' FROM vulnerabilities GROUP BY "orgId" ORDER BY findings DESC'
+        )
+    except Exception as e:
+        return f"✗ Error reading org coverage: {str(e)}"
+    finally:
+        _db_lock.release()
+
+    try:
+        configured = [config["label"] for config in load_org_configs() if config.get("label")]
+    except Exception:
+        # Coverage of loaded data is still worth reporting when the org file is broken.
+        configured = []
+
+    # Identity, not cardinality. Comparing counts alone passes when a stale org from an
+    # earlier run masks an org that failed today, which is exactly the plausible-but-
+    # wrong total this gate exists to stop. So ask the tracker which orgs actually
+    # completed a load today, by name.
+    tracker = _tracker()
+    try:
+        loaded_today = sorted(
+            label
+            for label in configured
+            if tracker.get_today_export(export_type="vulnerability", org_label=label) is not None
+        )
+    finally:
+        tracker.close()
+
+    result = f"Organizations present in the loaded vulnerability data: {len(rows)}\n\n"
+    for row in rows:
+        result += f"  {row['org_id']}: {row['findings']} findings across {row['assets']} assets\n"
+
+    if not configured:
+        return result
+
+    missing = sorted(set(configured) - set(loaded_today))
+    result += f"\nConfigured organizations: {len(configured)}\nLoaded today: {len(loaded_today)}\n"
+
+    warnings: list = []
+    if missing:
+        warnings.append(
+            f"{len(missing)} configured organization(s) have not loaded today: {', '.join(missing)}. "
+            f"Run check_rapid7_multi_org_export()."
+        )
+    if len(rows) > len(loaded_today):
+        # More orgs in the table than were loaded today means data left over from an
+        # earlier run, possibly for an org no longer in the org list. Its rows would be
+        # counted into today's portfolio totals.
+        warnings.append(
+            f"The data holds {len(rows)} organization(s) but only {len(loaded_today)} loaded today, "
+            f"so it contains rows from an earlier run. Purge and reload, or explain the extra "
+            f"organization before quoting totals."
+        )
+
+    if warnings:
+        result += "\n⚠️  Do not present these as portfolio totals yet.\n"
+        for warning in warnings:
+            result += f"  - {warning}\n"
+        return result
+
+    # An org that loaded but has no findings contributes no row above. Say so, rather
+    # than reporting a shortfall that would look identical to a failed load.
+    if len(rows) < len(loaded_today):
+        result += (
+            f"\nCounts match on organizations loaded. {len(loaded_today) - len(rows)} organization(s) "
+            f"loaded with zero vulnerability findings, so they contribute no row above.\n"
+        )
+    else:
+        result += "\nCounts match. Portfolio totals cover every configured organization.\n"
+
+    return result
 
 
 def main():

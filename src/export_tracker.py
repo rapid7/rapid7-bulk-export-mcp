@@ -59,6 +59,11 @@ class ExportTracker:
                 # Last phase-transition time. Kept separate from created_at so
                 # a load's progress updates never overwrite its creation time.
                 "ADD COLUMN updated_at TIMESTAMP",
+                # Which configured org this export belongs to. NULL for
+                # single-org use, where the one API key defines the scope.
+                # Part of the same-day reuse key: without it, the second org's
+                # request returns the first org's export.
+                "ADD COLUMN org_label VARCHAR",
             ):
                 try:
                     conn.execute(f"ALTER TABLE exports {column_ddl}")
@@ -67,9 +72,11 @@ class ExportTracker:
                     pass  # nosec B110
 
             # Create index on export_date and export_type for fast lookups
+            # New index name on purpose: IF NOT EXISTS would make a redefinition of
+            # idx_export_date_type a silent no-op on databases that already have it.
             conn.execute("""
-                CREATE INDEX IF NOT EXISTS idx_export_date_type
-                ON exports(export_date, export_type)
+                CREATE INDEX IF NOT EXISTS idx_export_date_type_org
+                ON exports(export_date, export_type, org_label)
             """)
 
             # Multi-chunk load jobs (e.g. a remediation range split into
@@ -92,12 +99,17 @@ class ExportTracker:
                 )
             """)
 
-    def get_today_export(self, export_type: str = "vulnerability") -> Optional[Dict[str, Any]]:
+    def get_today_export(
+        self, export_type: str = "vulnerability", org_label: Optional[str] = None
+    ) -> Optional[Dict[str, Any]]:
         """
-        Get the most recent completed export from today.
+        Get the most recent completed export from today, for one org.
 
         Args:
             export_type: Type of export to filter by (default: 'vulnerability')
+            org_label: Configured org this export belongs to. None matches only
+                exports recorded without an org, so single-org and multi-org use
+                never hand each other's export back.
 
         Returns:
             Dictionary with export metadata if found, None otherwise
@@ -121,15 +133,17 @@ class ExportTracker:
                     row_count,
                     parquet_urls,
                     local_files,
-                    export_type
+                    export_type,
+                    org_label
                 FROM exports
                 WHERE export_date = ?
                   AND status = 'COMPLETE'
                   AND export_type = ?
+                  AND org_label IS NOT DISTINCT FROM ?
                 ORDER BY created_at DESC
                 LIMIT 1
             """,
-                [today, export_type],
+                [today, export_type, org_label],
             ).fetchone()
 
         if result:
@@ -143,6 +157,7 @@ class ExportTracker:
                 "parquet_urls": result[6],
                 "local_files": result[7],
                 "export_type": result[8],
+                "org_label": result[9],
             }
 
         return None
@@ -155,6 +170,7 @@ class ExportTracker:
         local_files: Optional[List[str]] = None,
         row_count: Optional[int] = None,
         export_type: str = "vulnerability",
+        org_label: Optional[str] = None,
     ):
         """
         Save or update export metadata.
@@ -166,6 +182,8 @@ class ExportTracker:
             local_files: List of local file paths (optional)
             row_count: Number of rows loaded (optional)
             export_type: Type of export (default: 'vulnerability')
+            org_label: Configured org this export belongs to (optional). Needed so a
+                later download can pick the same org's API key.
         """
         today = date.today()
         now = datetime.now()
@@ -182,15 +200,20 @@ class ExportTracker:
                     row_count,
                     parquet_urls,
                     local_files,
-                    export_type
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    export_type,
+                    org_label
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT (export_id) DO UPDATE SET
                     status = EXCLUDED.status,
                     file_count = EXCLUDED.file_count,
                     row_count = EXCLUDED.row_count,
                     parquet_urls = EXCLUDED.parquet_urls,
                     local_files = EXCLUDED.local_files,
-                    export_type = EXCLUDED.export_type
+                    export_type = EXCLUDED.export_type,
+                    -- Sticky on purpose. Later lifecycle upserts (DOWNLOADING, COMPLETE)
+                    -- do not pass a label, and clearing it would both hide the export
+                    -- from its own org and offer it to an unlabelled caller.
+                    org_label = COALESCE(EXCLUDED.org_label, exports.org_label)
             """,
                 [
                     export_id,
@@ -202,6 +225,7 @@ class ExportTracker:
                     parquet_urls,
                     local_files,
                     export_type,
+                    org_label,
                 ],
             )
 
@@ -454,7 +478,8 @@ class ExportTracker:
                     export_type,
                     phase_detail,
                     message,
-                    updated_at
+                    updated_at,
+                    org_label
                 FROM exports
                 WHERE export_id = ?
             """,
@@ -475,6 +500,7 @@ class ExportTracker:
                 "phase_detail": result[9],
                 "message": result[10],
                 "updated_at": result[11],
+                "org_label": result[12],
             }
 
         return None
@@ -492,7 +518,7 @@ class ExportTracker:
         """
         sql = """
             SELECT export_id, export_date, created_at, status, file_count, row_count,
-                   export_type, phase_detail
+                   export_type, phase_detail, org_label
             FROM exports
         """
         params: list = []
@@ -517,6 +543,7 @@ class ExportTracker:
                 "row_count": row[5],
                 "export_type": row[6],
                 "phase_detail": row[7],
+                "org_label": row[8],
             }
             for row in results
         ]

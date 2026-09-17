@@ -39,7 +39,8 @@
       ],
       "env": {
         "RAPID7_API_KEY": "${user_config.api_key}",
-        "RAPID7_REGION": "${user_config.region}"
+        "RAPID7_REGION": "${user_config.region}",
+        "RAPID7_ORGS_FILE": "${user_config.orgs_file}"
       }
     }
   },
@@ -75,6 +76,30 @@
     {
       "name": "list_rapid7_exports",
       "description": "List recent Rapid7 exports tracked in the system."
+    },
+    {
+      "name": "purge_rapid7_data",
+      "description": "Delete all locally stored Rapid7 data and export tracking records."
+    },
+    {
+      "name": "list_rapid7_orgs",
+      "description": "List the organizations configured for multi-org reporting and confirm every API key resolves."
+    },
+    {
+      "name": "start_rapid7_multi_org_export",
+      "description": "Start one export per configured organization in a single call, for reporting across organizations."
+    },
+    {
+      "name": "check_rapid7_multi_org_export",
+      "description": "Check every organization's export and load the ones that are ready, without discarding the organizations already loaded."
+    },
+    {
+      "name": "get_rapid7_org_coverage",
+      "description": "Report which configured organizations are actually present in the loaded data. Run before quoting any portfolio total."
+    },
+    {
+      "name": "compact_rapid7_database",
+      "description": "Reclaim disk space after refreshing organizations, once a fan-out has finished loading."
     }
   ],
   "keywords": [
@@ -115,6 +140,12 @@
       "description": "Your Rapid7 data storage region: us, eu, ca, au, or ap. Find this under your account name in the Insight Platform.",
       "required": true,
       "default": "us"
+    },
+    "orgs_file": {
+      "type": "string",
+      "title": "Organizations file (multi-org reporting only)",
+      "description": "Absolute path to a JSON file listing the organizations to report across, for example /Users/you/.rapid7_mcp/orgs.json. Each entry names a label and a key_ref, where key_ref is the name of an environment variable or macOS Keychain entry holding that organization's API key. Never put keys in this file. Leave empty for single-organization use.",
+      "required": false
     }
   }
 }
