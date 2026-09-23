@@ -1,7 +1,7 @@
 {
   "$schema": "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
   "name": "rapid7-bulk-export",
-  "version": "0.6.1",
+  "version": "0.6.2",
   "description": "Export and analyze Rapid7 InsightVM vulnerability, asset, policy, and remediation data via SQL queries",
   "author": {
     "name": "Rapid7",
