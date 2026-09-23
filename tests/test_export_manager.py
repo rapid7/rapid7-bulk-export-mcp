@@ -209,17 +209,64 @@ class TestGetExportStatus:
         assert "X-Api-Key" in request.headers
         assert request.headers["X-Api-Key"] == "test-key"
 
-        # Verify the query in the request body
+        # Verify the query in the request body. The export id is now passed as a
+        # GraphQL variable, not interpolated into the query string, so it must
+        # appear under "variables" and NOT inside the query text.
         import json
 
         body = json.loads(request.body)
         assert "query" in body
         assert "export" in body["query"]
-        assert "export-123" in body["query"]
+        assert "$exportId" in body["query"]
+        assert "export-123" not in body["query"]
+        assert body["variables"] == {"exportId": "export-123"}
 
         # Verify the status was returned correctly
         assert status["status"] == "PROCESSING"
         assert status["result"] == []
+
+    @responses.activate
+    def test_get_export_status_does_not_inject_malicious_id(self):
+        """A crafted export_id must not break out of the GraphQL document.
+
+        Regression test for GraphQL query injection: the export id is passed as
+        a variable, so a value containing `"` and `}` (which would previously
+        close the string literal and selection set, letting extra root
+        selections be injected) is transported verbatim in "variables" and never
+        appears in the query text.
+        """
+        malicious_id = 'REALID") { id } leak: __schema { queryType { name } } dummy: export(id:"REALID'
+
+        responses.add(
+            responses.POST,
+            "https://us.api.insight.rapid7.com/export/graphql",
+            json={
+                "data": {
+                    "export": {
+                        "id": malicious_id,
+                        "status": "PROCESSING",
+                        "dataset": "vulnerability",
+                        "timestamp": None,
+                        "result": None,
+                    }
+                }
+            },
+            status=200,
+        )
+
+        config = {"endpoint": "https://us.api.insight.rapid7.com/export/graphql", "api_key": "test-key"}
+
+        get_export_status(config, malicious_id)
+
+        import json
+
+        body = json.loads(responses.calls[0].request.body)
+        # The injected fragments must never reach the query document.
+        assert "__schema" not in body["query"]
+        assert "leak:" not in body["query"]
+        assert malicious_id not in body["query"]
+        # The raw value is carried untouched as a variable instead.
+        assert body["variables"] == {"exportId": malicious_id}
 
     @responses.activate
     def test_get_export_status_with_pending_status(self):
