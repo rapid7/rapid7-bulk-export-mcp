@@ -281,10 +281,14 @@ def get_export_status(config: Dict[str, str], export_id: str) -> Dict[str, Any]:
         ValueError: If the response contains GraphQL errors
         requests.RequestException: If the network request fails
     """
-    query = (
-        """
-    {
-      export(id: "%s") {
+    # Pass export_id as a GraphQL variable rather than interpolating it into the
+    # query string. String interpolation lets a crafted id (containing `"` and
+    # `}`) break out of the string literal and inject extra selections into the
+    # document. The create_* mutations in this module already use $variables;
+    # this applies the same safe pattern to the status query.
+    query = """
+    query GetExportStatus($exportId: ID!) {
+      export(id: $exportId) {
         id
         status
         dataset
@@ -296,10 +300,12 @@ def get_export_status(config: Dict[str, str], export_id: str) -> Dict[str, Any]:
       }
     }
     """
-        % export_id
-    )
 
-    response = send_graphql_request(endpoint=config["endpoint"], api_key=config["api_key"], query=query)
+    variables = {"exportId": export_id}
+
+    response = send_graphql_request(
+        endpoint=config["endpoint"], api_key=config["api_key"], query=query, variables=variables
+    )
     export_data = response["data"]["export"]
 
     parquet_urls = []
