@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.6.3
+
+### Fixed
+
+- **Export status and download work again.** v0.6.2 declared the export id in the
+  status query as `ID!`. The Rapid7 export schema has no `ID` type, so every status and
+  download call failed with `Unknown type 'ID'`. The query now uses `String!`. Export
+  creation was not affected.
+
+### Changed
+
+- Bumped `pyjwt` 2.13.0 → 2.15.0 and `urllib3` 2.7.0 → 2.8.0.
+
 ## 0.6.1
 
 ### Changed
