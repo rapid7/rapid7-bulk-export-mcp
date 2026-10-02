@@ -287,7 +287,7 @@ def get_export_status(config: Dict[str, str], export_id: str) -> Dict[str, Any]:
     # document. The create_* mutations in this module already use $variables;
     # this applies the same safe pattern to the status query.
     query = """
-    query GetExportStatus($exportId: ID!) {
+    query GetExportStatus($exportId: String!) {
       export(id: $exportId) {
         id
         status
