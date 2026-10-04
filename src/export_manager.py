@@ -5,6 +5,7 @@ This module manages the export lifecycle for Rapid7 vulnerability exports,
 including creating exports, polling for status, and retrieving download URLs.
 """
 
+import logging
 import re
 import sys
 import time
@@ -12,6 +13,10 @@ from datetime import datetime, timedelta
 from typing import Any, Dict, List, Optional, Tuple
 
 from .graphql_client import send_graphql_request
+
+# Named under the same root as the refresh CLI's logger, so `rapid7.refresh`
+# handler configuration in src/cli.py also formats and emits these lines.
+logger = logging.getLogger("rapid7.refresh.export")
 
 
 class ExportInProgressError(ValueError):
@@ -326,8 +331,9 @@ def poll_until_complete(config: Dict[str, str], export_id: str, interval: int = 
     """Poll the export status until it completes and return Parquet file URLs.
 
     Continuously polls the export status at regular intervals until the export
-    job reaches a terminal state (COMPLETE or FAILED). Prints status updates to
-    stderr to provide user feedback during the polling process.
+    job reaches a terminal state (COMPLETE or FAILED). Logs one line per poll with
+    the export id and elapsed time, so a scheduled run shows whether a long wait is
+    progressing or stuck.
 
     Args:
         config: Configuration dictionary containing endpoint and api_key.
@@ -342,14 +348,33 @@ def poll_until_complete(config: Dict[str, str], export_id: str, interval: int = 
         requests.HTTPError: If the HTTP response status code is not 200
         requests.RequestException: If the network request fails
     """
+    started = time.monotonic()
+    polls = 0
     while True:
         try:
             status_info = get_export_status(config, export_id)
             current_status = status_info["status"]
+            polls += 1
 
-            print(f"Export status: {current_status}", file=sys.stderr)
+            # Logged rather than printed, and carrying the export id plus elapsed
+            # time, because this is the only signal during a wait that routinely
+            # runs for minutes in a scheduled job. Without the elapsed count a
+            # slow export and a hung one look identical in the log.
+            logger.info(
+                "export %s status=%s poll=%d elapsed=%ds",
+                export_id,
+                current_status,
+                polls,
+                int(time.monotonic() - started),
+            )
 
             if current_status in ["COMPLETE", "SUCCEEDED"]:
+                logger.info(
+                    "export %s ready after %ds: %d file(s)",
+                    export_id,
+                    int(time.monotonic() - started),
+                    len(status_info["parquetFiles"]),
+                )
                 return status_info["parquetFiles"]
 
             if current_status == "FAILED":

@@ -52,6 +52,55 @@ def _get_key_from_keychain(service_name: str) -> Optional[str]:
         return None
 
 
+def _resolve_api_key() -> Optional[str]:
+    """Resolve the Rapid7 API key from the environment, then the Keychain.
+
+    Single source of truth for where the key comes from, so the presence check
+    and the loader cannot drift apart on precedence. Returns None when neither
+    source has it, rather than raising, so callers can distinguish "absent" from
+    "invalid" without catching an exception.
+    """
+    api_key = os.environ.get("RAPID7_API_KEY")
+    if not api_key:
+        api_key = _get_key_from_keychain("RAPID7_API_KEY")
+    return api_key or None
+
+
+def key_configured() -> bool:
+    """Report whether a Rapid7 API key is available, without exposing it.
+
+    Lets the network-facing replica decide, at request time, that it holds no
+    credential and refuse the write tools deliberately — the separation control
+    from R8 — instead of letting an unconfigured key surface as an obscure error
+    deep in the API client. Deliberately returns only a boolean so a caller can
+    gate behaviour without ever handling the value.
+    """
+    return _resolve_api_key() is not None
+
+
+def redact_secret(text: str) -> str:
+    """Replace the configured API key, if present, with a fixed placeholder.
+
+    Tool error paths return ``str(e)`` to the model and the transcript, and an
+    exception can carry request material that includes the credential. Scrubbing
+    the known key value before it is returned closes that leak at the boundary
+    where the string leaves the process, regardless of which layer raised. A
+    resolution failure here must never turn into a leak, so any error while
+    resolving the key is treated as "nothing to redact" and the text is returned
+    unchanged only when no key could be found.
+    """
+    try:
+        api_key = _resolve_api_key()
+    except Exception:
+        # Refusing to leak beats propagating: an error resolving the key must
+        # not turn scrubbing into a crash on the path where a string is leaving
+        # the process. Nothing to redact against, so return the text as-is.
+        api_key = None
+    if not api_key:
+        return text
+    return text.replace(api_key, "***REDACTED***")
+
+
 def load_config() -> Dict[str, str]:
     """Load and validate configuration from environment variables.
 
@@ -59,7 +108,10 @@ def load_config() -> Dict[str, str]:
     validates them, and constructs the appropriate API endpoint URL.
 
     On macOS, if RAPID7_API_KEY is not found in the environment, falls back
-    to reading from the macOS Keychain. Store credentials with:
+    to reading from the macOS Keychain. This is a local-development convenience
+    only — it is irrelevant in a container and is not a deployment mechanism.
+    In a hosted deployment the key is delivered from a managed secret store to
+    the refresh job alone. Store it locally with:
 
         security add-generic-password -s RAPID7_API_KEY -a rapid7 -w <your-key>
 
@@ -74,12 +126,8 @@ def load_config() -> Dict[str, str]:
         ValueError: If RAPID7_REGION is not set
         ValueError: If region is not in the valid list
     """
-    # Read API key from environment
-    api_key = os.environ.get("RAPID7_API_KEY")
-
-    # Fall back to macOS Keychain if not in environment
-    if not api_key:
-        api_key = _get_key_from_keychain("RAPID7_API_KEY")
+    # Resolve the key from the environment, falling back to the macOS Keychain.
+    api_key = _resolve_api_key()
 
     if not api_key:
         raise ValueError(

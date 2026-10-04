@@ -1,7 +1,7 @@
 ---
 name: Rapid7 Bulk Export Analysis Expert
 description: Expert analysis of Rapid7 InsightVM data exported via Bulk Export API with strict MCP requirements
-version: 0.6.3
+version: 0.7.0
 author: Rapid7 Bulk Export MCP Tool
 tags: [security, vulnerabilities, rapid7, insightvm, bulk-export, analysis, policy, remediation]
 ---
@@ -1058,6 +1058,15 @@ WHERE pciSeverity IS NOT NULL
 GROUP BY pciSeverity, pciCompliant
 ORDER BY pciSeverity DESC;
 ```
+
+## Remote / Hosted Mode
+
+The MCP server can run locally (stdio) or as a remote HTTP service. When it runs remotely, two behaviors differ and you should account for them:
+
+- **Write tools require a write scope.** The four mutating tools — `start_rapid7_export`, `download_rapid7_export`, `load_rapid7_parquet`, and `purge_rapid7_data` — are gated behind a write scope on the remote transport. Read/query tools stay available to any authenticated caller. If a write tool is refused for lack of scope, do not retry it — tell the user their token lacks the write scope and that data is refreshed out-of-band (see below). Query tools still work, so you can analyze whatever is already loaded. On local stdio this gating does not apply.
+- **In a hosted deployment you typically cannot start exports at all.** The request-handling replica holds no Rapid7 API key by design; only a scheduled refresh job does. A write tool there returns a plain message saying so rather than an error. Data is refreshed by that job (the `rapid7-refresh` entrypoint), so your role in hosted mode is querying, not loading.
+
+**Data-age annotation.** In hosted deployments, successful `query_rapid7` results carry a short note such as "Data last loaded 3 hours ago." Use it: surface the data age to the user rather than calling `list_rapid7_exports()` just to establish freshness. The note appears only in hosted deployments, where the data is a scheduled copy; locally the user loaded the data themselves, so its absence there is normal.
 
 ## Best Practices
 

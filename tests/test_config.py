@@ -5,7 +5,13 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from src.config import REGION_ENDPOINTS, _get_key_from_keychain, load_config
+from src.config import (
+    REGION_ENDPOINTS,
+    _get_key_from_keychain,
+    key_configured,
+    load_config,
+    redact_secret,
+)
 
 
 class TestLoadConfig:
@@ -118,3 +124,53 @@ class TestKeychainFallback:
 
         result = _get_key_from_keychain("RAPID7_API_KEY")
         assert result is None
+
+
+class TestKeyConfigured:
+    """Tests for the key_configured() presence check used to fail write tools
+    closed on a credential-less replica."""
+
+    def test_true_when_env_set(self):
+        with patch.dict(os.environ, {"RAPID7_API_KEY": "some-key"}, clear=True):
+            assert key_configured() is True
+
+    def test_false_when_absent(self):
+        # Skip the Keychain so the result does not depend on the host's store.
+        with patch("src.config._get_key_from_keychain", return_value=None):
+            with patch.dict(os.environ, {}, clear=True):
+                assert key_configured() is False
+
+    def test_false_when_empty(self):
+        with patch("src.config._get_key_from_keychain", return_value=None):
+            with patch.dict(os.environ, {"RAPID7_API_KEY": ""}, clear=True):
+                assert key_configured() is False
+
+    def test_does_not_return_the_value(self):
+        """The presence check must yield only a bool, never the credential."""
+        with patch.dict(os.environ, {"RAPID7_API_KEY": "some-key"}, clear=True):
+            assert key_configured() is True
+
+
+class TestRedactSecret:
+    """Tests for redact_secret(), which scrubs the configured key from strings
+    leaving the process (tool error messages)."""
+
+    FAKE_KEY = "fake-key-value-not-real"
+
+    def test_redacts_configured_key(self):
+        with patch.dict(os.environ, {"RAPID7_API_KEY": self.FAKE_KEY}, clear=True):
+            text = f"request failed with X-Api-Key={self.FAKE_KEY}"
+            redacted = redact_secret(text)
+            assert self.FAKE_KEY not in redacted
+            assert "***REDACTED***" in redacted
+
+    def test_passthrough_when_no_key(self):
+        with patch("src.config._get_key_from_keychain", return_value=None):
+            with patch.dict(os.environ, {}, clear=True):
+                text = "an error with no secret in it"
+                assert redact_secret(text) == text
+
+    def test_leaves_unrelated_text_untouched(self):
+        with patch.dict(os.environ, {"RAPID7_API_KEY": self.FAKE_KEY}, clear=True):
+            text = "a totally benign error message"
+            assert redact_secret(text) == text
