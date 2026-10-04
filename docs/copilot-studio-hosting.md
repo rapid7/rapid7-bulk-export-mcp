@@ -170,6 +170,17 @@ The managed identity is documented as needing permission for this, but no code u
 it — the permission grant is for an operator or pipeline acting as that identity, not
 for the job.
 
+### Pinning an older version is not protected from pruning
+
+`ARTIFACT_VERSION` pins the version a revision serves, for example to roll back. The
+refresh job prunes everything but the newest `ARTIFACT_RETAIN_VERSIONS` complete versions,
+and the pin is set on the app, not the job, so the job cannot see it. A pinned version
+that falls outside the retained set is deleted. The next restart of that revision finds
+no complete version to serve and starts with no data, its read tools replying that the
+refresh has not completed, which reads like a bootstrap state rather than a deleted pin.
+Pin only to a version within the retained set, or raise `ARTIFACT_RETAIN_VERSIONS` for as
+long as the pin is in place.
+
 ### No per-user data filtering
 
 Any user who can chat with the published agent can query the entire dataset. The

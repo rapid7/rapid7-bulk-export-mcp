@@ -18,12 +18,13 @@ When no Blob configuration is present the store is absent and the local stdio
 path is untouched — the courier only exists in hosted mode.
 """
 
+import io
 import logging
 import os
 import sys
 from dataclasses import dataclass
 from pathlib import Path
-from typing import List, Optional, Protocol
+from typing import BinaryIO, List, Optional, Protocol
 
 # The finished database and its completion marker live under a per-version
 # prefix, so publishing a new version never overwrites an older one and rollback
@@ -57,8 +58,8 @@ class BlobBackend(Protocol):
     when hosted configuration is actually present.
     """
 
-    def upload(self, blob_name: str, data: bytes) -> None:
-        """Upload bytes to ``blob_name``, overwriting any existing blob."""
+    def upload(self, blob_name: str, data: BinaryIO) -> None:
+        """Upload a binary stream to ``blob_name``, overwriting any existing blob."""
 
     def download(self, blob_name: str, dest: Path) -> None:
         """Download ``blob_name`` to the local path ``dest``."""
@@ -89,11 +90,14 @@ class ArtifactStore:
 
         Returns the published version.
         """
-        data = Path(db_path).read_bytes()
-        self.backend.upload(self._data_name(version), data)
+        # Streamed rather than read into memory: the database is the largest thing
+        # the job handles, and holding a second full copy in RAM would set its
+        # memory floor by data size.
+        with open(db_path, "rb") as fh:
+            self.backend.upload(self._data_name(version), fh)
         # Written last, and only on a successful data upload, so its presence is
         # the definition of "this version is safe to download".
-        self.backend.upload(self._marker_name(version), b"")
+        self.backend.upload(self._marker_name(version), io.BytesIO(b""))
         return version
 
     def prune(self, retain: int) -> List[str]:
@@ -101,9 +105,11 @@ class ArtifactStore:
 
         Returns the versions removed.
 
-        Nothing here deletes the version a replica is currently serving: the newest
-        complete version is always inside the retained set, because ``retain`` is
-        floored at 1 and the sort matches ``resolve_current``.
+        An unpinned replica's version is never deleted: the newest complete version
+        is always inside the retained set, because ``retain`` is floored at 1 and the
+        sort matches ``resolve_current``. A version pinned with ARTIFACT_VERSION is
+        not protected — the pin lives on the app, out of the job's sight — so it can
+        be pruned once it falls outside the retained set.
 
         The completion MARKER is deleted before the data, which is the opposite of
         the publish order and equally deliberate. Removing the marker first makes the
@@ -144,9 +150,9 @@ class ArtifactStore:
     def download_current(self, dest: Path) -> str:
         """Download the current complete artifact to ``dest``; return its version.
 
-        Raises LookupError when no complete version exists, so a replica fails to
-        become ready rather than serving nothing — the readiness gate turns that
-        into "not ready" rather than an empty database taking traffic.
+        Raises LookupError when no complete version exists. The server treats that
+        as "nothing published yet" and starts with its read tools explaining there
+        is no data, rather than serving an empty database as if it were real.
         """
         version = self.resolve_current()
         if version is None:

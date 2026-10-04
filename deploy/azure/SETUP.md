@@ -118,7 +118,8 @@ built from a release tag and will silently run different code than you tested:
 
 ```bash
 az deployment group create -g <RG> --template-file registry.bicep --parameters registryName=<acr>
-az acr build --registry <acr> --image rapid7-bulk-export-mcp:dev .
+# Run from deploy/azure; the build context is the repository root, where the Dockerfile is.
+az acr build --registry <acr> --image rapid7-bulk-export-mcp:dev ../..
 ```
 
 > **Trap.** Use `az acr build`, not a local `docker build`. It builds on Azure's

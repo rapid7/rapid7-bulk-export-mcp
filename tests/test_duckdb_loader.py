@@ -577,6 +577,14 @@ def test_query_timeout_unset_arms_no_timer(sample_parquet_file, monkeypatch, tmp
     db.close()
 
 
+@pytest.mark.parametrize("value", ["inf", "-inf", "nan", "Infinity"])
+def test_resolve_query_timeout_non_finite_falls_back_with_warning(monkeypatch, capsys, value):
+    """Non-finite values parse as floats but cannot arm a timer, so they are rejected."""
+    monkeypatch.setenv("DUCKDB_QUERY_TIMEOUT_SECONDS", value)
+    assert _resolve_query_timeout() == DEFAULT_QUERY_TIMEOUT_SECONDS
+    assert "ignoring invalid DUCKDB_QUERY_TIMEOUT_SECONDS" in capsys.readouterr().err
+
+
 def test_resolve_query_timeout_invalid_falls_back_with_warning(monkeypatch, capsys):
     """An unparseable value falls back to the default and warns on stderr."""
     monkeypatch.setenv("DUCKDB_QUERY_TIMEOUT_SECONDS", "not-a-number")

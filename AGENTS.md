@@ -158,12 +158,12 @@ Each step is non-blocking. The tracking DB (`rapid7_bulk_export_tracking.db`) re
   stdio behaviour is unchanged.
 
 **Data-age annotation**
-- Successful `query_rapid7` results carry a short data-age note (e.g. "Data last loaded 3
-  hours ago."), sourced from a load-metadata table inside the data database so it works
-  identically in stdio and hosted modes.
+- When Blob artifact storage is configured, successful `query_rapid7` results carry a short
+  data-age note (e.g. "Data last loaded 3 hours ago."), sourced from a load-metadata table
+  inside the data database so it travels with the artifact. Local stdio and Docker output
+  is unchanged.
 - It is fail-soft: any error reading the metadata yields an empty note and never breaks the
-  query. In stdio mode it additionally flags an in-flight refresh; that signal is expected
-  to be absent in hosted mode, where the refresh runs in a separate container.
+  query.
 
 ## Testing
 

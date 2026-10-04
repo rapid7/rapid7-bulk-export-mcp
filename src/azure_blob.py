@@ -10,7 +10,7 @@ blob is transferred over HTTPS and written to local disk; it is never mounted.
 """
 
 from pathlib import Path
-from typing import List
+from typing import BinaryIO, List
 
 from azure.core.exceptions import ResourceNotFoundError
 from azure.identity import DefaultAzureCredential
@@ -26,7 +26,9 @@ class AzureBlobBackend:
             credential=DefaultAzureCredential(),
         ).get_container_client(container)
 
-    def upload(self, blob_name: str, data: bytes) -> None:
+    def upload(self, blob_name: str, data: BinaryIO) -> None:
+        # The SDK reads the stream in blocks, so a large database is never held
+        # in memory whole.
         self._client.upload_blob(name=blob_name, data=data, overwrite=True)
 
     def download(self, blob_name: str, dest: Path) -> None:

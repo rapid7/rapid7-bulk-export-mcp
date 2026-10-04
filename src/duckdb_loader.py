@@ -5,6 +5,7 @@ This module handles loading Parquet files into DuckDB for efficient querying
 of vulnerability data.
 """
 
+import math
 import os
 import sys
 import threading
@@ -83,14 +84,18 @@ def _resolve_query_timeout() -> float:
     """Return the configured query timeout in seconds, or the default if unset.
 
     A value of 0 or negative disables the timeout, as does leaving it unset. An
-    unparseable value is ignored with a warning and the default is used, so the
-    mistake is visible in the log rather than silent.
+    unparseable or non-finite value is ignored with a warning and the default is
+    used, so the mistake is visible in the log rather than silent. "inf" parses as
+    a float but threading.Timer rejects it, which would fail every query.
     """
     configured = os.environ.get("DUCKDB_QUERY_TIMEOUT_SECONDS", "").strip()
     if not configured:
         return DEFAULT_QUERY_TIMEOUT_SECONDS
     try:
-        return float(configured)
+        value = float(configured)
+        if not math.isfinite(value):
+            raise ValueError(configured)
+        return value
     except ValueError:
         print(
             f"Warning: ignoring invalid DUCKDB_QUERY_TIMEOUT_SECONDS '{configured}', "
@@ -390,7 +395,11 @@ class VulnerabilityDatabase:
                         result = conn.execute(sql).fetchall()
                 finally:
                     if timer is not None:
+                        # cancel() alone does not stop a timer that has already
+                        # fired; join so its interrupt() cannot reach a connection
+                        # that is being closed or reused.
                         timer.cancel()
+                        timer.join()
 
                 description = conn.description
                 if not description:

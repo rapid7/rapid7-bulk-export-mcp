@@ -5,9 +5,10 @@ credentials and no network — the store's logic is what is under test, not the
 transport.
 """
 
+import io
 import logging
 from pathlib import Path
-from typing import Dict, List
+from typing import BinaryIO, Dict, List
 
 import pytest
 
@@ -30,8 +31,11 @@ class FakeBackend:
         self.blobs: Dict[str, bytes] = {}
         self.deleted: List[str] = []
 
-    def upload(self, blob_name: str, data: bytes) -> None:
-        self.blobs[blob_name] = data
+    def upload(self, blob_name: str, data: BinaryIO) -> None:
+        # Record that a stream, not bytes, crossed the contract, so a regression
+        # back to reading the whole file into memory fails here.
+        assert not isinstance(data, (bytes, bytearray)), "upload must be given a stream"
+        self.blobs[blob_name] = data.read()
 
     def download(self, blob_name: str, dest: Path) -> None:
         dest.write_bytes(self.blobs[blob_name])
@@ -83,7 +87,7 @@ def test_partial_upload_is_never_selected(tmp_path):
     backend = FakeBackend()
     store = ArtifactStore(backend=backend)
     # Data present, marker absent — exactly the mid-upload state.
-    backend.upload("versions/20260101T000000000000Z/rapid7_bulk_export.db", b"partial")
+    backend.upload("versions/20260101T000000000000Z/rapid7_bulk_export.db", io.BytesIO(b"partial"))
 
     assert store.resolve_current() is None
     with pytest.raises(LookupError):
@@ -96,7 +100,7 @@ def test_newest_complete_version_wins_over_older_and_partial(tmp_path):
     old = store.publish(_write_db(tmp_path, b"old"), "20260101T000000000000Z")
     new = store.publish(_write_db(tmp_path, b"new"), "20260201T000000000000Z")
     # A still-newer version whose upload has not finished (no marker).
-    store.backend.upload("versions/20260301T000000000000Z/rapid7_bulk_export.db", b"in-flight")
+    store.backend.upload("versions/20260301T000000000000Z/rapid7_bulk_export.db", io.BytesIO(b"in-flight"))
 
     assert old < new
     assert store.resolve_current() == new

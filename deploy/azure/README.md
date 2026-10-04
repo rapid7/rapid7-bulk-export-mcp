@@ -128,9 +128,10 @@ az deployment group create -g <rg> \
 # 2. Build and push. Use `az acr build`, NOT a local `docker build` — this builds
 #    on Azure's amd64 agents. A local build on Apple Silicon produces an arm64
 #    image that Container Apps pulls successfully and then fails to start, with an
-#    exec-format error that looks nothing like an architecture problem.
+#    exec-format error that looks nothing like an architecture problem. The build
+#    context is the repository root, where the Dockerfile is.
 az acr build --registry <registryName> \
-  --image rapid7-bulk-export-mcp:dev .
+  --image rapid7-bulk-export-mcp:dev ../..
 
 # 3. Deploy everything else, naming the registry so the identity gets AcrPull.
 az deployment group create -g <rg> \
