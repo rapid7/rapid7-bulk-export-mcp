@@ -15,6 +15,7 @@ separate status tool.
 """
 
 import time
+from datetime import datetime, timedelta
 
 import pytest
 
@@ -31,6 +32,10 @@ class FakeDB:
         self.row_counts = row_counts if row_counts is not None else {"vulnerabilities": 3, "assets": 2}
         self.has_data_value = has_data_value
         self.load_calls = []
+        # Freshness metadata the query path reads. Default empty so existing
+        # tests see no data-age note; freshness tests set it explicitly. A
+        # BaseException instance here is raised, to exercise the fail-soft path.
+        self.load_metadata = {}
 
     def load_parquet_files_by_prefix(self, prefix_file_map, skip_prefixes=None, append=False):
         if self.load_delay:
@@ -50,6 +55,11 @@ class FakeDB:
     def has_data(self):
         return self.has_data_value
 
+    def get_load_metadata(self):
+        if isinstance(self.load_metadata, Exception):
+            raise self.load_metadata
+        return dict(self.load_metadata)
+
     def purge(self):
         self.has_data_value = False
 
@@ -57,7 +67,14 @@ class FakeDB:
 @pytest.fixture(autouse=True)
 def reset_mcp_server_state(monkeypatch, tmp_path):
     """Give every test a clean slate: a fresh tracker DB under a throwaway
-    temp dir, and no leftover db handle."""
+    temp dir, and no leftover db handle.
+
+    Also configure a placeholder Rapid7 key by default, because the write tools
+    now fail closed when none is present (the hosted-replica separation control).
+    The existing behavioural tests model a configured local instance, so the key
+    must look present to them; the fail-closed tests clear it explicitly. The
+    value is a non-secret placeholder — the real key is never used in tests."""
+    monkeypatch.setenv("RAPID7_API_KEY", "test-not-a-real-key")
     monkeypatch.setattr(mcp_server, "db", None)
     monkeypatch.setattr(mcp_server, "_DATA_DIR", tmp_path)
     yield
@@ -342,7 +359,69 @@ def _job_id_from_start(result_text):
     raise AssertionError(f"no Job ID in: {result_text}")
 
 
-class TestMultiChunkRemediation:
+class TestAwaitingFirstRefresh:
+    """Behaviour when hosted storage is configured but nothing has been published.
+
+    This is a BOOTSTRAP state, not a fault: only the refresh job publishes an
+    artifact, so a freshly deployed environment legitimately has none. The server
+    previously exited here, which meant a deployment could never become healthy on
+    its own and the caller saw a connector timeout rather than an explanation.
+    """
+
+    def _set_state(self, monkeypatch, awaiting: bool):
+        monkeypatch.setattr(mcp_server, "_AWAITING_FIRST_REFRESH", awaiting)
+
+    def test_read_precondition_returns_message_only_while_awaiting(self, monkeypatch):
+        self._set_state(monkeypatch, True)
+        msg = mcp_server._read_precondition()
+        assert msg is not None
+        # The message must name the cause and the fix, not just report failure —
+        # this text is what a user sees in a chat client.
+        assert "refresh job" in msg
+        assert "restart" in msg
+
+        self._set_state(monkeypatch, False)
+        assert mcp_server._read_precondition() is None
+
+    @pytest.mark.parametrize(
+        "tool,args",
+        [
+            ("query_rapid7", {"sql": "SELECT 1"}),
+            ("get_rapid7_schema", {}),
+            ("get_rapid7_stats", {}),
+        ],
+    )
+    def test_every_dataset_read_tool_refuses_with_an_explanation(self, monkeypatch, tool, args):
+        """An empty result would be reported as "you have no vulnerabilities"."""
+        self._set_state(monkeypatch, True)
+        result = getattr(mcp_server, tool)(**args)
+        assert "No Rapid7 data is loaded yet" in result
+        assert "refresh job" in result
+
+    def test_refusal_happens_before_the_db_lock_is_taken(self, monkeypatch):
+        """The guard must precede the lock, or a stuck load would mask the real cause.
+
+        Held lock plus no data should still report the no-data reason, not a busy
+        message — the lock is irrelevant when there is nothing to read.
+        """
+        self._set_state(monkeypatch, True)
+        assert mcp_server._db_lock.acquire(blocking=False)
+        try:
+            result = mcp_server.query_rapid7(sql="SELECT 1")
+        finally:
+            mcp_server._db_lock.release()
+        assert "No Rapid7 data is loaded yet" in result
+
+    def test_tracking_tools_stay_available(self, monkeypatch):
+        """list_rapid7_exports reads the tracker, not the artifact.
+
+        It must keep working: with no dataset it is one of the few ways to see
+        whether a refresh has been attempted at all.
+        """
+        self._set_state(monkeypatch, True)
+        result = mcp_server.list_rapid7_exports(limit=1)
+        assert "No Rapid7 data is loaded yet" not in result
+
     def test_six_month_range_creates_six_distinct_ids_in_date_order(self, monkeypatch, tmp_path):
         """Direct regression: a >1-month range must create one export per
         window, each with its OWN id and date range — never collapse to one."""
@@ -596,6 +675,65 @@ class TestRemediationRangeIdempotency:
         assert "Started loading remediation" in result
 
 
+class TestFreshnessAnnotation:
+    """The freshness note appended to successful query_rapid7 results."""
+
+    @pytest.fixture
+    def hosted(self, monkeypatch):
+        """Configure Blob artifact storage, which is what makes the data a copy."""
+        monkeypatch.setenv("ARTIFACT_BLOB_ACCOUNT_URL", "https://example.blob.core.windows.net")
+        monkeypatch.setenv("ARTIFACT_BLOB_CONTAINER", "artifacts")
+
+    def test_note_present_and_worded_after_a_load(self, monkeypatch, hosted):
+        """Serving a published artifact, a recent load produces a data-age note."""
+        fake_db = FakeDB()
+        fake_db.load_metadata = {"vulnerabilities": datetime.now() - timedelta(minutes=5)}
+        monkeypatch.setattr(mcp_server, "db", fake_db)
+
+        result = mcp_server.query_rapid7("SELECT 1")
+
+        assert result.startswith("Query executed successfully.")
+        assert "Data last loaded 5 minutes ago." in result
+
+    def test_no_note_in_local_mode(self, monkeypatch):
+        """Without Blob storage the user loaded the data themselves, so query
+        output stays exactly as it was before the note existed."""
+        monkeypatch.delenv("ARTIFACT_BLOB_ACCOUNT_URL", raising=False)
+        monkeypatch.delenv("ARTIFACT_BLOB_CONTAINER", raising=False)
+        fake_db = FakeDB()
+        fake_db.load_metadata = {"vulnerabilities": datetime.now() - timedelta(minutes=5)}
+        monkeypatch.setattr(mcp_server, "db", fake_db)
+
+        result = mcp_server.query_rapid7("SELECT 1")
+
+        assert result.startswith("Query executed successfully.")
+        assert "Data last loaded" not in result
+
+    def test_empty_note_and_unbroken_query_when_metadata_read_raises(self, monkeypatch, hosted):
+        """A metadata read error must yield an empty note and never break the
+        query — the results are still returned in full."""
+        fake_db = FakeDB()
+        fake_db.load_metadata = RuntimeError("metadata table corrupt")
+        monkeypatch.setattr(mcp_server, "db", fake_db)
+
+        result = mcp_server.query_rapid7("SELECT 1")
+
+        assert result.startswith("Query executed successfully. 1 rows returned.")
+        assert "Data last loaded" not in result
+        assert "Error" not in result
+
+    def test_no_note_when_nothing_has_ever_been_loaded(self, monkeypatch, hosted):
+        """With no load metadata, a successful query carries no data-age note."""
+        fake_db = FakeDB()
+        fake_db.load_metadata = {}
+        monkeypatch.setattr(mcp_server, "db", fake_db)
+
+        result = mcp_server.query_rapid7("SELECT 1")
+
+        assert result.startswith("Query executed successfully.")
+        assert "Data last loaded" not in result
+
+
 class TestDataDirResolution:
     """_DATA_DIR is resolved once at import time from the environment.
 
@@ -651,3 +789,104 @@ class TestDataDirResolution:
         plugin_data = tmp_path / "plugin"
         resolved = self._reload_data_dir(monkeypatch, "", str(plugin_data))
         assert resolved == plugin_data.resolve()
+
+
+class TestWriteToolsFailClosedWithoutKey:
+    """With no Rapid7 key configured — the hosted request-handling replica —
+    every write tool must refuse with the explanatory message rather than let a
+    lower-level call raise an obscure error. key_configured() is patched off so
+    the check is deterministic regardless of the developer's environment or
+    Keychain."""
+
+    WRITE_TOOLS = [
+        lambda: mcp_server.load_rapid7_parquet(parquet_path="whatever"),
+        lambda: mcp_server.start_rapid7_export(export_type="vulnerability"),
+        lambda: mcp_server.download_rapid7_export(export_id="exp-1", export_type="vulnerability"),
+        lambda: mcp_server.purge_rapid7_data(),
+    ]
+
+    @pytest.mark.parametrize("call", WRITE_TOOLS)
+    def test_write_tool_fails_closed(self, monkeypatch, call):
+        monkeypatch.setattr(mcp_server, "key_configured", lambda: False)
+
+        result = call()
+
+        assert "no Rapid7 API key configured" in result
+        assert "write operations are unavailable" in result
+
+    @pytest.mark.parametrize("call", WRITE_TOOLS)
+    def test_fail_closed_message_is_not_a_stack_trace(self, monkeypatch, call):
+        """The refusal must read as an explanation, not a raised exception that
+        the tool stringified. If a tool ever let load_config()'s ValueError
+        surface instead of the guard, its wording would leak through here."""
+        monkeypatch.setattr(mcp_server, "key_configured", lambda: False)
+
+        result = call()
+
+        assert "Traceback" not in result
+        assert "RAPID7_API_KEY not found" not in result
+
+
+class TestToolErrorStringsDoNotLeakKey:
+    """Tool error paths return str(e). An exception can carry request material
+    that includes the credential, so the returned string must never contain the
+    configured key value. These tests fail if redaction is dropped from an error
+    path — reintroducing a str(e) that leaks."""
+
+    # An obviously-fake placeholder standing in for the real credential. Matches
+    # the value the autouse fixture puts in the environment so redaction, which
+    # scrubs the *configured* key, has something to find.
+    FAKE_KEY = "test-not-a-real-key"
+
+    def test_start_export_error_redacts_key(self, monkeypatch):
+        def _raise_with_key():
+            raise RuntimeError(f"upstream failure carrying X-Api-Key={self.FAKE_KEY} in the message")
+
+        monkeypatch.setattr(mcp_server, "load_config", lambda: _raise_with_key())
+
+        result = mcp_server.start_rapid7_export(export_type="vulnerability")
+
+        assert self.FAKE_KEY not in result
+        assert "***REDACTED***" in result
+
+    def test_download_export_error_redacts_key(self, monkeypatch):
+        def _raise_with_key():
+            raise RuntimeError(f"boom {self.FAKE_KEY}")
+
+        monkeypatch.setattr(mcp_server, "load_config", lambda: _raise_with_key())
+
+        result = mcp_server.download_rapid7_export(export_id="exp-1", export_type="vulnerability")
+
+        assert self.FAKE_KEY not in result
+        assert "***REDACTED***" in result
+
+    def test_load_parquet_error_redacts_key(self, monkeypatch, tmp_path):
+        # Drive load_rapid7_parquet into its except branch with an exception
+        # carrying the key: point it at a real file, then make the loader raise.
+        import src.mcp_server as srv
+
+        imports_dir = tmp_path / "imports"
+        imports_dir.mkdir()
+        target = imports_dir / "data.parquet"
+        target.write_bytes(b"not really parquet")
+        monkeypatch.setattr(srv, "_DATA_DIR", tmp_path)
+
+        class _RaisingDB:
+            def load_parquet_files_by_prefix(self, *a, **kw):
+                raise RuntimeError(f"loader blew up carrying {TestToolErrorStringsDoNotLeakKey.FAKE_KEY}")
+
+            def get_stats(self):
+                return {}
+
+        monkeypatch.setattr(srv, "db", _RaisingDB())
+        # Force the schema-peek to classify the file so we reach the loader call.
+        monkeypatch.setattr(
+            srv._duckdb,
+            "execute",
+            lambda *a, **kw: type("R", (), {"description": [("assetId",)]})(),
+        )
+
+        result = mcp_server.load_rapid7_parquet(parquet_path=str(target))
+
+        assert self.FAKE_KEY not in result
+        assert "***REDACTED***" in result

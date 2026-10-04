@@ -46,6 +46,7 @@ from src.export_manager import (
     get_export_status,
 )
 from src.export_tracker import ExportTracker
+from src.orchestrator import refresh_all, run_snapshot_refresh
 
 # ---------------------------------------------------------------------------
 # Skip guard — never runs in CI
@@ -361,6 +362,49 @@ def test_FullExportRoundTrip_ParallelWithToolCoverage():
         finally:
             mcp_server._DATA_DIR = orig_data_dir
             mcp_server.db = orig_db
+
+        # ==================================================================
+        # PHASE 3d: Orchestrator foreground refresh (the headless job path)
+        #
+        # PHASE 3b exercised the MCP tool path (thread + tracker polling). This
+        # phase drives the orchestrator's SYNCHRONOUS entry points directly —
+        # the exact code a scheduled job runs, with no FastMCP and no threads —
+        # building into a db_path of its own choosing. It closes the coverage
+        # gap this file previously had: none of the orchestration ran under the
+        # live E2E because the file did not import the server.
+        # ==================================================================
+        print("\n" + "=" * 70)
+        print("PHASE 3d: Orchestrator foreground refresh")
+        print("=" * 70)
+
+        orch_dir = Path(tmpdir) / "orchestrator"
+        orch_dir.mkdir()
+        orch_db_path = str(orch_dir / "artifact.db")
+
+        # A single snapshot type through the public synchronous entry point.
+        snap = run_snapshot_refresh("vulnerability", config=config, db_path=orch_db_path, data_dir=orch_dir)
+        assert snap.ok, f"orchestrator snapshot refresh failed: {snap.error}"
+        assert snap.row_count > 0, "orchestrator loaded 0 vulnerability rows"
+        print(f"  ✓ run_snapshot_refresh(vulnerability): {snap.row_count:,} rows into a fresh artifact")
+
+        # The refresh built into the db_path it was handed, not the live DB.
+        orch_db = VulnerabilityDatabase(orch_db_path)
+        orch_rows = orch_db.query("SELECT COUNT(*) AS cnt FROM vulnerabilities")[0]["cnt"]
+        assert orch_rows == snap.row_count, "artifact row count does not match the reported window"
+        print(f"  ✓ artifact at chosen db_path holds {orch_rows:,} rows (live DB untouched)")
+
+        # refresh_all across snapshot types into one artifact; every window
+        # attempted, cross-type coexistence preserved.
+        all_dir = Path(tmpdir) / "orchestrator_all"
+        all_dir.mkdir()
+        all_db_path = str(all_dir / "artifact.db")
+        result = refresh_all(["vulnerability", "policy"], config=config, db_path=all_db_path, data_dir=all_dir)
+        assert result.ok, f"refresh_all reported failures: {[(w.kind, w.error) for w in result.failed]}"
+        assert {w.kind for w in result.windows} == {"vulnerability", "policy"}
+        all_db = VulnerabilityDatabase(all_db_path)
+        assert all_db.query("SELECT COUNT(*) AS cnt FROM vulnerabilities")[0]["cnt"] > 0
+        assert all_db.query("SELECT COUNT(*) AS cnt FROM policies")[0]["cnt"] > 0
+        print(f"  ✓ refresh_all(vulnerability, policy): {result.total_rows:,} rows, both tables present")
 
         # ==================================================================
         # PHASE 4: Assert cross-export table coexistence (the original bug)

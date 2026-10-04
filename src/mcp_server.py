@@ -9,26 +9,25 @@ allowing AI assistants to query and analyze the data.
 import datetime as _dt
 import glob
 import json
+import logging
 import os
-import shutil
 import sys
-import tempfile
 import threading
-import time
-import traceback
-import uuid
 from pathlib import Path
 from typing import Optional
 
 import duckdb as _duckdb
 from fastmcp import FastMCP
+from fastmcp.server.auth import restrict_tag
 from mcp.types import ToolAnnotations
 
-from .config import load_config
+from . import orchestrator
+from .artifact_store import download_artifact, storage_configured
+from .auth import ENV_AUDIENCE, ENV_ISSUER, ENV_JWKS_URI, build_auth
+from .config import key_configured, load_config, redact_secret
 from .download import download_all_files
 from .duckdb_loader import VulnerabilityDatabase
 from .export_manager import (
-    ExportInProgressError,
     build_remediation_date_chunks,
     create_asset_software_export,
     create_policy_export,
@@ -39,8 +38,19 @@ from .export_manager import (
 )
 from .export_tracker import ExportTracker
 
-# Initialize FastMCP server
-mcp = FastMCP("rapid7-bulk-export")
+# The remediation retry path lives in the orchestrator now; re-export the
+# exception here because the tool tests raise it as mcp_server.ExportInProgressError.
+ExportInProgressError = orchestrator.ExportInProgressError
+
+# Initialize FastMCP server.
+#
+# Inbound auth is built from the environment at startup: a JWTVerifier (or a
+# MultiAuth of several) when configured, or None when not. None means the HTTP
+# transport will refuse to start (see main); stdio stays unauthenticated by
+# design because the client owns the process. A misconfiguration — a JWKS URI
+# without an issuer or audience — raises here, failing fast before any request.
+_auth = build_auth()
+mcp = FastMCP("rapid7-bulk-export", auth=_auth)
 
 # Global database instance
 db: Optional[VulnerabilityDatabase] = None
@@ -54,6 +64,85 @@ _DATA_DIR: Path = (
 )
 
 VALID_EXPORT_TYPES = ("vulnerability", "policy", "remediation", "asset_software")
+
+# Read/write authorization split.
+#
+# The mutating tools trigger expensive, multi-window platform exports or purge
+# the local database; the read tools only query it. Published to a broad Teams /
+# M365 Copilot audience with no per-user data filtering, the one control that must
+# hold is keeping casual callers off the write tools. Tag them and require a scope
+# the everyday chat token does not carry, so the split is one declarative rule
+# rather than a bespoke check per tool. Read tools carry no tag and stay open to
+# any authenticated caller. The scope name is a deploy-time contract with the IdP,
+# so it is configurable; the default matches the docs and templates.
+WRITE_TOOL_TAG = "write"
+WRITE_SCOPE = os.environ.get("MCP_AUTH_WRITE_SCOPE", "rapid7.write").strip() or "rapid7.write"
+
+# One shared check reused across the write tools so the tag and scope are declared
+# in a single place. On the stdio transport FastMCP skips component auth entirely
+# (the client owns the process), so this is inert there — the unauthenticated stdio
+# behaviour is unchanged.
+_require_write_scope = restrict_tag(WRITE_TOOL_TAG, scopes=[WRITE_SCOPE])
+
+
+# Fail-closed message shared by every write tool when no Rapid7 key is present.
+#
+# Separation, not storage, is the control: in a hosted deployment only the
+# refresh job holds the key, and the network-facing replica holds none. A write
+# tool there cannot reach the Rapid7 platform, so it must say so plainly rather
+# than let load_config() raise and surface an obscure API-client error to the
+# model. The wording names the cause and the fix without implying the replica is
+# broken.
+_NO_KEY_MESSAGE = (
+    "✗ This server has no Rapid7 API key configured, so write operations are "
+    "unavailable here. In a hosted deployment only the scheduled refresh job "
+    "holds the key; the request-handling replica intentionally holds none. Run "
+    "exports and loads from the refresh job (or a local stdio instance with a "
+    "key configured), and query the loaded data here."
+)
+
+
+# Set at startup when hosted storage is configured but no artifact has been
+# published yet. That is a BOOTSTRAP condition, not a fault: only the refresh job
+# publishes an artifact, so a freshly deployed environment legitimately has none.
+#
+# The server used to exit here. The intent was right — never answer from an
+# incomplete database — but refusing to START is the wrong mechanism for it: the
+# deployment could not bootstrap at all, and the caller saw a connector timeout
+# instead of an explanation. Refusing to ANSWER, with a message that names the cause
+# and the fix, enforces the same invariant and leaves a diagnosable replica running.
+_AWAITING_FIRST_REFRESH = False
+
+_NO_DATA_MESSAGE = (
+    "✗ No Rapid7 data is loaded yet. This server serves a point-in-time copy "
+    "published by the scheduled refresh job, and that job has not completed a "
+    "successful run yet — so there is no dataset to query rather than an empty one. "
+    "Run the refresh job (or wait for its next scheduled run), then restart this "
+    "app's revision so the replica downloads the published dataset."
+)
+
+
+def _read_precondition() -> Optional[str]:
+    """Return the no-data message when no artifact has been published, else None.
+
+    Called at the top of each tool that reads the artifact dataset, so the read
+    surface refuses uniformly and with an explanation rather than returning empty
+    results that a model would report as "you have no vulnerabilities".
+    """
+    return _NO_DATA_MESSAGE if _AWAITING_FIRST_REFRESH else None
+
+
+def _write_precondition() -> Optional[str]:
+    """Return the fail-closed message when no key is configured, else None.
+
+    Called at the top of each write tool so the whole mutating surface refuses
+    uniformly on a credential-less replica, before any work or any call that
+    could raise a lower-level error.
+    """
+    if not key_configured():
+        return _NO_KEY_MESSAGE
+    return None
+
 
 # ---------------------------------------------------------------------------
 # Background download/load job tracking
@@ -76,29 +165,23 @@ VALID_EXPORT_TYPES = ("vulnerability", "policy", "remediation", "asset_software"
 # a restart; interrupted work is reconciled to a retryable FAILED at startup.
 # ---------------------------------------------------------------------------
 
-# Local load-phase values written to the tracker's `status` column. These
-# describe THIS server's download+load progress, distinct from the Rapid7
-# platform-side export status returned by the API (PENDING/PROCESSING/…).
-PHASE_DOWNLOADING = "DOWNLOADING"
-PHASE_LOADING = "LOADING"
-PHASE_COMPLETE = "COMPLETE"  # data loaded locally and queryable
-PHASE_FAILED = "FAILED"
+# Load-phase and job-status constants and the in-progress retry timing live in
+# the orchestrator, which owns the create/poll/download/load pipeline. They are
+# re-exported here because these names ARE this server's public phase vocabulary
+# — the status tools and tests reference them through this module.
+PHASE_DOWNLOADING = orchestrator.PHASE_DOWNLOADING
+PHASE_LOADING = orchestrator.PHASE_LOADING
+PHASE_COMPLETE = orchestrator.PHASE_COMPLETE
+PHASE_FAILED = orchestrator.PHASE_FAILED
+_ACTIVE_PHASES = orchestrator._ACTIVE_PHASES
 
-# States that mean a background load is actively touching the database, so a
-# second download must not start and reads should back off.
-_ACTIVE_PHASES = (PHASE_DOWNLOADING, PHASE_LOADING)
+JOB_RUNNING = orchestrator.JOB_RUNNING
+JOB_COMPLETE = orchestrator.JOB_COMPLETE
+JOB_FAILED = orchestrator.JOB_FAILED
 
-# Multi-chunk job status values (export_jobs.status). A job spans N per-chunk
-# export IDs; these describe the job as a whole.
-JOB_RUNNING = "RUNNING"
-JOB_COMPLETE = "COMPLETE"
-JOB_FAILED = "FAILED"  # at least one chunk failed; loaded chunks remain
-
-# How long to wait between retries when the platform reports another export of
-# the same type already in flight, and how long to keep retrying before giving
-# up on a chunk.
-_IN_PROGRESS_RETRY_SECS = 30
-_IN_PROGRESS_MAX_WAIT_SECS = 20 * 60
+# Backoff between remediation create retries. Kept as a module attribute so a
+# test can shrink it; the orchestrator reads it from the context we build.
+_IN_PROGRESS_RETRY_SECS = orchestrator._IN_PROGRESS_RETRY_SECS
 
 # Guards all access to the shared `db` connection (both the background
 # load and the read tools below) so a query can never run concurrently
@@ -107,9 +190,90 @@ _IN_PROGRESS_MAX_WAIT_SECS = 20 * 60
 _db_lock = threading.RLock()
 
 
+def _initialize_shared_db() -> VulnerabilityDatabase:
+    """Open the shared database at the default path if not already open.
+
+    The orchestrator asks for this via its context; it mirrors
+    initialize_database() but always targets the standard file so a background
+    load and the read tools share one handle.
+    """
+    return initialize_database()
+
+
+def _orchestrator_context() -> orchestrator.OrchestratorContext:
+    """Build an orchestration context bound to this server's shared state.
+
+    The platform functions and the shared database are read from THIS module's
+    namespace at call time, so the tool tests' monkeypatching of
+    mcp_server.load_config / get_export_status / download_all_files /
+    create_remediation_export / poll_until_complete / db / _download_and_load_files
+    / _IN_PROGRESS_RETRY_SECS all continue to take effect.
+    """
+
+    def _set_db(value):
+        global db
+        db = value
+
+    return orchestrator.OrchestratorContext(
+        data_dir=_DATA_DIR,
+        db_lock=_db_lock,
+        get_db=lambda: db,
+        ensure_db=_initialize_shared_db,
+        set_db=_set_db,
+        load_config=lambda: load_config(),
+        get_export_status=lambda config, export_id: get_export_status(config, export_id),
+        download_all_files=lambda urls, api_key: download_all_files(urls, api_key),
+        create_remediation_export=lambda config, start, end: create_remediation_export(config, start, end),
+        poll_until_complete=lambda config, eid: poll_until_complete(config, eid),
+        download_and_load=lambda *a, **kw: _download_and_load_files(*a, **kw),
+        in_progress_retry_secs=_IN_PROGRESS_RETRY_SECS,
+    )
+
+
 def _tracker() -> ExportTracker:
     """Open a tracker handle on the standard tracking database."""
     return ExportTracker(str(_DATA_DIR / "rapid7_bulk_export_tracking.db"))
+
+
+def _humanize_age(loaded_at: _dt.datetime, now: _dt.datetime) -> str:
+    """Render how long ago a load happened in coarse, human units."""
+    seconds = max(0, int((now - loaded_at).total_seconds()))
+    if seconds < 60:
+        return "less than a minute ago"
+    minutes = seconds // 60
+    if minutes < 60:
+        return f"{minutes} minute{'s' if minutes != 1 else ''} ago"
+    hours = minutes // 60
+    if hours < 24:
+        return f"{hours} hour{'s' if hours != 1 else ''} ago"
+    days = hours // 24
+    return f"{days} day{'s' if days != 1 else ''} ago"
+
+
+def _freshness_note() -> str:
+    """Return a short data-age note for a successful query, or an empty string.
+
+    Only added when serving a published artifact. There the data is a copy that
+    may be hours old and the user cannot see when it was taken; a local user
+    loaded the data themselves, so the note would only change output they rely on.
+    Sourced from the load-metadata table INSIDE the data database, because the
+    timestamps travel with the artifact rather than living in a tracker the
+    serving replica never sees.
+
+    Fail-soft by contract: any error reading the metadata yields an empty note
+    and never propagates, because a freshness annotation must never turn a good
+    query into a failed one. Returns "" when nothing has ever been loaded.
+    """
+    try:
+        if db is None or not storage_configured():
+            return ""
+        metadata = db.get_load_metadata()
+        if not metadata:
+            return ""
+        newest = max(metadata.values())
+        return f"\n\nData last loaded {_humanize_age(newest, _dt.datetime.now())}."
+    except Exception:
+        return ""
 
 
 def initialize_database(db_path: Optional[str] = None) -> VulnerabilityDatabase:
@@ -128,7 +292,9 @@ def initialize_database(db_path: Optional[str] = None) -> VulnerabilityDatabase:
         destructiveHint=False,
         idempotentHint=True,
         openWorldHint=False,
-    )
+    ),
+    tags={WRITE_TOOL_TAG},
+    auth=_require_write_scope,
 )
 def load_rapid7_parquet(parquet_path: str) -> str:
     """Load vulnerability data from existing Parquet file(s).
@@ -143,6 +309,10 @@ def load_rapid7_parquet(parquet_path: str) -> str:
         Summary of loaded data including row count and statistics.
     """
     global db
+
+    precondition = _write_precondition()
+    if precondition is not None:
+        return precondition
 
     try:
         ALLOWED_ROOT = (_DATA_DIR / "imports").resolve()
@@ -220,7 +390,7 @@ def load_rapid7_parquet(parquet_path: str) -> str:
         )
 
     except Exception as e:
-        return f"✗ Error loading Parquet files: {str(e)}"
+        return redact_secret(f"✗ Error loading Parquet files: {str(e)}")
 
 
 @mcp.tool(
@@ -230,7 +400,9 @@ def load_rapid7_parquet(parquet_path: str) -> str:
         destructiveHint=False,
         idempotentHint=True,
         openWorldHint=True,
-    )
+    ),
+    tags={WRITE_TOOL_TAG},
+    auth=_require_write_scope,
 )
 def start_rapid7_export(
     export_type: str = "vulnerability",
@@ -265,6 +437,10 @@ def start_rapid7_export(
     Returns:
         The export ID and next steps.
     """
+    precondition = _write_precondition()
+    if precondition is not None:
+        return precondition
+
     if export_type not in VALID_EXPORT_TYPES:
         return f"✗ Invalid export_type: '{export_type}'. Valid values are: {', '.join(VALID_EXPORT_TYPES)}"
 
@@ -394,7 +570,7 @@ def start_rapid7_export(
             )
 
     except Exception as e:
-        return f"✗ Error starting {export_type} export: {str(e)}"
+        return redact_secret(f"✗ Error starting {export_type} export: {str(e)}")
 
 
 @mcp.tool(
@@ -512,264 +688,18 @@ def _download_and_load_files(
 ) -> tuple:
     """Download an export's parquet files and load them into DuckDB.
 
-    Shared by the single-export worker and the multi-chunk remediation
-    orchestrator so the download/route/load path is not forked. Acquires
-    _db_lock around the load. If provided, on_downloaded() is called once
-    the files are actually downloaded and before the load begins, so a
-    caller can record the LOADING phase honestly. Returns (row_count,
-    row_counts, stats, validation_warnings).
+    Thin wrapper over the orchestrator's implementation, kept on this module so
+    tests can substitute it as the load seam. Returns (row_count, row_counts,
+    stats, validation_warnings).
     """
-    global db
-
-    parquet_urls = status_info["parquetFiles"]
-    file_data = download_all_files(parquet_urls, api_key)
-    if on_downloaded is not None:
-        on_downloaded()
-
-    temp_dir = tempfile.mkdtemp()
-    validation_warnings: list = []
-    try:
-        with _db_lock:
-            if db is None:
-                initialize_database()
-
-            result_list = status_info.get("result") or []
-            url_to_prefix = {}
-            for item in result_list:
-                prefix = item.get("prefix", "")
-                for url in item.get("urls", []):
-                    url_to_prefix[url] = prefix
-
-            prefix_file_map: dict = {}
-            for i, (url, data) in enumerate(zip(parquet_urls, file_data)):
-                temp_path = Path(temp_dir) / f"{export_type}_export_{i}.parquet"
-                temp_path.write_bytes(data)
-                prefix = url_to_prefix.get(url, "unknown")
-                prefix_file_map.setdefault(prefix, []).append(str(temp_path))
-                if len(data) < 100:
-                    validation_warnings.append(f"File {i + 1} (prefix={prefix}): unusually small ({len(data)} bytes)")
-
-            if export_type == "policy":
-                row_counts = db.load_parquet_files_by_prefix(prefix_file_map, skip_prefixes={"asset"})
-            elif export_type == "remediation":
-                row_counts = db.load_parquet_files_by_prefix(prefix_file_map, append=True)
-            else:
-                row_counts = db.load_parquet_files_by_prefix(prefix_file_map)
-
-            row_count = sum(row_counts.values())
-            if row_count == 0 and len(file_data) > 0:
-                validation_warnings.append(
-                    f"⚠️  {len(file_data)} file(s) downloaded but 0 rows loaded. "
-                    f"Prefixes received: {list(prefix_file_map.keys())}. "
-                    f"Check that prefixes match expected routing."
-                )
-
-            stats = db.get_stats()
-    finally:
-        shutil.rmtree(temp_dir, ignore_errors=True)
-
-    return row_count, row_counts, stats, validation_warnings
-
-
-def _run_download_and_load(export_id: str, export_type: str) -> None:
-    """Background worker: download parquet files and load them into DuckDB.
-
-    Runs in its own thread. All progress/results are written to the
-    ExportTracker row for this export_id rather than returned, since
-    nothing is waiting on a function return here. Any exception is caught
-    and recorded as a FAILED phase (with the error text) so the status
-    tools can report it, instead of the process crashing on a late/
-    duplicate response the way the synchronous version could when a client
-    had already timed out and cancelled the request.
-    """
-    tracker = _tracker()
-    try:
-        config = load_config()
-        status_info = get_export_status(config, export_id)
-        parquet_urls = status_info["parquetFiles"]
-
-        tracker.set_phase(
-            export_id,
-            PHASE_DOWNLOADING,
-            phase_detail=f"downloading {len(parquet_urls)} file(s)",
-        )
-        print(f"Downloading {len(parquet_urls)} {export_type} files...", file=sys.stderr)
-
-        def _mark_loading() -> None:
-            tracker.set_phase(
-                export_id,
-                PHASE_LOADING,
-                phase_detail=f"{len(parquet_urls)} file(s) downloaded, loading into database",
-            )
-
-        row_count, row_counts, stats, validation_warnings = _download_and_load_files(
-            export_type, status_info, config["api_key"], on_downloaded=_mark_loading
-        )
-        row_info = f"Rows loaded: {row_count}\nPer-table row counts: {json.dumps(row_counts, default=str)}"
-
-        warnings_section = ""
-        if validation_warnings:
-            warnings_section = "\nValidation Warnings:\n" + "\n".join(f"  {w}" for w in validation_warnings) + "\n"
-
-        message = (
-            f"✓ {export_type.capitalize()} data loaded successfully.\n\n"
-            f"Export ID: {export_id}\n"
-            f"Files processed: {len(parquet_urls)}\n"
-            f"{row_info}\n"
-            f"{warnings_section}\n"
-            f"Statistics:\n"
-            f"{json.dumps(stats, indent=2, default=str)}\n\n"
-            f"Query the data with query_rapid7, get_rapid7_schema, or get_rapid7_stats."
-        )
-        # Record the completed load with its parquet URLs and final row count.
-        tracker.save_export(
-            export_id=export_id,
-            status=PHASE_COMPLETE,
-            parquet_urls=parquet_urls,
-            row_count=row_count,
-            export_type=export_type,
-        )
-        tracker.set_phase(export_id, PHASE_COMPLETE, phase_detail=None, message=message, row_count=row_count)
-
-    except Exception as e:
-        error_text = f"{e}\n{traceback.format_exc()}"
-        message = (
-            f"✗ Error downloading/loading {export_type}: {str(e)}\n\n"
-            f"Export ID: {export_id}\n"
-            f"Retry with: download_rapid7_export("
-            f'export_id="{export_id}", '
-            f'export_type="{export_type}")\n\n'
-            f"{error_text}"
-        )
-        tracker.set_phase(export_id, PHASE_FAILED, phase_detail=None, message=message)
-    finally:
-        tracker.close()
-
-
-def _create_remediation_chunk_waiting(config: dict, chunk_start: str, chunk_end: str) -> str:
-    """Create one remediation chunk, waiting out any foreign in-flight export.
-
-    The platform permits only one remediation export in flight at a time. If
-    another is running (this job's previous chunk, or an unrelated export),
-    create is rejected with ExportInProgressError. We must NOT adopt that
-    foreign id — it may cover a different date range — so we back off and
-    recreate THIS chunk's own range until the platform frees up.
-    """
-    deadline = time.monotonic() + _IN_PROGRESS_MAX_WAIT_SECS
-    while True:
-        try:
-            return create_remediation_export(config, chunk_start, chunk_end)
-        except ExportInProgressError:
-            if time.monotonic() >= deadline:
-                raise
-            print(
-                f"Remediation export slot busy; waiting to create {chunk_start} → {chunk_end}...",
-                file=sys.stderr,
-            )
-            time.sleep(_IN_PROGRESS_RETRY_SECS)
-
-
-def _run_remediation_job(job_id: str, chunks: list) -> None:
-    """Background worker: load a multi-window remediation range as one job.
-
-    Processes each ≤31-day window strictly sequentially (create → poll →
-    download → load append), because the platform serialises remediation
-    exports anyway. Per-chunk outcome is persisted on the export_jobs row so a
-    partial failure names exactly which windows loaded and which did not.
-    """
-    tracker = _tracker()
-    try:
-        config = load_config()
-        total = len(chunks)
-        total_rows = 0
-
-        for i, chunk in enumerate(chunks):
-            cs, ce = chunk["start"], chunk["end"]
-            window = f"{cs} → {ce}"
-
-            def _mark(state: str) -> None:
-                chunks[i]["status"] = state
-                tracker.update_job(
-                    job_id,
-                    current_index=i,
-                    chunks=chunks,
-                    message=f"chunk {i + 1}/{total} ({window}), {state}",
-                )
-
-            _mark("creating")
-            eid = _create_remediation_chunk_waiting(config, cs, ce)
-            chunks[i]["export_id"] = eid
-
-            _mark("waiting for export")
-            parquet_urls = poll_until_complete(config, eid)
-            status_info = get_export_status(config, eid)
-            if not parquet_urls:
-                status_info["parquetFiles"] = status_info.get("parquetFiles", [])
-
-            row_count, _, _, _ = _download_and_load_files(
-                "remediation", status_info, config["api_key"], on_downloaded=lambda: _mark("loading")
-            )
-            # Mark loaded the instant the append has committed, BEFORE any
-            # further tracker writes. If save_export below throws, the window
-            # is already recorded loaded so the failure report can never tell
-            # the user to re-run a window whose rows are already present.
-            total_rows += row_count
-            chunks[i]["row_count"] = row_count
-            _mark("loaded")
-            tracker.save_export(
-                export_id=eid,
-                status=PHASE_COMPLETE,
-                parquet_urls=parquet_urls,
-                row_count=row_count,
-                export_type="remediation",
-            )
-
-        loaded = [f"{c['start']} → {c['end']} ({c.get('row_count', 0)} rows)" for c in chunks]
-        message = (
-            f"✓ Remediation data loaded for all {total} window(s).\n\n"
-            f"Total rows: {total_rows}\n"
-            f"Windows loaded:\n" + "\n".join(f"  {w}" for w in loaded) + "\n\n"
-            "Query the data with query_rapid7, get_rapid7_schema, or get_rapid7_stats."
-        )
-        tracker.update_job(job_id, status=JOB_COMPLETE, current_index=total - 1, chunks=chunks, message=message)
-
-    except Exception as e:
-        error_text = f"{e}\n{traceback.format_exc()}"
-        loaded = [f"{c['start']} → {c['end']}" for c in chunks if c.get("status") == "loaded"]
-        missing = [f"{c['start']} → {c['end']}" for c in chunks if c.get("status") != "loaded"]
-        message = (
-            f"✗ Remediation load failed partway through.\n\n"
-            f"Loaded windows (kept): {', '.join(loaded) or 'none'}\n"
-            f"Missing windows: {', '.join(missing) or 'none'}\n\n"
-            f"Re-run only the missing range with start_rapid7_export("
-            f'export_type="remediation", start_date="...", end_date="...").\n\n'
-            f"{error_text}"
-        )
-        tracker.update_job(job_id, status=JOB_FAILED, chunks=chunks, message=message)
-    finally:
-        tracker.close()
+    return orchestrator.download_and_load_files(
+        _orchestrator_context(), export_type, status_info, api_key, on_downloaded=on_downloaded
+    )
 
 
 def _start_remediation_job(start_date: str, end_date: str) -> str:
     """Create and launch a multi-window remediation load job. Returns the job_id."""
-    chunk_ranges = build_remediation_date_chunks(start_date, end_date)
-    chunks = [{"start": cs, "end": ce, "export_id": None, "status": "pending"} for cs, ce in chunk_ranges]
-
-    job_id = f"remediation-{uuid.uuid4().hex[:12]}"
-    tracker = _tracker()
-    tracker.create_job(
-        job_id=job_id,
-        export_type="remediation",
-        start_date=start_date,
-        end_date=end_date,
-        chunks=chunks,
-        status=JOB_RUNNING,
-    )
-    tracker.close()
-
-    thread = threading.Thread(target=_run_remediation_job, args=(job_id, chunks), daemon=True)
-    thread.start()
-    return job_id
+    return orchestrator.start_remediation_job(_orchestrator_context(), start_date, end_date)
 
 
 def _format_job_status(job: dict) -> str:
@@ -798,7 +728,9 @@ def _format_job_status(job: dict) -> str:
         destructiveHint=False,
         idempotentHint=True,
         openWorldHint=True,
-    )
+    ),
+    tags={WRITE_TOOL_TAG},
+    auth=_require_write_scope,
 )
 def download_rapid7_export(export_id: str, export_type: str = "vulnerability") -> str:
     """Start downloading a completed Rapid7 export and loading it into the database.
@@ -818,6 +750,10 @@ def download_rapid7_export(export_id: str, export_type: str = "vulnerability") -
         Confirmation that the background job has started, plus how to
         check on it.
     """
+    precondition = _write_precondition()
+    if precondition is not None:
+        return precondition
+
     if export_type not in VALID_EXPORT_TYPES:
         return f"✗ Invalid export_type: '{export_type}'. Valid values are: {', '.join(VALID_EXPORT_TYPES)}"
 
@@ -871,8 +807,8 @@ def download_rapid7_export(export_id: str, export_type: str = "vulnerability") -
         tracker.close()
 
         thread = threading.Thread(
-            target=_run_download_and_load,
-            args=(export_id, export_type),
+            target=orchestrator.run_download_and_load,
+            args=(_orchestrator_context(), export_id, export_type),
             daemon=True,
         )
         thread.start()
@@ -886,7 +822,7 @@ def download_rapid7_export(export_id: str, export_type: str = "vulnerability") -
         )
 
     except Exception as e:
-        return (
+        return redact_secret(
             f"✗ Error starting download for {export_type}: {str(e)}\n\n"
             f"Export ID: {export_id}\n"
             f"Retry with: download_rapid7_export("
@@ -956,6 +892,13 @@ def query_rapid7(sql: str) -> str:
     """
     global db
 
+    # Refuse before taking the lock or touching db: with no dataset published,
+    # an empty result would be reported to the user as "you have no
+    # vulnerabilities", which is worse than an explanation.
+    precondition = _read_precondition()
+    if precondition is not None:
+        return precondition
+
     # Acquire the lock BEFORE touching db at all — has_data() opens its own
     # DuckDB connection, which conflicts with a background load's read-write
     # connection. Locking first turns that into a clean busy response.
@@ -970,7 +913,7 @@ def query_rapid7(sql: str) -> str:
             return "Error: No data loaded. Please run start_rapid7_export and download_rapid7_export first."
         results = db.query(sql)
         result_text = json.dumps(results, indent=2, default=str)
-        return f"Query executed successfully. {len(results)} rows returned.\n\n{result_text}"
+        return f"Query executed successfully. {len(results)} rows returned.\n\n{result_text}{_freshness_note()}"
     except Exception as e:
         return f"Error executing query: {str(e)}"
     finally:
@@ -999,6 +942,13 @@ def get_rapid7_schema() -> str:
         Table schemas as formatted JSON, keyed by table name
     """
     global db
+
+    # Refuse before taking the lock or touching db: with no dataset published,
+    # an empty result would be reported to the user as "you have no
+    # vulnerabilities", which is worse than an explanation.
+    precondition = _read_precondition()
+    if precondition is not None:
+        return precondition
 
     if not _db_lock.acquire(blocking=False):
         return (
@@ -1041,6 +991,13 @@ def get_rapid7_stats() -> str:
     """
     global db
 
+    # Refuse before taking the lock or touching db: with no dataset published,
+    # an empty result would be reported to the user as "you have no
+    # vulnerabilities", which is worse than an explanation.
+    precondition = _read_precondition()
+    if precondition is not None:
+        return precondition
+
     if not _db_lock.acquire(blocking=False):
         return (
             "⏳ A background download/load is currently in progress, so "
@@ -1066,7 +1023,9 @@ def get_rapid7_stats() -> str:
         destructiveHint=True,
         idempotentHint=True,
         openWorldHint=False,
-    )
+    ),
+    tags={WRITE_TOOL_TAG},
+    auth=_require_write_scope,
 )
 def purge_rapid7_data() -> str:
     """Permanently delete all local Rapid7 data and tracking databases.
@@ -1084,6 +1043,10 @@ def purge_rapid7_data() -> str:
         Confirmation of purged data.
     """
     global db
+
+    precondition = _write_precondition()
+    if precondition is not None:
+        return precondition
 
     # Refuse to purge while a background load holds the database — dropping the
     # file mid-load would corrupt the in-flight load and leave stale tracker
@@ -1131,7 +1094,7 @@ def purge_rapid7_data() -> str:
         )
 
     except Exception as e:
-        return f"✗ Error purging data: {str(e)}"
+        return redact_secret(f"✗ Error purging data: {str(e)}")
     finally:
         _db_lock.release()
 
@@ -1186,6 +1149,22 @@ def list_rapid7_exports(limit: int = 10) -> str:
         return f"✗ Error listing exports: {str(e)}"
 
 
+def _configure_logging() -> None:
+    """Send the shared export and artifact log lines to stderr.
+
+    Those modules log under ``rapid7.refresh`` so the refresh CLI can format
+    them, but the server installs no handler of its own, and without one their
+    INFO lines (export progress, artifact downloads) are silently dropped.
+    """
+    handler = logging.StreamHandler(sys.stderr)
+    handler.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(name)s %(message)s"))
+    refresh_logger = logging.getLogger("rapid7.refresh")
+    refresh_logger.handlers.clear()
+    refresh_logger.addHandler(handler)
+    refresh_logger.setLevel(logging.INFO)
+    refresh_logger.propagate = False
+
+
 def main():
     """Entry point for the MCP server command."""
     # Handle help flag
@@ -1206,6 +1185,12 @@ def main():
         print("  MCP_HOST          HTTP bind address (default: 0.0.0.0)")
         print("  MCP_PORT          HTTP port (default: 8000)")
         print()
+        print("  Inbound auth (required for HTTP transport; see docs/authentication.md):")
+        print("  MCP_AUTH_JWKS_URI       IdP JWKS endpoint (enables auth when set)")
+        print("  MCP_AUTH_ISSUER         Token issuer(s), comma-separated for several")
+        print("  MCP_AUTH_AUDIENCE       Audience this server is registered as")
+        print("  MCP_AUTH_REQUIRED_SCOPES  Optional required scopes, comma-separated")
+        print()
         print("Example:")
         print("  rapid7-mcp-server /path/to/rapid7_bulk_export.db")
         print()
@@ -1215,6 +1200,8 @@ def main():
         print("See README.md for configuration details.")
         sys.exit(0)
 
+    _configure_logging()
+
     # Ensure data directory exists, including the imports/ subdir that
     # load_rapid7_parquet reads from (its allowed root), so a fresh
     # DATA_DIR/PLUGIN_DATA has the path users are told to copy files into.
@@ -1223,6 +1210,36 @@ def main():
 
     # Get database path from args or use default
     db_path = sys.argv[1] if len(sys.argv) > 1 else str(_DATA_DIR / "rapid7_bulk_export.db")
+
+    # Fetch the current artifact before opening the database. Container Apps
+    # cannot mount Blob, so the finished database is downloaded over HTTPS to
+    # local disk and served read-only from there. No-op in local mode (no Blob
+    # configured), so the stdio path is untouched.
+    try:
+        version = download_artifact(Path(db_path))
+        if version is not None:
+            print(f"Downloaded artifact version {version} to {db_path}", file=sys.stderr)
+    except LookupError:
+        # Hosted, but no complete version exists yet. A bootstrap condition, not a
+        # fault: only the refresh job publishes an artifact, so a freshly deployed
+        # environment has none until one has run. Start anyway and let the read
+        # tools explain themselves — exiting here means the deployment can never
+        # become healthy on its own, and the caller sees a timeout instead of a
+        # reason.
+        global _AWAITING_FIRST_REFRESH
+        _AWAITING_FIRST_REFRESH = True
+        print(
+            "No artifact has been published yet; starting with no data. "
+            "Queries will explain this until the refresh job completes and this "
+            "app's revision is restarted.",
+            file=sys.stderr,
+        )
+    except Exception as e:
+        # Anything else — Blob unreachable, denied, or a corrupt download — is a
+        # real fault and must stay loud. Failing closed here is correct; failing
+        # closed on an absent artifact was not.
+        print(f"Refusing to start: could not download the current artifact: {e}", file=sys.stderr)
+        sys.exit(1)
 
     # Initialize database
     try:
@@ -1249,6 +1266,17 @@ def main():
     # Determine transport mode from environment
     transport = os.environ.get("MCP_TRANSPORT", "stdio")
     if transport == "http":
+        # Fail closed: an unauthenticated HTTP deployment is exactly the exposure
+        # this exists to prevent, so refuse to start rather than serve openly.
+        # stdio needs no such guard — the client owns the process.
+        if _auth is None:
+            print(
+                "Refusing to start HTTP transport with no inbound authentication configured. "
+                f"Set {ENV_JWKS_URI}, {ENV_ISSUER} and {ENV_AUDIENCE} (see docs/authentication.md), "
+                "or use stdio for local, client-owned use.",
+                file=sys.stderr,
+            )
+            sys.exit(1)
         host = os.environ.get("MCP_HOST", "0.0.0.0")  # nosec B104 - intentional for Docker
         port = int(os.environ.get("MCP_PORT", "8000"))
         print(f"Starting HTTP transport on {host}:{port}", file=sys.stderr)

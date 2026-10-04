@@ -7,9 +7,21 @@ of vulnerability data.
 
 import os
 import sys
+import threading
+from datetime import datetime
 from typing import Any, Dict, List, Optional, Set, Tuple, Union
 
+import duckdb
+
 from .db_utils import connect_with_retry, duckdb_connection
+
+# No limit unless one is configured, so local stdio and Docker queries run to
+# completion as they always have. A hosted deployment sets a ceiling below the
+# ~100-second tool budget Copilot Studio enforces, so a query is cancelled with a
+# friendly message before the platform kills the whole call. DuckDB 1.5.2 has no
+# statement_timeout setting (setting it raises CatalogException), so the limit is
+# enforced by a watchdog timer instead.
+DEFAULT_QUERY_TIMEOUT_SECONDS = 0.0
 
 KNOWN_TABLES = [
     "assets",
@@ -19,6 +31,15 @@ KNOWN_TABLES = [
     "vulnerability_remediation",
     "asset_software",
 ]
+
+# Bookkeeping table recording when each Rapid7 table was last loaded. It lives
+# inside the data database (not the tracker) so the timestamps travel with the
+# database file itself: a hosted refresh job builds the artifact in its own
+# container, and its tracker is never shared with the serving replica, so
+# tracker-based freshness would go blind. Kept out of KNOWN_TABLES on purpose so
+# it never appears in schema/stats output or is mistaken for Rapid7 data — the
+# leading underscore also marks it as internal.
+LOAD_METADATA_TABLE = "_load_metadata"
 
 # Maps Rapid7 API result prefixes to target DuckDB tables.
 # Tuple values indicate (table_name, source_column_value) for policy prefixes.
@@ -56,6 +77,27 @@ def _normalize_prefix(prefix: str) -> str:
     if base_prefix in PREFIX_TABLE_MAP:
         return base_prefix
     return prefix
+
+
+def _resolve_query_timeout() -> float:
+    """Return the configured query timeout in seconds, or the default if unset.
+
+    A value of 0 or negative disables the timeout, as does leaving it unset. An
+    unparseable value is ignored with a warning and the default is used, so the
+    mistake is visible in the log rather than silent.
+    """
+    configured = os.environ.get("DUCKDB_QUERY_TIMEOUT_SECONDS", "").strip()
+    if not configured:
+        return DEFAULT_QUERY_TIMEOUT_SECONDS
+    try:
+        return float(configured)
+    except ValueError:
+        print(
+            f"Warning: ignoring invalid DUCKDB_QUERY_TIMEOUT_SECONDS '{configured}', "
+            f"using {DEFAULT_QUERY_TIMEOUT_SECONDS}",
+            file=sys.stderr,
+        )
+        return DEFAULT_QUERY_TIMEOUT_SECONDS
 
 
 class VulnerabilityDatabase:
@@ -227,6 +269,12 @@ class VulnerabilityDatabase:
                 after = result[0] if result else 0
                 row_counts[table_name] = after - counts_before.get(table_name, 0)
 
+            # Stamp each table we wrote with a load time, so a query can report
+            # how old the data is. Same connection as the load so the timestamps
+            # commit atomically with the rows they describe.
+            if tables_touched:
+                self._record_load_metadata(conn, tables_touched)
+
         # Reclaim disk space from dropped tables. DuckDB does not shrink the file
         # on DROP TABLE or VACUUM — the only way is to copy to a fresh database.
         if not append and tables_to_replace:
@@ -259,6 +307,49 @@ class VulnerabilityDatabase:
             if os.path.exists(compact_path):
                 os.remove(compact_path)
 
+    def _record_load_metadata(self, conn, table_names: Set[str]) -> None:
+        """Record the current time as the last-loaded time for each table.
+
+        Written on the same connection as the load so the stamp commits with
+        the rows it describes. Uses the CREATE TABLE IF NOT EXISTS + upsert
+        idiom so an existing database is migrated in place on first load.
+        """
+        conn.execute(
+            f"""
+            CREATE TABLE IF NOT EXISTS {LOAD_METADATA_TABLE} (
+                table_name VARCHAR PRIMARY KEY,
+                loaded_at TIMESTAMP NOT NULL
+            )
+            """  # nosec B608
+        )
+        now = datetime.now()
+        for table_name in table_names:
+            conn.execute(
+                f"""
+                INSERT INTO {LOAD_METADATA_TABLE} (table_name, loaded_at)
+                VALUES (?, ?)
+                ON CONFLICT (table_name) DO UPDATE SET loaded_at = EXCLUDED.loaded_at
+                """,  # nosec B608
+                [table_name, now],
+            )
+
+    def get_load_metadata(self) -> Dict[str, datetime]:
+        """Return each loaded table's last-loaded time, or an empty mapping.
+
+        Returns an empty dict when nothing has ever been loaded (the metadata
+        table does not yet exist), which the caller treats as "no data age to
+        report" rather than an error.
+        """
+        with duckdb_connection(self.db_path, read_only=True) as conn:
+            exists = conn.execute(
+                "SELECT COUNT(*) FROM information_schema.tables WHERE table_name = ?",
+                [LOAD_METADATA_TABLE],
+            ).fetchone()
+            if not exists or exists[0] == 0:
+                return {}
+            rows = conn.execute(f"SELECT table_name, loaded_at FROM {LOAD_METADATA_TABLE}").fetchall()  # nosec B608
+        return {row[0]: row[1] for row in rows}
+
     def query(self, sql: str, params: Optional[Dict[str, Any]] = None) -> List[Dict[str, Any]]:
         """
         Execute a SQL query and return results as list of dictionaries.
@@ -266,6 +357,13 @@ class VulnerabilityDatabase:
         Opens a short-lived read-only connection with external filesystem and
         network access disabled at the DuckDB engine level, so user SQL cannot
         reach read_parquet, read_csv, glob, or network resources.
+
+        A watchdog timer bounds the query's wall-clock time. DuckDB 1.5.2 has no
+        statement_timeout setting, so when the limit elapses the timer calls
+        conn.interrupt(), which surfaces as duckdb.InterruptException and is
+        turned into a clear, actionable error. The timer is always cancelled on
+        return so no timer thread leaks on the happy path. No timer is armed
+        unless DUCKDB_QUERY_TIMEOUT_SECONDS sets a positive limit.
 
         Args:
             sql: SQL query string
@@ -275,14 +373,24 @@ class VulnerabilityDatabase:
             List of dictionaries, one per row
 
         Raises:
-            ValueError: If the query fails
+            ValueError: If the query is cancelled for exceeding the time limit,
+                or if it otherwise fails.
         """
+        timeout_seconds = _resolve_query_timeout()
         try:
             with duckdb_connection(self.db_path, read_only=True, disable_external_access=True) as conn:
-                if params:
-                    result = conn.execute(sql, params).fetchall()
-                else:
-                    result = conn.execute(sql).fetchall()
+                timer: Optional[threading.Timer] = None
+                if timeout_seconds > 0:
+                    timer = threading.Timer(timeout_seconds, conn.interrupt)
+                    timer.start()
+                try:
+                    if params:
+                        result = conn.execute(sql, params).fetchall()
+                    else:
+                        result = conn.execute(sql).fetchall()
+                finally:
+                    if timer is not None:
+                        timer.cancel()
 
                 description = conn.description
                 if not description:
@@ -291,6 +399,13 @@ class VulnerabilityDatabase:
                 columns = [desc[0] for desc in description]
                 return [dict(zip(columns, row)) for row in result]
 
+        except duckdb.InterruptException as e:
+            # Distinct from the generic wrapper below so callers can show the
+            # user why nothing came back and how to make the query fit.
+            raise ValueError(
+                f"Query cancelled: it ran longer than the {timeout_seconds:g}-second limit. "
+                "Narrow the query with a more selective WHERE filter or add a LIMIT, then try again."
+            ) from e
         except Exception as e:
             raise ValueError(f"Query execution failed: {str(e)}") from e
 

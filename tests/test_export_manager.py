@@ -5,6 +5,8 @@ Tests the export lifecycle functions including creating exports,
 querying status, and polling for completion.
 """
 
+import logging
+
 import pytest
 import responses
 
@@ -399,6 +401,61 @@ class TestPollUntilComplete:
     """Tests for the poll_until_complete function."""
 
     @responses.activate
+    @responses.activate
+    def test_poll_logs_export_id_and_elapsed_each_poll(self, caplog):
+        """Each poll logs the export id, status, poll count and elapsed seconds.
+
+        This is the only progress signal during a wait that routinely runs for
+        minutes in the scheduled job. Without the poll count and elapsed time a
+        slow export and a hung one are indistinguishable in the log.
+        """
+        endpoint = "https://us.api.insight.rapid7.com/export/graphql"
+
+        def _body(status, result):
+            return {
+                "data": {
+                    "export": {
+                        "id": "exp-123",
+                        "status": status,
+                        "dataset": "vulnerability",
+                        "timestamp": None,
+                        "result": result,
+                    }
+                }
+            }
+
+        responses.add(responses.POST, endpoint, json=_body("PENDING", None), status=200)
+        responses.add(responses.POST, endpoint, json=_body("PROCESSING", None), status=200)
+        responses.add(
+            responses.POST,
+            endpoint,
+            json=_body("COMPLETE", [{"prefix": "asset_vulnerability", "urls": ["https://example.com/f.parquet"]}]),
+            status=200,
+        )
+
+        config = {"endpoint": endpoint, "api_key": "test-key"}
+
+        from src.export_manager import poll_until_complete
+
+        with caplog.at_level(logging.INFO, logger="rapid7.refresh.export"):
+            urls = poll_until_complete(config, "exp-123", interval=0)
+
+        assert urls == ["https://example.com/f.parquet"]
+        text = caplog.text
+        # The export id must appear so a run can be correlated with Rapid7 support.
+        assert "exp-123" in text
+        # Every intermediate status is reported, not just the terminal one.
+        assert "status=PENDING" in text
+        assert "status=PROCESSING" in text
+        # Poll count and elapsed time are what distinguish slow from stuck.
+        assert "poll=1" in text
+        assert "poll=3" in text
+        assert "elapsed=" in text
+        # The terminal line states how many files are ready.
+        assert "ready after" in text
+        assert "1 file(s)" in text
+
+    @responses.activate
     def test_poll_until_complete_with_immediate_complete(self):
         """Test poll_until_complete when export is already COMPLETE."""
         responses.add(
@@ -433,7 +490,7 @@ class TestPollUntilComplete:
         assert len(responses.calls) == 1
 
     @responses.activate
-    def test_poll_until_complete_with_pending_then_complete(self, capsys):
+    def test_poll_until_complete_with_pending_then_complete(self, caplog):
         """Test poll_until_complete when export transitions from PENDING to COMPLETE."""
         responses.add(
             responses.POST,
@@ -473,16 +530,17 @@ class TestPollUntilComplete:
 
         from src.export_manager import poll_until_complete
 
+        caplog.set_level(logging.INFO, logger="rapid7.refresh.export")
         urls = poll_until_complete(config, "test-export", interval=0.1)
 
         assert len(urls) == 1
         assert urls[0] == "https://example.com/file.parquet"
         assert len(responses.calls) == 2
 
-        # Status updates are printed to stderr
-        captured = capsys.readouterr()
-        assert "Export status: PENDING" in captured.err
-        assert "Export status: COMPLETE" in captured.err
+        # Status updates are LOGGED (not printed) so a scheduled run gets
+        # timestamps, levels, and the export id on every line.
+        assert "status=PENDING" in caplog.text
+        assert "status=COMPLETE" in caplog.text
 
     @responses.activate
     def test_poll_until_complete_with_processing_then_complete(self):
@@ -558,7 +616,7 @@ class TestPollUntilComplete:
             poll_until_complete(config, "failed-export", interval=1)
 
     @responses.activate
-    def test_poll_until_complete_with_multiple_transitions(self, capsys):
+    def test_poll_until_complete_with_multiple_transitions(self, caplog):
         """Test poll_until_complete with multiple status transitions."""
         responses.add(
             responses.POST,
@@ -621,15 +679,15 @@ class TestPollUntilComplete:
 
         from src.export_manager import poll_until_complete
 
+        caplog.set_level(logging.INFO, logger="rapid7.refresh.export")
         urls = poll_until_complete(config, "test-export", interval=0.1)
 
         assert len(urls) == 3
         assert len(responses.calls) == 3
 
-        captured = capsys.readouterr()
-        assert "Export status: PENDING" in captured.err
-        assert "Export status: PROCESSING" in captured.err
-        assert "Export status: COMPLETE" in captured.err
+        assert "status=PENDING" in caplog.text
+        assert "status=PROCESSING" in caplog.text
+        assert "status=COMPLETE" in caplog.text
 
     @responses.activate
     def test_poll_until_complete_respects_interval(self):
