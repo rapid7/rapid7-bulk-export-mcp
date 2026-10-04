@@ -37,7 +37,7 @@ import pytest
 
 from src.config import load_config
 from src.download import download_all_files
-from src.duckdb_loader import VulnerabilityDatabase
+from src.duckdb_loader import KNOWN_TABLES, VulnerabilityDatabase
 from src.export_manager import (
     build_remediation_date_chunks,
     create_policy_export,
@@ -387,11 +387,19 @@ def test_FullExportRoundTrip_ParallelWithToolCoverage():
         assert snap.row_count > 0, "orchestrator loaded 0 vulnerability rows"
         print(f"  ✓ run_snapshot_refresh(vulnerability): {snap.row_count:,} rows into a fresh artifact")
 
-        # The refresh built into the db_path it was handed, not the live DB.
+        # The refresh built into the db_path it was handed, not the live DB. The
+        # reported count spans every table the export loaded (a vulnerability
+        # export also fills assets and vulnerability_exceptions), so compare it
+        # with the artifact's total across those tables, not vulnerabilities alone.
         orch_db = VulnerabilityDatabase(orch_db_path)
-        orch_rows = orch_db.query("SELECT COUNT(*) AS cnt FROM vulnerabilities")[0]["cnt"]
+        present = {
+            r["table_name"]
+            for r in orch_db.query("SELECT table_name FROM information_schema.tables")
+            if r["table_name"] in KNOWN_TABLES
+        }
+        orch_rows = sum(orch_db.query(f"SELECT COUNT(*) AS cnt FROM {t}")[0]["cnt"] for t in present)  # nosec B608
         assert orch_rows == snap.row_count, "artifact row count does not match the reported window"
-        print(f"  ✓ artifact at chosen db_path holds {orch_rows:,} rows (live DB untouched)")
+        print(f"  ✓ artifact at chosen db_path holds {orch_rows:,} rows across {sorted(present)} (live DB untouched)")
 
         # refresh_all across snapshot types into one artifact; every window
         # attempted, cross-type coexistence preserved.
