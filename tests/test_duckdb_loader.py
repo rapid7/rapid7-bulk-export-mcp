@@ -3,13 +3,20 @@ Tests for the DuckDB loader module.
 """
 
 import tempfile
+import threading
+from datetime import datetime
 from pathlib import Path
 
 import pyarrow as pa
 import pyarrow.parquet as pq
 import pytest
 
-from src.duckdb_loader import VulnerabilityDatabase
+from src.duckdb_loader import DEFAULT_QUERY_TIMEOUT_SECONDS, VulnerabilityDatabase, _resolve_query_timeout
+
+# A query with no table dependency that runs long enough to blow a sub-second
+# timeout: a self-join over range() forces a large intermediate the engine must
+# grind through, and range() needs no external access so it works under lockdown.
+_SLOW_QUERY = "SELECT COUNT(*) FROM range(1000000) t1, range(1000) t2 WHERE t1.range % 7 = t2.range % 7"
 
 
 @pytest.fixture
@@ -477,4 +484,163 @@ def test_append_returns_per_call_inserted_counts(sample_remediation_parquet_file
     assert total == 6
     # And the table really does hold 6 rows.
     assert db.query("SELECT COUNT(*) AS c FROM vulnerability_remediation")[0]["c"] == 6
+    db.close()
+
+
+def test_query_timeout_cancels_slow_query(sample_parquet_file, monkeypatch, tmp_path):
+    """A query exceeding the configured limit is cancelled with a friendly message."""
+    monkeypatch.setenv("DUCKDB_QUERY_TIMEOUT_SECONDS", "0.2")
+    db = VulnerabilityDatabase(str(tmp_path / "timeout.db"))
+    db.load_parquet_files_by_prefix({"asset_vulnerability": [sample_parquet_file]})
+
+    with pytest.raises(ValueError, match="Query cancelled") as exc_info:
+        db.query(_SLOW_QUERY)
+
+    message = str(exc_info.value)
+    # The cancellation must be distinguishable from the generic failure wrapper
+    # and must guide the user toward a query that fits.
+    assert "Query execution failed" not in message
+    assert "LIMIT" in message
+    assert "WHERE" in message
+
+    db.close()
+
+
+def test_query_timeout_does_not_affect_fast_query(sample_parquet_file, monkeypatch, tmp_path):
+    """A fast query completes normally even with a small timeout configured."""
+    monkeypatch.setenv("DUCKDB_QUERY_TIMEOUT_SECONDS", "0.2")
+    db = VulnerabilityDatabase(str(tmp_path / "fast.db"))
+    db.load_parquet_files_by_prefix({"asset_vulnerability": [sample_parquet_file]})
+
+    results = db.query("SELECT COUNT(*) AS cnt FROM vulnerabilities")
+    assert results[0]["cnt"] == 3
+
+    db.close()
+
+
+def test_query_timeout_timer_cancelled_on_success(sample_parquet_file, monkeypatch, tmp_path):
+    """A successful query leaves no watchdog timer thread running."""
+    monkeypatch.setenv("DUCKDB_QUERY_TIMEOUT_SECONDS", "30")
+    db = VulnerabilityDatabase(str(tmp_path / "no_leak.db"))
+    db.load_parquet_files_by_prefix({"asset_vulnerability": [sample_parquet_file]})
+
+    before = threading.active_count()
+    db.query("SELECT COUNT(*) AS cnt FROM vulnerabilities")
+    # The timer is cancelled synchronously inside query(), so the thread count
+    # returns to baseline immediately — a leaked timer would leave a live thread
+    # counting down toward the 30-second interrupt.
+    assert threading.active_count() == before
+
+    db.close()
+
+
+def test_query_timeout_disabled_runs_slow_query(sample_parquet_file, monkeypatch, tmp_path):
+    """A limit of 0 disables the watchdog so no interrupt fires."""
+    monkeypatch.setenv("DUCKDB_QUERY_TIMEOUT_SECONDS", "0")
+    db = VulnerabilityDatabase(str(tmp_path / "disabled.db"))
+    db.load_parquet_files_by_prefix({"asset_vulnerability": [sample_parquet_file]})
+
+    before = threading.active_count()
+    # With the guard off this completes rather than being cancelled; a bounded
+    # slow query keeps the test quick while proving no timer was armed.
+    results = db.query("SELECT COUNT(*) AS cnt FROM range(200000) WHERE range % 3 = 0")
+    assert results[0]["cnt"] > 0
+    assert threading.active_count() == before
+
+    db.close()
+
+
+def test_resolve_query_timeout_disabled_when_unset(monkeypatch):
+    """Unset means no limit, so local queries run to completion as before."""
+    monkeypatch.delenv("DUCKDB_QUERY_TIMEOUT_SECONDS", raising=False)
+    assert _resolve_query_timeout() == DEFAULT_QUERY_TIMEOUT_SECONDS
+    assert DEFAULT_QUERY_TIMEOUT_SECONDS <= 0
+
+
+def test_query_timeout_unset_arms_no_timer(sample_parquet_file, monkeypatch, tmp_path):
+    """With the variable unset, a query arms no watchdog timer at all."""
+    monkeypatch.delenv("DUCKDB_QUERY_TIMEOUT_SECONDS", raising=False)
+    db = VulnerabilityDatabase(str(tmp_path / "unset.db"))
+    db.load_parquet_files_by_prefix({"asset_vulnerability": [sample_parquet_file]})
+
+    armed = []
+    real_timer = threading.Timer
+
+    def _recording_timer(*args, **kwargs):
+        armed.append(args)
+        return real_timer(*args, **kwargs)
+
+    monkeypatch.setattr(threading, "Timer", _recording_timer)
+    db.query("SELECT COUNT(*) AS cnt FROM vulnerabilities")
+
+    assert armed == []
+    db.close()
+
+
+@pytest.mark.parametrize("value", ["inf", "-inf", "nan", "Infinity"])
+def test_resolve_query_timeout_non_finite_falls_back_with_warning(monkeypatch, capsys, value):
+    """Non-finite values parse as floats but cannot arm a timer, so they are rejected."""
+    monkeypatch.setenv("DUCKDB_QUERY_TIMEOUT_SECONDS", value)
+    assert _resolve_query_timeout() == DEFAULT_QUERY_TIMEOUT_SECONDS
+    assert "ignoring invalid DUCKDB_QUERY_TIMEOUT_SECONDS" in capsys.readouterr().err
+
+
+def test_resolve_query_timeout_invalid_falls_back_with_warning(monkeypatch, capsys):
+    """An unparseable value falls back to the default and warns on stderr."""
+    monkeypatch.setenv("DUCKDB_QUERY_TIMEOUT_SECONDS", "not-a-number")
+    assert _resolve_query_timeout() == DEFAULT_QUERY_TIMEOUT_SECONDS
+    captured = capsys.readouterr()
+    assert "ignoring invalid DUCKDB_QUERY_TIMEOUT_SECONDS" in captured.err
+
+
+def test_load_metadata_recorded_for_loaded_tables(sample_parquet_file, tmp_path):
+    """A load stamps a last-loaded time for each table it wrote."""
+    db = VulnerabilityDatabase(str(tmp_path / "load_meta.db"))
+    db.load_parquet_files_by_prefix({"asset_vulnerability": [sample_parquet_file]})
+
+    metadata = db.get_load_metadata()
+
+    assert set(metadata) == {"vulnerabilities"}
+    assert isinstance(metadata["vulnerabilities"], datetime)
+    db.close()
+
+
+def test_load_metadata_empty_when_nothing_loaded(tmp_path):
+    """A database that has never loaded data reports no load metadata."""
+    db = VulnerabilityDatabase(str(tmp_path / "empty_meta.db"))
+    assert db.get_load_metadata() == {}
+    db.close()
+
+
+def test_load_metadata_survives_snapshot_reload(sample_parquet_file, sample_asset_parquet_file, tmp_path):
+    """A snapshot reload compacts the database; the load metadata must survive
+    the copy-to-fresh-file and reflect the most recent load."""
+    db = VulnerabilityDatabase(str(tmp_path / "reload_meta.db"))
+
+    db.load_parquet_files_by_prefix({"asset_vulnerability": [sample_parquet_file]})
+    first = db.get_load_metadata()["vulnerabilities"]
+
+    # A second snapshot load of the same tables triggers compaction (COPY FROM
+    # DATABASE to a fresh file). Metadata for the reloaded table must persist
+    # and advance to the newer load time.
+    db.load_parquet_files_by_prefix(
+        {"asset": [sample_asset_parquet_file], "asset_vulnerability": [sample_parquet_file]}
+    )
+    after = db.get_load_metadata()
+
+    assert set(after) == {"assets", "vulnerabilities"}
+    assert after["vulnerabilities"] >= first
+    db.close()
+
+
+def test_load_metadata_table_excluded_from_schema(sample_parquet_file, tmp_path):
+    """The internal load-metadata table must never appear in get_schema output,
+    so it is not mistaken for Rapid7 data."""
+    db = VulnerabilityDatabase(str(tmp_path / "schema_meta.db"))
+    db.load_parquet_files_by_prefix({"asset_vulnerability": [sample_parquet_file]})
+
+    schema = db.get_schema()
+
+    assert "_load_metadata" not in schema
+    assert "vulnerabilities" in schema
     db.close()

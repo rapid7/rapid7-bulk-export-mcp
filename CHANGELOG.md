@@ -1,5 +1,43 @@
 # Changelog
 
+## 0.7.0
+
+### Breaking
+
+- **The HTTP transport now requires inbound authentication.** Docker and other
+  `MCP_TRANSPORT=http` deployments refuse to start until `MCP_AUTH_JWKS_URI`,
+  `MCP_AUTH_ISSUER` and `MCP_AUTH_AUDIENCE` are set, rather than serving vulnerability data
+  to anyone who can reach the port. `docker-compose.yml` passes the three variables through.
+  Stdio is unaffected.
+
+### Added
+
+- **Inbound authentication for remote mode.** The HTTP transport validates OIDC bearer
+  tokens against any standards-compliant identity provider, configured from environment
+  (`MCP_AUTH_JWKS_URI`, `MCP_AUTH_ISSUER`, `MCP_AUTH_AUDIENCE`) and read at startup with no
+  image rebuild. Several issuers can be accepted at once. Stdio remains unauthenticated by
+  design. See [docs/authentication.md](docs/authentication.md).
+- **Read/write scope separation.** The mutating tools — `start_rapid7_export`,
+  `download_rapid7_export`, `load_rapid7_parquet` and `purge_rapid7_data` — require a write
+  scope (`MCP_AUTH_WRITE_SCOPE`, default `rapid7.write`) on the HTTP transport; read tools
+  stay available to any authenticated caller. Gating is inert on stdio.
+- **`rapid7-refresh` foreground entrypoint.** A headless console script that creates, polls,
+  downloads and loads the requested exports synchronously in a single process — no background
+  threads that could die mid-write — for scheduled and hosted refresh. Exits non-zero and
+  names the failed windows if any window fails. In hosted mode it publishes the finished
+  database to Blob Storage as a versioned artifact.
+- **Data-age annotation on hosted query results.** When serving a Blob artifact, successful
+  `query_rapid7` responses carry a short data-age note sourced from a load-metadata table
+  inside the data database. It is fail-soft and never breaks a query. Local output is
+  unchanged.
+- **Optional query time limit.** `DUCKDB_QUERY_TIMEOUT_SECONDS` cancels a query that runs
+  longer than the limit with an actionable message. Unset by default, so local queries run
+  to completion as before; the Azure template sets 90 seconds.
+- **Private hosting guide for Microsoft Copilot Studio.** See
+  [docs/copilot-studio-hosting.md](docs/copilot-studio-hosting.md) for an internal-ingress
+  deployment with Blob artifact storage, a scheduled refresh job, and Key Vault–backed
+  secrets.
+
 ## 0.6.3
 
 ### Fixed
