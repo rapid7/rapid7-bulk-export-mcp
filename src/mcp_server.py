@@ -776,6 +776,7 @@ def _download_and_load_files(
     api_key: str,
     on_downloaded=None,
     org_scoped: bool = False,
+    org_label: Optional[str] = None,
 ) -> tuple:
     """Download an export's parquet files and load them into DuckDB.
 
@@ -790,6 +791,7 @@ def _download_and_load_files(
         api_key,
         on_downloaded=on_downloaded,
         org_scoped=org_scoped,
+        org_label=org_label,
     )
 
 

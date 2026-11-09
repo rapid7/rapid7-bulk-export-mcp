@@ -101,9 +101,17 @@ class TestDownloadAndLoadFiles:
 
 
 class OrgFakeDB(FakeDB):
-    def load_parquet_files_by_prefix(self, prefix_file_map, skip_prefixes=None, append=False, org_scoped=False):
+    def load_parquet_files_by_prefix(
+        self, prefix_file_map, skip_prefixes=None, append=False, org_scoped=False, org_label=None
+    ):
         self.load_calls.append(
-            {"map": dict(prefix_file_map), "skip": skip_prefixes, "append": append, "org_scoped": org_scoped}
+            {
+                "map": dict(prefix_file_map),
+                "skip": skip_prefixes,
+                "append": append,
+                "org_scoped": org_scoped,
+                "org_label": org_label,
+            }
         )
         return dict(self.row_counts)
 
@@ -174,6 +182,7 @@ class TestRunDownloadAndLoadForAnOrg:
         assert "for org 'japan'" in row["message"]
         assert seen_keys == ["japan-key"]
         assert db.load_calls[0]["org_scoped"] is True
+        assert db.load_calls[0]["org_label"] == "japan"
 
     def test_labelled_export_without_an_org_list_fails_closed(self, tmp_path):
         """Falling back to the default key would export the wrong tenant under the right name."""

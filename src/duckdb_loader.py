@@ -47,6 +47,17 @@ LOAD_METADATA_TABLE = "_load_metadata"
 # to it would age an older org's findings against a later org's load.
 ORG_LOAD_METADATA_TABLE = "_org_load_metadata"
 
+# The org ids each configured org label resolved to on its last load. A refresh whose
+# export carries no rows at all names no org in its files, so this is the only way to
+# know whose old rows to clear.
+ORG_LABEL_TABLE = "_org_labels"
+
+# Tables an org-scoped refresh replaces for the refreshed org even when the new export
+# has no rows for them. Only the vulnerability export loads per org today, and it
+# writes these three. Without this, an org whose last exception was lifted, or whose
+# findings were all fixed, would keep its old rows because no file named the org.
+ORG_SCOPED_TABLES = ("assets", "vulnerabilities", "vulnerability_exceptions")
+
 # Maps Rapid7 API result prefixes to target DuckDB tables.
 # Tuple values indicate (table_name, source_column_value) for policy prefixes.
 PREFIX_TABLE_MAP: Dict[str, Union[str, Tuple[str, str]]] = {
@@ -195,6 +206,7 @@ class VulnerabilityDatabase:
         skip_prefixes: Set[str] = None,
         append: bool = False,
         org_scoped: bool = False,
+        org_label: Optional[str] = None,
     ) -> Dict[str, int]:
         """
         Load Parquet files into tables based on prefix routing.
@@ -298,6 +310,8 @@ class VulnerabilityDatabase:
                 # that cannot be read must abort the load having changed nothing,
                 # rather than fail midway and rely on a rollback.
                 deletions: List[Tuple[str, str, Optional[str], List[Any]]] = []
+                found_orgs: Set[Any] = set()
+                targets: Dict[str, Optional[str]] = {}
                 for prefix, file_paths in prefix_file_map.items():
                     if prefix in skip_prefixes:
                         continue
@@ -339,9 +353,24 @@ class VulnerabilityDatabase:
                                 f"{null_org_rows} row(s) with a NULL '{org_column}'. Rows without an "
                                 f"org cannot be refreshed per org and would duplicate on every load."
                             )
-                        org_ids_by_table.setdefault(table_name, set()).update(org_ids)
-                        if org_ids and table_name in preexisting:
-                            deletions.append((table_name, org_column, source_value, org_ids))
+                        found_orgs.update(org_ids)
+                        targets.setdefault(table_name, source_value)
+
+                # Decide once, for the whole export, which orgs this refresh replaces. The
+                # files win when they name an org: a label whose key now reaches another
+                # org must not delete the old org's data. Only an export with no rows at
+                # all falls back to the orgs the label resolved to last time.
+                refreshed_orgs: Set[Any] = set(found_orgs)
+                if not refreshed_orgs and org_label is not None:
+                    refreshed_orgs = self._remembered_org_ids(conn, org_label, preexisting)
+                for table_name in ORG_SCOPED_TABLES:
+                    targets.setdefault(table_name, None)
+                org_ids_by_table = {table_name: set(refreshed_orgs) for table_name in targets}
+
+                for table_name, source_value in targets.items():
+                    org_column = self._table_org_column(conn, table_name) if table_name in preexisting else None
+                    if refreshed_orgs and org_column is not None:
+                        deletions.append((table_name, org_column, source_value, sorted(refreshed_orgs, key=str)))
 
                 conn.begin()
                 try:
@@ -433,6 +462,8 @@ class VulnerabilityDatabase:
                         loaded_at = datetime.now()
                         self._record_load_metadata(conn, tables_touched, loaded_at)
                         self._record_org_load_metadata(conn, org_ids_by_table, loaded_at, replace=False)
+                    if org_label is not None and found_orgs:
+                        self._remember_org_ids(conn, org_label, found_orgs)
                 except Exception:
                     conn.rollback()
                     raise
@@ -525,10 +556,34 @@ class VulnerabilityDatabase:
             )
 
     @staticmethod
-    def _distinct_table_orgs(conn, table_name: str) -> Set[Any]:
-        """Return the orgs in a loaded table, or none if it has no org column."""
+    def _table_org_column(conn, table_name: str) -> Optional[str]:
+        """Return a loaded table's org identifier column, or None if it has none."""
         columns = {row[0].lower(): row[0] for row in conn.execute(f"DESCRIBE {table_name}").fetchall()}  # nosec B608
-        org_column = next((columns[c.lower()] for c in ORG_COLUMN_CANDIDATES if c.lower() in columns), None)
+        return next((columns[c.lower()] for c in ORG_COLUMN_CANDIDATES if c.lower() in columns), None)
+
+    @staticmethod
+    def _remembered_org_ids(conn, org_label: str, preexisting: Set[str]) -> Set[Any]:
+        """Return the org ids a label resolved to on its last load, or none."""
+        if ORG_LABEL_TABLE not in preexisting:
+            return set()
+        rows = conn.execute(f"SELECT org_id FROM {ORG_LABEL_TABLE} WHERE org_label = ?", [org_label]).fetchall()  # nosec B608
+        return {row[0] for row in rows}
+
+    @staticmethod
+    def _remember_org_ids(conn, org_label: str, org_ids: Set[Any]) -> None:
+        """Replace the org ids recorded for a label with the ones this load found."""
+        conn.execute(
+            f"CREATE TABLE IF NOT EXISTS {ORG_LABEL_TABLE} "  # nosec B608
+            "(org_label VARCHAR NOT NULL, org_id VARCHAR NOT NULL, PRIMARY KEY (org_label, org_id))"
+        )
+        conn.execute(f"DELETE FROM {ORG_LABEL_TABLE} WHERE org_label = ?", [org_label])  # nosec B608
+        for org_id in org_ids:
+            conn.execute(f"INSERT INTO {ORG_LABEL_TABLE} (org_label, org_id) VALUES (?, ?)", [org_label, str(org_id)])  # nosec B608
+
+    @classmethod
+    def _distinct_table_orgs(cls, conn, table_name: str) -> Set[Any]:
+        """Return the orgs in a loaded table, or none if it has no org column."""
+        org_column = cls._table_org_column(conn, table_name)
         if org_column is None:
             return set()
         rows = conn.execute(

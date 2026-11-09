@@ -160,6 +160,7 @@ def download_and_load_files(
     api_key: str,
     on_downloaded=None,
     org_scoped: bool = False,
+    org_label: Optional[str] = None,
 ) -> tuple:
     """Download an export's parquet files and load them into DuckDB.
 
@@ -169,7 +170,8 @@ def download_and_load_files(
     the files are actually downloaded and before the load begins, so a
     caller can record the LOADING phase honestly. When org_scoped is set, the load
     replaces only the rows of the orgs present in the files, so loading one org does
-    not discard the orgs already loaded. Returns (row_count, row_counts, stats,
+    not discard the orgs already loaded. org_label lets an export with no rows still
+    clear that org's old rows. Returns (row_count, row_counts, stats,
     validation_warnings).
     """
     parquet_urls = status_info["parquetFiles"]
@@ -212,7 +214,7 @@ def download_and_load_files(
                         f"only {', '.join(MULTI_ORG_EXPORT_TYPES)} can be loaded per org, and any "
                         f"other mode would replace the whole table and discard the other orgs."
                     )
-                row_counts = db.load_parquet_files_by_prefix(prefix_file_map, org_scoped=True)
+                row_counts = db.load_parquet_files_by_prefix(prefix_file_map, org_scoped=True, org_label=org_label)
             elif export_type == "policy":
                 row_counts = db.load_parquet_files_by_prefix(prefix_file_map, skip_prefixes={"asset"})
             elif export_type == "remediation":
@@ -298,6 +300,7 @@ def run_download_and_load(ctx: OrchestratorContext, export_id: str, export_type:
             config["api_key"],
             on_downloaded=_mark_loading,
             org_scoped=org_label is not None,
+            org_label=org_label,
         )
         row_info = f"Rows loaded: {row_count}\nPer-table row counts: {json.dumps(row_counts, default=str)}"
 
