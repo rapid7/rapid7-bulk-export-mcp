@@ -25,16 +25,15 @@ This tool exports data from Rapid7 Command Platform, via the [Rapid7 Bulk Export
 - **Statistics & Insights**: Get instant summaries and distributions
 - **Security Lockdown**: User queries are sandboxed — filesystem and network access disabled at the DuckDB engine level
 - **Docker Support**: Run as a containerized HTTP service for remote or shared deployments
+- **Remote Authentication**: Remote mode validates OIDC bearer tokens against any standards-compliant identity provider
 
 ## Local vs Remote
 
-You can run the MCP server in two modes depending on your setup:
+You can run the MCP server in two modes depending on your needs:
 
 **Local (stdio)** — The AI client spawns the server as a child process and communicates over stdin/stdout. This is the default and simplest option. The server runs on your machine, the database lives next to it, and everything stays local. Best for individual use on a workstation or laptop.
 
-**Remote (Docker / streamable HTTP)** — The server runs as a containerized HTTP service exposing a single `/mcp` endpoint. Clients connect over the network via URL. Best for shared environments, team use, or when you want the server running on dedicated infrastructure separate from your AI tool. It should be noted that this will make data shareable between all users of the remote mcp, you should authenticate and secure the /mcp endpoint.
-
-Both modes use the same MCP tools and security controls. The only difference is how the client connects.
+**Remote (Docker / streamable HTTP)** — The server runs as a containerized HTTP service exposing a single `/mcp` endpoint. Clients connect over the network via URL. Best for shared environments, team use, or when you want the server running on dedicated infrastructure separate from your AI tool. It should be noted that this will make data shareable between all users of the remote mcp, you should authenticate and secure the /mcp endpoint — see [docs/authentication.md](./docs/authentication.md) for the built-in OIDC support and [docs/copilot-studio-hosting.md](./docs/copilot-studio-hosting.md) for an example of a private hosted deployment.
 
 ## Quick Start
 
@@ -400,10 +399,16 @@ Uses Red Hat UBI 10 Python 3.12 Minimal base image with Python 3.12.13 pre-insta
 
 #### Build and Run
 
+The HTTP transport requires inbound authentication and refuses to start without it, because an open `/mcp` endpoint would share your vulnerability data with anyone who can reach the port. Set the three `MCP_AUTH_*` values from your identity provider; [docs/authentication.md](./docs/authentication.md) explains where to find them.
+
 **Using docker compose (recommended):**
 
 ```bash
-RAPID7_API_KEY=your-key RAPID7_REGION=us docker compose up -d
+RAPID7_API_KEY=your-key RAPID7_REGION=us \
+MCP_AUTH_JWKS_URI=https://idp.example.com/keys \
+MCP_AUTH_ISSUER=https://idp.example.com/ \
+MCP_AUTH_AUDIENCE=api://rapid7-bulk-export \
+docker compose up -d
 ```
 
 **Using docker run:**
@@ -417,6 +422,9 @@ docker run -d \
   -p 8000:8000 \
   -e RAPID7_API_KEY=your-api-key-here \
   -e RAPID7_REGION=us \
+  -e MCP_AUTH_JWKS_URI=https://idp.example.com/keys \
+  -e MCP_AUTH_ISSUER=https://idp.example.com/ \
+  -e MCP_AUTH_AUDIENCE=api://rapid7-bulk-export \
   -e DATA_DIR=/data \
   -e TMPDIR=/tmp \
   -v rapid7-data:/data \
@@ -634,3 +642,7 @@ uv run pytest
 | `MCP_TRANSPORT` | No | `stdio` | Transport protocol: `stdio` or `http` |
 | `MCP_HOST` | No | `0.0.0.0` | HTTP bind address (only when `MCP_TRANSPORT=http`) |
 | `MCP_PORT` | No | `8000` | HTTP port (only when `MCP_TRANSPORT=http`) |
+| `MCP_AUTH_JWKS_URI` | With `http` | — | Identity provider's JWKS endpoint. The HTTP transport refuses to start until this, `MCP_AUTH_ISSUER` and `MCP_AUTH_AUDIENCE` are set. See [docs/authentication.md](./docs/authentication.md) |
+| `MCP_AUTH_ISSUER` | With `http` | — | Token issuer; comma-separate to accept several |
+| `MCP_AUTH_AUDIENCE` | With `http` | — | Audience this server is registered as |
+| `DUCKDB_QUERY_TIMEOUT_SECONDS` | No | no limit | Cancel a query that runs longer than this many seconds. Useful when a client enforces its own tool-call budget |
