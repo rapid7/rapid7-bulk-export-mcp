@@ -1,11 +1,13 @@
 """Tests for the prebaked dashboard card queries, against a hand-countable dataset.
 
-Two organisations. ORG-A has one excepted finding (V4), one reintroduced finding (V3),
-and two weaponised critical findings (V1, V3). ORG-B has an Unknown severity finding
+Two organisations. ORG-A has two excepted findings: V4 (medium) and V6 (critical,
+exploitable, network, EPSS 0.95, so it would reach every filter if the active rule were
+dropped). It also has one reintroduced finding (V3) and two weaponised critical findings
+(V1, V3). ORG-B has an Unknown severity finding
 (V5) and a critical finding whose EPSS score is too low to count as weaponised.
 """
 
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 
 import pyarrow as pa
@@ -25,9 +27,10 @@ VULNS = [
     ("ORG-A", "A2", "V4", "Medium", False, datetime(2026, 8, 1), None, "Network", 0.2),
     ("ORG-B", "B1", "V1", "Critical", True, datetime(2026, 7, 1), None, "Network", 0.4),
     ("ORG-B", "B1", "V5", "Unknown", False, datetime(2026, 9, 22), None, "Network", 0.0),
+    ("ORG-A", "A1", "V6", "Critical", True, datetime(2026, 2, 1), datetime(2026, 9, 10), "Network", 0.95),
 ]
 ASSETS = [("ORG-A", "A1", 100.0), ("ORG-A", "A2", 300.0), ("ORG-B", "B1", 50.0)]
-EXCEPTIONS = [("ORG-A", "A2", "V4")]
+EXCEPTIONS = [("ORG-A", "A2", "V4"), ("ORG-A", "A1", "V6")]
 
 
 def _write(path, columns):
@@ -35,23 +38,23 @@ def _write(path, columns):
     return str(path)
 
 
-def _load(tmp_path, with_exceptions=True):
+def _load(tmp_path, with_exceptions=True, rows=VULNS):
     vulns = _write(
         tmp_path / "vulns.parquet",
         {
-            "orgId": [v[0] for v in VULNS],
-            "assetId": [v[1] for v in VULNS],
-            "vulnId": [v[2] for v in VULNS],
-            "cvssV3Severity": [v[3] for v in VULNS],
-            "hasExploits": [v[4] for v in VULNS],
-            "firstFoundTimestamp": pa.array([v[5] for v in VULNS], pa.timestamp("us")),
-            "reintroducedTimestamp": pa.array([v[6] for v in VULNS], pa.timestamp("us")),
-            "cvssV3AttackVector": [v[7] for v in VULNS],
-            "epssscore": [v[8] for v in VULNS],
-            "cvssV3Score": [9.0] * len(VULNS),
-            "title": [f"Vuln {v[2]}" for v in VULNS],
-            "bestSolutionSummary": [f"Fix {v[2]}" for v in VULNS],
-            "bestSolutionType": ["patch"] * len(VULNS),
+            "orgId": [v[0] for v in rows],
+            "assetId": [v[1] for v in rows],
+            "vulnId": [v[2] for v in rows],
+            "cvssV3Severity": pa.array([v[3] for v in rows], pa.string()),
+            "hasExploits": [v[4] for v in rows],
+            "firstFoundTimestamp": pa.array([v[5] for v in rows], pa.timestamp("us")),
+            "reintroducedTimestamp": pa.array([v[6] for v in rows], pa.timestamp("us")),
+            "cvssV3AttackVector": [v[7] for v in rows],
+            "epssscore": [v[8] for v in rows],
+            "cvssV3Score": [9.0] * len(rows),
+            "title": [f"Vuln {v[2]}" for v in rows],
+            "bestSolutionSummary": [f"Fix {v[2]}" for v in rows],
+            "bestSolutionType": ["patch"] * len(rows),
         },
     )
     assets = _write(
@@ -189,7 +192,55 @@ def test_every_card_runs_when_no_exceptions_were_exported(tmp_path, card):
     finally:
         database.close()
 
-    assert result["results"]
+    assert any(result["results"].values()), f"{card} returned no rows at all"
+
+
+@pytest.mark.parametrize(
+    ("days", "band"),
+    [
+        (0, "0-7"),
+        (7, "0-7"),
+        (8, "8-30"),
+        (30, "8-30"),
+        (31, "31-60"),
+        (60, "31-60"),
+        (61, "61-90"),
+        (90, "61-90"),
+        (91, "91+"),
+    ],
+)
+def test_age_band_edges(tmp_path, days, band):
+    found = AS_OF - timedelta(days=days)
+    rows = [("ORG-A", "A1", "V1", "High", False, found, None, "Local", 0.1)]
+    database = _load(tmp_path, with_exceptions=False, rows=rows)
+    try:
+        bands = run_card(database, "unresolved_age_severity", as_of=AS_OF)["results"]["by_band"]
+    finally:
+        database.close()
+
+    assert bands == [{"band": band, "critical": 0, "high": 1, "medium": 0, "low": 0}]
+
+
+def test_a_finding_with_no_date_is_not_reported_as_the_oldest(tmp_path):
+    rows = [("ORG-A", "A1", "V1", "High", False, None, None, "Local", 0.1)]
+    database = _load(tmp_path, with_exceptions=False, rows=rows)
+    try:
+        bands = run_card(database, "unresolved_age_severity", as_of=AS_OF)["results"]["by_band"]
+    finally:
+        database.close()
+
+    assert [row["band"] for row in bands] == ["no date"]
+
+
+def test_missing_severity_counts_as_unscored(tmp_path):
+    rows = [("ORG-A", "A1", "V1", None, False, AS_OF, None, "Local", 0.1)]
+    database = _load(tmp_path, with_exceptions=False, rows=rows)
+    try:
+        org = run_card(database, "portfolio_summary", as_of=AS_OF)["results"]["by_org"][0]
+    finally:
+        database.close()
+
+    assert (org["active_total"], org["unscored"]) == (1, 1)
 
 
 def test_without_exceptions_the_formerly_excepted_finding_is_active(tmp_path):

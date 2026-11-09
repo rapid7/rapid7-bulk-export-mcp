@@ -31,7 +31,7 @@ PORTFOLIO_SUMMARY = Card(
     definition=(
         "Active findings by CVSS v3 severity, and assets with at least one active finding. "
         "Active means no matching vulnerability exception on orgId, assetId, and vulnId. "
-        "Unknown and None severities count in the total but in no severity column."
+        "Any other severity (Unknown, None, or missing) counts in the total and in unscored."
     ),
     queries=(
         (
@@ -49,7 +49,8 @@ PORTFOLIO_SUMMARY = Card(
               COUNT(*) FILTER (WHERE "cvssV3Severity" = 'High') AS high,
               COUNT(*) FILTER (WHERE "cvssV3Severity" = 'Medium') AS medium,
               COUNT(*) FILTER (WHERE "cvssV3Severity" = 'Low') AS low,
-              COUNT(*) FILTER (WHERE "cvssV3Severity" IN ('Unknown', 'None')) AS unscored,
+              COUNT(*) FILTER (WHERE "cvssV3Severity" IS NULL
+                OR "cvssV3Severity" NOT IN ('Critical', 'High', 'Medium', 'Low')) AS unscored,
               COUNT(*) FILTER (WHERE "hasExploits") AS with_exploits
             FROM active GROUP BY "orgId" ORDER BY "orgId"
             """,
@@ -152,6 +153,7 @@ UNRESOLVED_AGE_SEVERITY = Card(
     definition=(
         "Active findings by severity in the PRD age bands 0 to 7, 8 to 30, 31 to 60, 61 to 90, "
         "and 91+ days. Days run from when each finding became active to when the data was loaded. "
+        "A finding with neither a first-found nor a reintroduced date goes in a separate 'no date' band. "
         "Unknown and None severities are left out."
     ),
     queries=(
@@ -170,12 +172,14 @@ UNRESOLVED_AGE_SEVERITY = Card(
                   WHERE e."orgId" = v."orgId" AND e."assetId" = v."assetId" AND e."vulnId" = v."vulnId")
             ), banded AS (
               SELECT "cvssV3Severity",
-                CASE WHEN days_active <= 7 THEN '0-7'
+                CASE WHEN days_active IS NULL THEN 'no date'
+                     WHEN days_active <= 7 THEN '0-7'
                      WHEN days_active <= 30 THEN '8-30'
                      WHEN days_active <= 60 THEN '31-60'
                      WHEN days_active <= 90 THEN '61-90'
                      ELSE '91+' END AS band,
-                CASE WHEN days_active <= 7 THEN 1
+                CASE WHEN days_active IS NULL THEN 6
+                     WHEN days_active <= 7 THEN 1
                      WHEN days_active <= 30 THEN 2
                      WHEN days_active <= 60 THEN 3
                      WHEN days_active <= 90 THEN 4
@@ -306,7 +310,7 @@ WEAPONISED_CRITICAL = Card(
             WHERE "cvssV3Severity" = 'Critical' AND "hasExploits"
               AND "cvssV3AttackVector" = 'Network' AND "epssscore" >= 0.5
               AND "bestSolutionSummary" IS NOT NULL
-            GROUP BY 1, 2 ORDER BY assets DESC, findings DESC LIMIT 12
+            GROUP BY 1, 2 ORDER BY assets DESC, findings DESC, 1, 2 LIMIT 12
             """,
         ),
         (
@@ -333,13 +337,13 @@ WEAPONISED_CRITICAL = Card(
               WHERE NOT EXISTS (SELECT 1 FROM vulnerability_exceptions e
                 WHERE e."orgId" = v."orgId" AND e."assetId" = v."assetId" AND e."vulnId" = v."vulnId")
             )
-            SELECT "title", "cvssV3Severity", ROUND(MAX("cvssV3Score"), 1) AS cvss,
+            SELECT "vulnId", "title", "cvssV3Severity", ROUND(MAX("cvssV3Score"), 1) AS cvss,
               ROUND(MAX("epssscore"), 4) AS epss, COUNT(DISTINCT "orgId") AS orgs,
               COUNT(DISTINCT ("orgId", "assetId")) AS assets, COUNT(*) AS findings,
               ROUND(AVG(DATEDIFF('day', "firstFoundTimestamp", CAST($as_of AS TIMESTAMP))), 0) AS mean_days_open
             FROM active
             WHERE "hasExploits" AND "cvssV3Severity" IN ('Critical', 'High') AND "epssscore" >= 0.5
-            GROUP BY 1, 2 ORDER BY assets DESC, findings DESC, 1 LIMIT 20
+            GROUP BY 1, 2, 3 ORDER BY assets DESC, findings DESC, 1 LIMIT 20
             """,
         ),
         (
@@ -359,7 +363,7 @@ WEAPONISED_CRITICAL = Card(
             SELECT c."orgId", a."hostName", a."osProduct", ROUND(a."riskScore", 0) AS risk_score,
               c.weaponised_critical
             FROM counted c JOIN assets a ON a."assetId" = c."assetId" AND a."orgId" = c."orgId"
-            ORDER BY c.weaponised_critical DESC, c."orgId", a."hostName" LIMIT 12
+            ORDER BY c.weaponised_critical DESC, c."orgId", c."assetId" LIMIT 12
             """,
         ),
     ),
