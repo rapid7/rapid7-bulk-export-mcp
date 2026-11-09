@@ -168,7 +168,7 @@ UNRESOLVED_AGE_SEVERITY = Card(
                   GREATEST(v."firstFoundTimestamp",
                            COALESCE(v."reintroducedTimestamp", v."firstFoundTimestamp")),
                   o.as_of) AS days_active
-              FROM vulnerabilities v JOIN org_as_of o ON o."orgId" = v."orgId"
+              FROM vulnerabilities v JOIN org_as_of o ON o."orgId" IS NOT DISTINCT FROM v."orgId"
               WHERE v."cvssV3Severity" IN ('Critical', 'High', 'Medium', 'Low')
                 AND NOT EXISTS (SELECT 1 FROM vulnerability_exceptions e
                   WHERE e."orgId" = v."orgId" AND e."assetId" = v."assetId" AND e."vulnId" = v."vulnId")
@@ -249,7 +249,7 @@ WEAPONISED_CRITICAL = Card(
             WITH org_as_of AS (
               SELECT UNNEST($org_ids) AS "orgId", UNNEST($org_as_of) AS as_of
             ), active AS (
-              SELECT v.*, o.as_of FROM vulnerabilities v JOIN org_as_of o ON o."orgId" = v."orgId"
+              SELECT v.*, o.as_of FROM vulnerabilities v JOIN org_as_of o ON o."orgId" IS NOT DISTINCT FROM v."orgId"
               WHERE NOT EXISTS (SELECT 1 FROM vulnerability_exceptions e
                 WHERE e."orgId" = v."orgId" AND e."assetId" = v."assetId" AND e."vulnId" = v."vulnId")
             )
@@ -339,7 +339,7 @@ WEAPONISED_CRITICAL = Card(
             WITH org_as_of AS (
               SELECT UNNEST($org_ids) AS "orgId", UNNEST($org_as_of) AS as_of
             ), active AS (
-              SELECT v.*, o.as_of FROM vulnerabilities v JOIN org_as_of o ON o."orgId" = v."orgId"
+              SELECT v.*, o.as_of FROM vulnerabilities v JOIN org_as_of o ON o."orgId" IS NOT DISTINCT FROM v."orgId"
               WHERE NOT EXISTS (SELECT 1 FROM vulnerability_exceptions e
                 WHERE e."orgId" = v."orgId" AND e."assetId" = v."assetId" AND e."vulnId" = v."vulnId")
             )
@@ -452,13 +452,14 @@ def run_card(db: VulnerabilityDatabase, card: str, as_of: Optional[datetime] = N
 def _org_data_dates(db: VulnerabilityDatabase, orgs: List[str], as_of: Optional[datetime]) -> Dict[str, datetime]:
     """Each org's data date: the given as_of, else its own load time, else the table's.
 
-    The table-level time covers databases loaded before per-org times were recorded.
+    The table-level time covers databases loaded before per-org times were recorded, and
+    rows with no orgId. The loader stores org ids as text, so the lookup uses str(org).
     """
     if as_of is not None:
         return {org: as_of for org in orgs}
     per_org = db.get_org_load_metadata("vulnerabilities")
     table_level = db.get_load_metadata().get("vulnerabilities")
-    dates = {org: per_org.get(org, table_level) for org in orgs}
+    dates = {org: (per_org.get(str(org)) if org is not None else None) or table_level for org in orgs}
     undated = [org for org, when in dates.items() if when is None]
     if undated:
         raise ValueError(f"No recorded load time for org(s) {', '.join(undated)}, so ages cannot be counted.")

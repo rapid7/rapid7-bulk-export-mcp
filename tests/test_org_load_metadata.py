@@ -132,3 +132,126 @@ def test_an_org_with_no_time_at_all_is_refused(db, tmp_path, clock):
 
     with pytest.raises(ValueError, match="No recorded load time for org"):
         run_card(db, "unresolved_age_severity")
+
+
+def test_findings_with_no_org_are_still_counted(db, tmp_path, clock):
+    path = tmp_path / "null-orgs.parquet"
+    pq.write_table(
+        pa.table(
+            {
+                "orgId": pa.array(["ORG-A", None, None], pa.string()),
+                "assetId": ["a1", "a2", "a3"],
+                "vulnId": ["V1", "V2", "V3"],
+                "cvssV3Severity": ["High"] * 3,
+                "hasExploits": [False] * 3,
+                "firstFoundTimestamp": pa.array([MONDAY] * 3, pa.timestamp("us")),
+                "reintroducedTimestamp": pa.array([None] * 3, pa.timestamp("us")),
+            }
+        ),
+        path,
+    )
+    db.load_parquet_files_by_prefix({"asset_vulnerability": [str(path)]})
+
+    bands = run_card(db, "unresolved_age_severity")["results"]["by_band"]
+
+    assert sum(row["high"] for row in bands) == 3
+
+
+def test_a_non_text_org_id_still_finds_its_own_time(db, tmp_path, clock):
+    def _int_org_file(org_id, first_found):
+        path = tmp_path / f"int-{org_id}.parquet"
+        pq.write_table(
+            pa.table(
+                {
+                    "orgId": pa.array([org_id], pa.int64()),
+                    "assetId": [f"asset-{org_id}"],
+                    "vulnId": ["V1"],
+                    "cvssV3Severity": ["High"],
+                    "hasExploits": [False],
+                    "firstFoundTimestamp": pa.array([first_found], pa.timestamp("us")),
+                    "reintroducedTimestamp": pa.array([None], pa.timestamp("us")),
+                }
+            ),
+            path,
+        )
+        return str(path)
+
+    db.load_parquet_files_by_prefix({"asset_vulnerability": [_int_org_file(1, MONDAY)]}, org_scoped=True)
+    clock.current = FRIDAY
+    db.load_parquet_files_by_prefix({"asset_vulnerability": [_int_org_file(2, FRIDAY)]}, org_scoped=True)
+
+    assert run_card(db, "unresolved_age_severity")["as_of_by_org"] == {1: MONDAY.isoformat(), 2: FRIDAY.isoformat()}
+
+
+def test_a_failed_time_write_rolls_back_the_org_refresh(db, tmp_path, clock, monkeypatch):
+    _load_org(db, tmp_path, "ORG-A", MONDAY - timedelta(days=5))
+    clock.current = FRIDAY
+
+    def _fail(*args, **kwargs):
+        raise RuntimeError("metadata write failed")
+
+    monkeypatch.setattr(VulnerabilityDatabase, "_record_org_load_metadata", _fail)
+    with pytest.raises(RuntimeError, match="metadata write failed"):
+        _load_org(db, tmp_path, "ORG-A", FRIDAY - timedelta(days=1))
+    monkeypatch.undo()
+
+    first_found = db.query('SELECT "firstFoundTimestamp" AS f FROM vulnerabilities')
+    assert first_found == [{"f": MONDAY - timedelta(days=5)}]
+    assert db.get_org_load_metadata("vulnerabilities") == {"ORG-A": MONDAY}
+    assert db.get_load_metadata()["vulnerabilities"] == MONDAY
+
+
+def test_weaponised_days_open_use_each_orgs_own_time(db, tmp_path, clock):
+    def _weaponised(org_id, first_found):
+        path = tmp_path / f"weaponised-{org_id}.parquet"
+        pq.write_table(
+            pa.table(
+                {
+                    "orgId": [org_id],
+                    "assetId": [f"{org_id}-asset"],
+                    "vulnId": ["V1"],
+                    "cvssV3Severity": ["Critical"],
+                    "hasExploits": [True],
+                    "cvssV3AttackVector": ["Network"],
+                    "epssscore": [0.9],
+                    "cvssV3Score": [9.8],
+                    "title": ["Vuln V1"],
+                    "bestSolutionSummary": ["Patch V1"],
+                    "bestSolutionType": ["patch"],
+                    "firstFoundTimestamp": pa.array([first_found], pa.timestamp("us")),
+                    "reintroducedTimestamp": pa.array([None], pa.timestamp("us")),
+                }
+            ),
+            path,
+        )
+        return str(path)
+
+    def _asset(org_id):
+        path = tmp_path / f"asset-{org_id}.parquet"
+        pq.write_table(
+            pa.table(
+                {
+                    "orgId": [org_id],
+                    "assetId": [f"{org_id}-asset"],
+                    "riskScore": [500.0],
+                    "hostName": [f"host-{org_id}"],
+                    "osProduct": ["Linux"],
+                }
+            ),
+            path,
+        )
+        return str(path)
+
+    db.load_parquet_files_by_prefix(
+        {"asset_vulnerability": [_weaponised("ORG-A", MONDAY - timedelta(days=10))], "asset": [_asset("ORG-A")]},
+        org_scoped=True,
+    )
+    clock.current = FRIDAY
+    db.load_parquet_files_by_prefix(
+        {"asset_vulnerability": [_weaponised("ORG-B", FRIDAY - timedelta(days=10))], "asset": [_asset("ORG-B")]},
+        org_scoped=True,
+    )
+
+    headline = run_card(db, "weaponised_critical")["results"]["headline"][0]
+
+    assert (headline["mean_days_open"], headline["median_days_open"]) == (10, 10)

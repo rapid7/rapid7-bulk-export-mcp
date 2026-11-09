@@ -425,6 +425,17 @@ class VulnerabilityDatabase:
                         "Org-scoped load rolled back: could not read "
                         f"{len(failed_files)} file(s): {', '.join(failed_files)}"
                     )
+                # Inside the transaction, so the rows and their load times commit or
+                # roll back together. Committed rows with an older time would age
+                # negatively, and a reader could see new rows with the old date.
+                try:
+                    if tables_touched:
+                        loaded_at = datetime.now()
+                        self._record_load_metadata(conn, tables_touched, loaded_at)
+                        self._record_org_load_metadata(conn, org_ids_by_table, loaded_at, replace=False)
+                except Exception:
+                    conn.rollback()
+                    raise
                 conn.commit()
 
             # Report rows inserted BY THIS CALL: current total minus the
@@ -435,14 +446,11 @@ class VulnerabilityDatabase:
                 row_counts[table_name] = after - counts_before.get(table_name, 0)
 
             # Stamp each table we wrote with a load time, so a query can report
-            # how old the data is. Same connection as the load so the timestamps
-            # commit atomically with the rows they describe.
-            if tables_touched:
+            # how old the data is. Org-scoped loads stamped theirs before committing.
+            if tables_touched and not org_scoped:
                 loaded_at = datetime.now()
                 self._record_load_metadata(conn, tables_touched, loaded_at)
-                if org_scoped:
-                    self._record_org_load_metadata(conn, org_ids_by_table, loaded_at, replace=False)
-                elif not append:
+                if not append:
                     self._record_org_load_metadata(
                         conn,
                         {table: self._distinct_table_orgs(conn, table) for table in tables_touched},
