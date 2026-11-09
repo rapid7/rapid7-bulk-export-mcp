@@ -1,6 +1,6 @@
 """Per-org load times: recorded by the loader, and used to age each org's findings."""
 
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import duckdb
@@ -16,14 +16,18 @@ MONDAY = datetime(2026, 9, 21, 9, 0)
 FRIDAY = datetime(2026, 9, 25, 9, 0)
 
 
+def _utc(when):
+    return when.replace(tzinfo=timezone.utc).isoformat()
+
+
 class _Clock:
     """Stands in for datetime in the loader so each load stamps a chosen time."""
 
     current = MONDAY
 
     @classmethod
-    def now(cls):
-        return cls.current
+    def now(cls, tz=None):
+        return cls.current.replace(tzinfo=tz)
 
 
 @pytest.fixture
@@ -112,8 +116,8 @@ def test_each_orgs_findings_are_aged_to_its_own_load_time(db, tmp_path, clock):
     result = run_card(db, "unresolved_age_severity")
 
     assert result["results"]["by_band"] == [{"band": "0-7", "critical": 0, "high": 2, "medium": 0, "low": 0}]
-    assert result["as_of_by_org"] == {"ORG-A": MONDAY.isoformat(), "ORG-B": FRIDAY.isoformat()}
-    assert result["as_of"] == MONDAY.isoformat()
+    assert result["as_of_by_org"] == {"ORG-A": _utc(MONDAY), "ORG-B": _utc(FRIDAY)}
+    assert result["as_of"] == _utc(MONDAY)
 
 
 def test_an_org_without_its_own_time_falls_back_to_the_table_time(db, tmp_path, clock):
@@ -121,7 +125,7 @@ def test_an_org_without_its_own_time_falls_back_to_the_table_time(db, tmp_path, 
     with duckdb.connect(db.db_path) as conn:
         conn.execute(f"DELETE FROM {ORG_LOAD_METADATA_TABLE}")  # nosec B608
 
-    assert run_card(db, "unresolved_age_severity")["as_of_by_org"] == {"ORG-A": MONDAY.isoformat()}
+    assert run_card(db, "unresolved_age_severity")["as_of_by_org"] == {"ORG-A": _utc(MONDAY)}
 
 
 def test_an_org_with_no_time_at_all_is_refused(db, tmp_path, clock):
@@ -180,7 +184,7 @@ def test_a_non_text_org_id_still_finds_its_own_time(db, tmp_path, clock):
     clock.current = FRIDAY
     db.load_parquet_files_by_prefix({"asset_vulnerability": [_int_org_file(2, FRIDAY)]}, org_scoped=True)
 
-    assert run_card(db, "unresolved_age_severity")["as_of_by_org"] == {1: MONDAY.isoformat(), 2: FRIDAY.isoformat()}
+    assert run_card(db, "unresolved_age_severity")["as_of_by_org"] == {1: _utc(MONDAY), 2: _utc(FRIDAY)}
 
 
 def test_a_failed_time_write_rolls_back_the_org_refresh(db, tmp_path, clock, monkeypatch):

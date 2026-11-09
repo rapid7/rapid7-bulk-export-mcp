@@ -28,7 +28,7 @@ from .auth import ENV_AUDIENCE, ENV_ISSUER, ENV_JWKS_URI, build_auth
 from .config import ORGS_FILE_ENV, key_configured, load_config, load_org_configs, redact_secret
 from .dashboard_queries import run_card
 from .download import download_all_files
-from .duckdb_loader import VulnerabilityDatabase
+from .duckdb_loader import VulnerabilityDatabase, utc_now
 from .export_manager import (
     build_remediation_date_chunks,
     create_asset_software_export,
@@ -340,7 +340,7 @@ def _freshness_note() -> str:
         if not metadata:
             return ""
         newest = max(metadata.values())
-        return f"\n\nData last loaded {_humanize_age(newest, _dt.datetime.now())}."
+        return f"\n\nData last loaded {_humanize_age(newest, utc_now())}."
     except Exception:
         return ""
 
@@ -1190,7 +1190,8 @@ def get_rapid7_dashboard_card(card: str) -> str:
         # Inside the JSON, and aged from the card's own as_of: _freshness_note() would break
         # the JSON and report the newest load of any table, which can be a different date.
         if storage_configured():
-            result["data_loaded"] = _humanize_age(_dt.datetime.fromisoformat(result["as_of"]), _dt.datetime.now())
+            as_of = _dt.datetime.fromisoformat(result["as_of"]).astimezone(_dt.timezone.utc).replace(tzinfo=None)
+            result["data_loaded"] = _humanize_age(as_of, utc_now())
         return json.dumps(result, indent=2, default=str)
     except ValueError as e:
         return f"✗ {redact_secret(str(e))}"

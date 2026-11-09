@@ -11,7 +11,7 @@ dashboard the proof of concept produced, with two deliberate changes:
 """
 
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional, Tuple
 
 from .duckdb_loader import VulnerabilityDatabase
@@ -442,8 +442,8 @@ def run_card(db: VulnerabilityDatabase, card: str, as_of: Optional[datetime] = N
         "card": card,
         "title": spec.title,
         "definition": spec.definition,
-        "as_of": min(as_of_by_org.values()).isoformat(),
-        "as_of_by_org": {org: when.isoformat() for org, when in as_of_by_org.items()},
+        "as_of": _utc_iso(min(as_of_by_org.values())),
+        "as_of_by_org": {org: _utc_iso(when) for org, when in as_of_by_org.items()},
         "orgs": orgs,
         "results": results,
     }
@@ -456,6 +456,8 @@ def _org_data_dates(db: VulnerabilityDatabase, orgs: List[str], as_of: Optional[
     rows with no orgId. The loader stores org ids as text, so the lookup uses str(org).
     """
     if as_of is not None:
+        if as_of.tzinfo is not None:
+            as_of = as_of.astimezone(timezone.utc).replace(tzinfo=None)
         return {org: as_of for org in orgs}
     per_org = db.get_org_load_metadata("vulnerabilities")
     table_level = db.get_load_metadata().get("vulnerabilities")
@@ -464,3 +466,8 @@ def _org_data_dates(db: VulnerabilityDatabase, orgs: List[str], as_of: Optional[
     if undated:
         raise ValueError(f"No recorded load time for org(s) {', '.join(undated)}, so ages cannot be counted.")
     return dates
+
+
+def _utc_iso(when: datetime) -> str:
+    """Label a stored UTC clock time as UTC, so a reader never takes it for local time."""
+    return when.replace(tzinfo=timezone.utc).isoformat()

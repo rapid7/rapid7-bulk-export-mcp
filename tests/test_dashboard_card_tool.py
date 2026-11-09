@@ -3,12 +3,17 @@
 import inspect
 import json
 import threading
+from datetime import timezone
 
 import pytest
 
 from src import mcp_server
 from src.dashboard_queries import CARDS, run_card
 from tests.test_dashboard_queries import _load
+
+
+def _utc(when):
+    return when.replace(tzinfo=timezone.utc).isoformat()
 
 
 @pytest.fixture
@@ -91,7 +96,7 @@ def test_hosted_output_stays_json_and_ages_the_cards_own_data_date(loaded, monke
 
     result = json.loads(mcp_server.get_rapid7_dashboard_card("portfolio_summary"))
 
-    assert result["as_of"] == loaded.get_load_metadata()["vulnerabilities"].isoformat()
+    assert result["as_of"] == _utc(loaded.get_load_metadata()["vulnerabilities"])
     assert result["data_loaded"] in ("less than a minute ago", "1 minute ago")
 
 

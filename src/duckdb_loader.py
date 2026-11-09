@@ -9,7 +9,7 @@ import math
 import os
 import sys
 import threading
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional, Set, Tuple, Union
 
 import duckdb
@@ -41,6 +41,16 @@ KNOWN_TABLES = [
 # it never appears in schema/stats output or is mistaken for Rapid7 data — the
 # leading underscore also marks it as internal.
 LOAD_METADATA_TABLE = "_load_metadata"
+
+
+def utc_now() -> datetime:
+    """Current time as a naive UTC clock time, the form the export's own timestamps take.
+
+    The export writes UTC clock times with no zone, so load times in the same form compare
+    with them directly, with no per-row conversion, on any operator's machine.
+    """
+    return datetime.now(timezone.utc).replace(tzinfo=None)
+
 
 # Per-org load times. One table holds several orgs loaded at different times, and the
 # per-table time above is overwritten by whichever org loaded last, so ageing every org
@@ -457,7 +467,7 @@ class VulnerabilityDatabase:
                 # negatively, and a reader could see new rows with the old date.
                 try:
                     if tables_touched:
-                        loaded_at = datetime.now()
+                        loaded_at = utc_now()
                         self._record_load_metadata(conn, tables_touched, loaded_at)
                         self._record_org_load_metadata(conn, org_ids_by_table, loaded_at, replace=False)
                 except Exception:
@@ -475,7 +485,7 @@ class VulnerabilityDatabase:
             # Stamp each table we wrote with a load time, so a query can report
             # how old the data is. Org-scoped loads stamped theirs before committing.
             if tables_touched and not org_scoped:
-                loaded_at = datetime.now()
+                loaded_at = utc_now()
                 self._record_load_metadata(conn, tables_touched, loaded_at)
                 if not append:
                     self._record_org_load_metadata(
@@ -540,7 +550,7 @@ class VulnerabilityDatabase:
             )
             """  # nosec B608
         )
-        now = loaded_at or datetime.now()
+        now = loaded_at or utc_now()
         for table_name in table_names:
             conn.execute(
                 f"""

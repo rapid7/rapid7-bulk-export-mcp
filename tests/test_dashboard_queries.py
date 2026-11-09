@@ -7,7 +7,7 @@ dropped). It also has one reintroduced finding (V3) and two weaponised critical 
 (V5) and a critical finding whose EPSS score is too low to count as weaponised.
 """
 
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import pyarrow as pa
@@ -31,6 +31,10 @@ VULNS = [
 ]
 ASSETS = [("ORG-A", "A1", 100.0), ("ORG-A", "A2", 300.0), ("ORG-B", "B1", 50.0)]
 EXCEPTIONS = [("ORG-A", "A2", "V4"), ("ORG-A", "A1", "V6")]
+
+
+def _utc(when):
+    return when.replace(tzinfo=timezone.utc).isoformat()
 
 
 def _write(path, columns):
@@ -171,7 +175,7 @@ def test_every_card_states_its_orgs_data_date_and_definition(db, card):
     result = run_card(db, card, as_of=AS_OF)
 
     assert result["orgs"] == ["ORG-A", "ORG-B"]
-    assert result["as_of"] == AS_OF.isoformat()
+    assert result["as_of"] == _utc(AS_OF)
     assert result["definition"]
     assert set(result["results"]) == {name for name, _ in CARDS[card].queries}
 
@@ -181,7 +185,7 @@ def test_as_of_defaults_to_when_the_vulnerability_data_was_loaded(db):
 
     result = run_card(db, "unresolved_age_severity")
 
-    assert result["as_of"] == loaded_at.isoformat()
+    assert result["as_of"] == _utc(loaded_at)
 
 
 @pytest.mark.parametrize("card", list(CARDS))
