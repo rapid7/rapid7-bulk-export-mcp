@@ -52,6 +52,35 @@ def utc_now() -> datetime:
     return datetime.now(timezone.utc).replace(tzinfo=None)
 
 
+def _stamp_in_utc(loaded_at: datetime, in_utc: Optional[bool]) -> datetime:
+    """Return a stored load time as UTC. Stamps written before UTC stamping are local times.
+
+    A legacy stamp is converted with this machine's zone, which is right when the same
+    machine wrote it, as it does for a local install. Each reload restamps in UTC.
+    """
+    if in_utc:
+        return loaded_at
+    return loaded_at.astimezone(timezone.utc).replace(tzinfo=None)
+
+
+def _mark_utc_column(conn, table_name: str) -> None:
+    """Add the in_utc marker in place. Existing rows default to false, which marks them legacy.
+
+    Checked first because DuckDB's ADD COLUMN IF NOT EXISTS resets an existing column to its
+    default, which would mark every other org's UTC stamp as legacy on each load.
+    """
+    if not _has_column(conn, table_name, "in_utc"):
+        conn.execute(f"ALTER TABLE {table_name} ADD COLUMN in_utc BOOLEAN DEFAULT FALSE")  # nosec B608
+
+
+def _has_column(conn, table_name: str, column: str) -> bool:
+    row = conn.execute(
+        "SELECT COUNT(*) FROM information_schema.columns WHERE table_name = ? AND column_name = ?",
+        [table_name, column],
+    ).fetchone()
+    return bool(row and row[0])
+
+
 # Per-org load times. One table holds several orgs loaded at different times, and the
 # per-table time above is overwritten by whichever org loaded last, so ageing every org
 # to it would age an older org's findings against a later org's load.
@@ -550,13 +579,14 @@ class VulnerabilityDatabase:
             )
             """  # nosec B608
         )
+        _mark_utc_column(conn, LOAD_METADATA_TABLE)
         now = loaded_at or utc_now()
         for table_name in table_names:
             conn.execute(
                 f"""
-                INSERT INTO {LOAD_METADATA_TABLE} (table_name, loaded_at)
-                VALUES (?, ?)
-                ON CONFLICT (table_name) DO UPDATE SET loaded_at = EXCLUDED.loaded_at
+                INSERT INTO {LOAD_METADATA_TABLE} (table_name, loaded_at, in_utc)
+                VALUES (?, ?, TRUE)
+                ON CONFLICT (table_name) DO UPDATE SET loaded_at = EXCLUDED.loaded_at, in_utc = TRUE
                 """,  # nosec B608
                 [table_name, now],
             )
@@ -596,15 +626,16 @@ class VulnerabilityDatabase:
             )
             """  # nosec B608
         )
+        _mark_utc_column(conn, ORG_LOAD_METADATA_TABLE)
         for table_name, org_ids in org_ids_by_table.items():
             if replace:
                 conn.execute(f"DELETE FROM {ORG_LOAD_METADATA_TABLE} WHERE table_name = ?", [table_name])  # nosec B608
             for org_id in org_ids:
                 conn.execute(
                     f"""
-                    INSERT INTO {ORG_LOAD_METADATA_TABLE} (table_name, org_id, loaded_at)
-                    VALUES (?, ?, ?)
-                    ON CONFLICT (table_name, org_id) DO UPDATE SET loaded_at = EXCLUDED.loaded_at
+                    INSERT INTO {ORG_LOAD_METADATA_TABLE} (table_name, org_id, loaded_at, in_utc)
+                    VALUES (?, ?, ?, TRUE)
+                    ON CONFLICT (table_name, org_id) DO UPDATE SET loaded_at = EXCLUDED.loaded_at, in_utc = TRUE
                     """,  # nosec B608
                     [table_name, str(org_id), loaded_at],
                 )
@@ -618,11 +649,12 @@ class VulnerabilityDatabase:
             ).fetchone()
             if not exists or exists[0] == 0:
                 return {}
+            in_utc = "in_utc" if _has_column(conn, ORG_LOAD_METADATA_TABLE, "in_utc") else "FALSE"
             rows = conn.execute(
-                f"SELECT org_id, loaded_at FROM {ORG_LOAD_METADATA_TABLE} WHERE table_name = ?",  # nosec B608
+                f"SELECT org_id, loaded_at, {in_utc} FROM {ORG_LOAD_METADATA_TABLE} WHERE table_name = ?",  # nosec B608
                 [table_name],
             ).fetchall()
-        return {row[0]: row[1] for row in rows}
+        return {row[0]: _stamp_in_utc(row[1], row[2]) for row in rows}
 
     def get_load_metadata(self) -> Dict[str, datetime]:
         """Return each loaded table's last-loaded time, or an empty mapping.
@@ -638,8 +670,9 @@ class VulnerabilityDatabase:
             ).fetchone()
             if not exists or exists[0] == 0:
                 return {}
-            rows = conn.execute(f"SELECT table_name, loaded_at FROM {LOAD_METADATA_TABLE}").fetchall()  # nosec B608
-        return {row[0]: row[1] for row in rows}
+            in_utc = "in_utc" if _has_column(conn, LOAD_METADATA_TABLE, "in_utc") else "FALSE"
+            rows = conn.execute(f"SELECT table_name, loaded_at, {in_utc} FROM {LOAD_METADATA_TABLE}").fetchall()  # nosec B608
+        return {row[0]: _stamp_in_utc(row[1], row[2]) for row in rows}
 
     def query(self, sql: str, params: Optional[Dict[str, Any]] = None) -> List[Dict[str, Any]]:
         """

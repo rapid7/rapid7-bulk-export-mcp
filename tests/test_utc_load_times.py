@@ -5,11 +5,12 @@ import time
 from datetime import datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
 
+import duckdb
 import pytest
 
 from src import mcp_server
 from src.dashboard_queries import run_card
-from src.duckdb_loader import utc_now
+from src.duckdb_loader import VulnerabilityDatabase, utc_now
 from tests.test_dashboard_queries import _load
 
 
@@ -66,3 +67,29 @@ def test_a_zoned_as_of_is_counted_in_utc(tmp_path):
         db.close()
 
     assert result["as_of"] == "2026-09-23T00:00:00+00:00"
+
+
+def test_utc_now_is_naive_so_duckdb_never_converts_it():
+    """DuckDB converts an aware datetime through its own session zone, which ignores TZ."""
+    assert utc_now().tzinfo is None
+
+
+def test_a_database_from_before_utc_stamping_reads_its_local_stamps_as_utc(tokyo, tmp_path):
+    db = VulnerabilityDatabase(str(tmp_path / "legacy.db"))
+    db.close()
+    tokyo_evening = datetime(2026, 9, 21, 18, 0)
+    with duckdb.connect(db.db_path) as conn:
+        conn.execute("CREATE TABLE _load_metadata (table_name VARCHAR PRIMARY KEY, loaded_at TIMESTAMP NOT NULL)")
+        conn.execute("INSERT INTO _load_metadata VALUES ('vulnerabilities', ?)", [tokyo_evening])
+        conn.execute(
+            "CREATE TABLE _org_load_metadata (table_name VARCHAR NOT NULL, org_id VARCHAR NOT NULL, "
+            "loaded_at TIMESTAMP NOT NULL, PRIMARY KEY (table_name, org_id))"
+        )
+        conn.execute("INSERT INTO _org_load_metadata VALUES ('vulnerabilities', 'ORG-A', ?)", [tokyo_evening])
+
+    reopened = VulnerabilityDatabase(db.db_path)
+    try:
+        assert reopened.get_load_metadata()["vulnerabilities"] == datetime(2026, 9, 21, 9, 0)
+        assert reopened.get_org_load_metadata("vulnerabilities") == {"ORG-A": datetime(2026, 9, 21, 9, 0)}
+    finally:
+        reopened.close()
