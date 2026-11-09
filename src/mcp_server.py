@@ -1165,9 +1165,10 @@ def get_rapid7_dashboard_card(card: str) -> str:
             - weaponised_critical: critical, exploitable, network-reachable findings with EPSS 0.5+.
 
     Returns:
-        JSON with the card title, its definition (state it on the card), the data date
-        (as_of), the organizations included, and the result rows of each query. In a
-        hosted deployment it also carries data_loaded, the age of that same data date.
+        JSON with the card title, its definition (state it on the card), each organization's
+        data date (as_of_by_org), the oldest of them (as_of), the organizations included, and
+        the result rows of each query. In a hosted deployment it also carries data_loaded,
+        the age of as_of.
     """
     global db
 

@@ -6,7 +6,7 @@ dashboard the proof of concept produced, with two deliberate changes:
 
 * "Active" means a finding with no matching vulnerability exception, and that rule
   applies to every card, so the cards reconcile with each other.
-* Ages are counted from the time the vulnerability data was loaded, not from today,
+* Ages are counted to the time each organisation's vulnerability data was loaded, not to today,
   so a report regenerated later from the same data gives the same numbers.
 """
 
@@ -152,7 +152,7 @@ UNRESOLVED_AGE_SEVERITY = Card(
     title="Unresolved findings by days active and severity",
     definition=(
         "Active findings by severity in the PRD age bands 0 to 7, 8 to 30, 31 to 60, 61 to 90, "
-        "and 91+ days. Days run from when each finding became active to when the data was loaded. "
+        "and 91+ days. Days run from when each finding became active to when its organisation's data was loaded. "
         "A finding with neither a first-found nor a reintroduced date goes in a separate 'no date' band. "
         "Unknown and None severities are left out."
     ),
@@ -160,13 +160,15 @@ UNRESOLVED_AGE_SEVERITY = Card(
         (
             "by_band",
             """
-            WITH active AS (
+            WITH org_as_of AS (
+              SELECT UNNEST($org_ids) AS "orgId", UNNEST($org_as_of) AS as_of
+            ), active AS (
               SELECT v."cvssV3Severity",
                 DATEDIFF('day',
                   GREATEST(v."firstFoundTimestamp",
                            COALESCE(v."reintroducedTimestamp", v."firstFoundTimestamp")),
-                  CAST($as_of AS TIMESTAMP)) AS days_active
-              FROM vulnerabilities v
+                  o.as_of) AS days_active
+              FROM vulnerabilities v JOIN org_as_of o ON o."orgId" = v."orgId"
               WHERE v."cvssV3Severity" IN ('Critical', 'High', 'Medium', 'Low')
                 AND NOT EXISTS (SELECT 1 FROM vulnerability_exceptions e
                   WHERE e."orgId" = v."orgId" AND e."assetId" = v."assetId" AND e."vulnId" = v."vulnId")
@@ -238,22 +240,24 @@ WEAPONISED_CRITICAL = Card(
     definition=(
         "Active findings that are critical, have a known exploit, are reachable over the "
         "network, and have an EPSS score of 0.5 or more. Days open run from firstFoundTimestamp "
-        "to when the data was loaded."
+        "to when its organisation's data was loaded."
     ),
     queries=(
         (
             "headline",
             """
-            WITH active AS (
-              SELECT v.* FROM vulnerabilities v
+            WITH org_as_of AS (
+              SELECT UNNEST($org_ids) AS "orgId", UNNEST($org_as_of) AS as_of
+            ), active AS (
+              SELECT v.*, o.as_of FROM vulnerabilities v JOIN org_as_of o ON o."orgId" = v."orgId"
               WHERE NOT EXISTS (SELECT 1 FROM vulnerability_exceptions e
                 WHERE e."orgId" = v."orgId" AND e."assetId" = v."assetId" AND e."vulnId" = v."vulnId")
             )
             SELECT COUNT(*) AS findings,
               COUNT(DISTINCT ("orgId", "assetId")) AS assets,
               COUNT(DISTINCT "vulnId") AS distinct_vulns,
-              ROUND(AVG(DATEDIFF('day', "firstFoundTimestamp", CAST($as_of AS TIMESTAMP))), 0) AS mean_days_open,
-              ROUND(MEDIAN(DATEDIFF('day', "firstFoundTimestamp", CAST($as_of AS TIMESTAMP))), 0) AS median_days_open
+              ROUND(AVG(DATEDIFF('day', "firstFoundTimestamp", as_of)), 0) AS mean_days_open,
+              ROUND(MEDIAN(DATEDIFF('day', "firstFoundTimestamp", as_of)), 0) AS median_days_open
             FROM active
             WHERE "cvssV3Severity" = 'Critical' AND "hasExploits"
               AND "cvssV3AttackVector" = 'Network' AND "epssscore" >= 0.5
@@ -332,15 +336,17 @@ WEAPONISED_CRITICAL = Card(
         (
             "top_vulnerabilities",
             """
-            WITH active AS (
-              SELECT v.* FROM vulnerabilities v
+            WITH org_as_of AS (
+              SELECT UNNEST($org_ids) AS "orgId", UNNEST($org_as_of) AS as_of
+            ), active AS (
+              SELECT v.*, o.as_of FROM vulnerabilities v JOIN org_as_of o ON o."orgId" = v."orgId"
               WHERE NOT EXISTS (SELECT 1 FROM vulnerability_exceptions e
                 WHERE e."orgId" = v."orgId" AND e."assetId" = v."assetId" AND e."vulnId" = v."vulnId")
             )
             SELECT "vulnId", "title", "cvssV3Severity", ROUND(MAX("cvssV3Score"), 1) AS cvss,
               ROUND(MAX("epssscore"), 4) AS epss, COUNT(DISTINCT "orgId") AS orgs,
               COUNT(DISTINCT ("orgId", "assetId")) AS assets, COUNT(*) AS findings,
-              ROUND(AVG(DATEDIFF('day', "firstFoundTimestamp", CAST($as_of AS TIMESTAMP))), 0) AS mean_days_open
+              ROUND(AVG(DATEDIFF('day', "firstFoundTimestamp", as_of)), 0) AS mean_days_open
             FROM active
             WHERE "hasExploits" AND "cvssV3Severity" IN ('Critical', 'High') AND "epssscore" >= 0.5
             GROUP BY 1, 2, 3 ORDER BY assets DESC, findings DESC, 1 LIMIT 20
@@ -400,11 +406,16 @@ def run_card(db: VulnerabilityDatabase, card: str, as_of: Optional[datetime] = N
     Args:
         db: The loaded multi-org database.
         card: A key of CARDS.
-        as_of: Point in time ages are counted to. Defaults to when the vulnerability
-            data was loaded.
+        as_of: Point in time every org's ages are counted to. Defaults to each org's
+            own vulnerability load time.
+
+    Returns:
+        The card's results, with as_of_by_org (each org's data date) and as_of (the
+        oldest of them, so the card never claims fresher data than it has).
 
     Raises:
-        ValueError: If the card is unknown or no vulnerability data is loaded.
+        ValueError: If the card is unknown, no vulnerability data is loaded, or an org
+            has no recorded load time.
     """
     if card not in CARDS:
         raise ValueError(f"Unknown card '{card}'. Valid cards: {', '.join(CARDS)}")
@@ -413,26 +424,42 @@ def run_card(db: VulnerabilityDatabase, card: str, as_of: Optional[datetime] = N
     if "vulnerabilities" not in schema:
         raise ValueError("No vulnerability data is loaded, so no dashboard card can be produced.")
 
-    if as_of is None:
-        as_of = db.get_load_metadata().get("vulnerabilities")
-        if as_of is None:
-            raise ValueError("The vulnerability data has no recorded load time, so ages cannot be counted.")
+    orgs = [row["orgId"] for row in db.query('SELECT DISTINCT "orgId" FROM vulnerabilities ORDER BY 1')]
+    if not orgs:
+        raise ValueError("No vulnerability data is loaded, so no dashboard card can be produced.")
+    as_of_by_org = _org_data_dates(db, orgs, as_of)
 
     exceptions_loaded = "vulnerability_exceptions" in schema
     spec = CARDS[card]
+    age_params = {"org_ids": list(as_of_by_org), "org_as_of": list(as_of_by_org.values())}
     results: Dict[str, List[Dict[str, Any]]] = {}
     for name, sql in spec.queries:
         if not exceptions_loaded and "vulnerability_exceptions" in sql:
             sql = _with_empty_exceptions(sql)
-        params = {"as_of": as_of} if "$as_of" in sql else None
-        results[name] = db.query(sql, params)
+        results[name] = db.query(sql, age_params if "$org_ids" in sql else None)
 
-    orgs = [row["orgId"] for row in db.query('SELECT DISTINCT "orgId" FROM vulnerabilities ORDER BY 1')]
     return {
         "card": card,
         "title": spec.title,
         "definition": spec.definition,
-        "as_of": as_of.isoformat(),
+        "as_of": min(as_of_by_org.values()).isoformat(),
+        "as_of_by_org": {org: when.isoformat() for org, when in as_of_by_org.items()},
         "orgs": orgs,
         "results": results,
     }
+
+
+def _org_data_dates(db: VulnerabilityDatabase, orgs: List[str], as_of: Optional[datetime]) -> Dict[str, datetime]:
+    """Each org's data date: the given as_of, else its own load time, else the table's.
+
+    The table-level time covers databases loaded before per-org times were recorded.
+    """
+    if as_of is not None:
+        return {org: as_of for org in orgs}
+    per_org = db.get_org_load_metadata("vulnerabilities")
+    table_level = db.get_load_metadata().get("vulnerabilities")
+    dates = {org: per_org.get(org, table_level) for org in orgs}
+    undated = [org for org, when in dates.items() if when is None]
+    if undated:
+        raise ValueError(f"No recorded load time for org(s) {', '.join(undated)}, so ages cannot be counted.")
+    return dates

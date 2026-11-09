@@ -42,6 +42,11 @@ KNOWN_TABLES = [
 # leading underscore also marks it as internal.
 LOAD_METADATA_TABLE = "_load_metadata"
 
+# Per-org load times. One table holds several orgs loaded at different times, and the
+# per-table time above is overwritten by whichever org loaded last, so ageing every org
+# to it would age an older org's findings against a later org's load.
+ORG_LOAD_METADATA_TABLE = "_org_load_metadata"
+
 # Maps Rapid7 API result prefixes to target DuckDB tables.
 # Tuple values indicate (table_name, source_column_value) for policy prefixes.
 PREFIX_TABLE_MAP: Dict[str, Union[str, Tuple[str, str]]] = {
@@ -270,6 +275,9 @@ class VulnerabilityDatabase:
             # Tables we write to in this call (tracks CREATE vs INSERT decisions).
             tables_touched: Set[str] = set()
 
+            # Orgs each table received in an org-scoped load, for per-org load times.
+            org_ids_by_table: Dict[str, Set[Any]] = {}
+
             # Files this call could not read. Tolerated in snapshot and append mode
             # (pre-existing behaviour), fatal in org-scoped mode.
             failed_files: List[str] = []
@@ -331,6 +339,7 @@ class VulnerabilityDatabase:
                                 f"{null_org_rows} row(s) with a NULL '{org_column}'. Rows without an "
                                 f"org cannot be refreshed per org and would duplicate on every load."
                             )
+                        org_ids_by_table.setdefault(table_name, set()).update(org_ids)
                         if org_ids and table_name in preexisting:
                             deletions.append((table_name, org_column, source_value, org_ids))
 
@@ -429,7 +438,17 @@ class VulnerabilityDatabase:
             # how old the data is. Same connection as the load so the timestamps
             # commit atomically with the rows they describe.
             if tables_touched:
-                self._record_load_metadata(conn, tables_touched)
+                loaded_at = datetime.now()
+                self._record_load_metadata(conn, tables_touched, loaded_at)
+                if org_scoped:
+                    self._record_org_load_metadata(conn, org_ids_by_table, loaded_at, replace=False)
+                elif not append:
+                    self._record_org_load_metadata(
+                        conn,
+                        {table: self._distinct_table_orgs(conn, table) for table in tables_touched},
+                        loaded_at,
+                        replace=True,
+                    )
 
         # Reclaim disk space from dropped tables. DuckDB does not shrink the file
         # on DROP TABLE or VACUUM — the only way is to copy to a fresh database.
@@ -471,7 +490,7 @@ class VulnerabilityDatabase:
             if os.path.exists(compact_path):
                 os.remove(compact_path)
 
-    def _record_load_metadata(self, conn, table_names: Set[str]) -> None:
+    def _record_load_metadata(self, conn, table_names: Set[str], loaded_at: Optional[datetime] = None) -> None:
         """Record the current time as the last-loaded time for each table.
 
         Written on the same connection as the load so the stamp commits with
@@ -486,7 +505,7 @@ class VulnerabilityDatabase:
             )
             """  # nosec B608
         )
-        now = datetime.now()
+        now = loaded_at or datetime.now()
         for table_name in table_names:
             conn.execute(
                 f"""
@@ -496,6 +515,64 @@ class VulnerabilityDatabase:
                 """,  # nosec B608
                 [table_name, now],
             )
+
+    @staticmethod
+    def _distinct_table_orgs(conn, table_name: str) -> Set[Any]:
+        """Return the orgs in a loaded table, or none if it has no org column."""
+        columns = {row[0].lower(): row[0] for row in conn.execute(f"DESCRIBE {table_name}").fetchall()}  # nosec B608
+        org_column = next((columns[c.lower()] for c in ORG_COLUMN_CANDIDATES if c.lower() in columns), None)
+        if org_column is None:
+            return set()
+        rows = conn.execute(
+            f'SELECT DISTINCT "{org_column}" FROM {table_name} WHERE "{org_column}" IS NOT NULL'  # nosec B608
+        ).fetchall()
+        return {row[0] for row in rows}
+
+    def _record_org_load_metadata(
+        self, conn, org_ids_by_table: Dict[str, Set[Any]], loaded_at: datetime, replace: bool
+    ) -> None:
+        """Record the current time as each listed org's load time for each table.
+
+        With replace, a table's previous entries are dropped first, because a snapshot
+        load replaces the whole table and an org missing from it no longer has data.
+        """
+        conn.execute(
+            f"""
+            CREATE TABLE IF NOT EXISTS {ORG_LOAD_METADATA_TABLE} (
+                table_name VARCHAR NOT NULL,
+                org_id VARCHAR NOT NULL,
+                loaded_at TIMESTAMP NOT NULL,
+                PRIMARY KEY (table_name, org_id)
+            )
+            """  # nosec B608
+        )
+        for table_name, org_ids in org_ids_by_table.items():
+            if replace:
+                conn.execute(f"DELETE FROM {ORG_LOAD_METADATA_TABLE} WHERE table_name = ?", [table_name])  # nosec B608
+            for org_id in org_ids:
+                conn.execute(
+                    f"""
+                    INSERT INTO {ORG_LOAD_METADATA_TABLE} (table_name, org_id, loaded_at)
+                    VALUES (?, ?, ?)
+                    ON CONFLICT (table_name, org_id) DO UPDATE SET loaded_at = EXCLUDED.loaded_at
+                    """,  # nosec B608
+                    [table_name, str(org_id), loaded_at],
+                )
+
+    def get_org_load_metadata(self, table_name: str) -> Dict[str, datetime]:
+        """Return each org's last load time for one table, or an empty mapping."""
+        with duckdb_connection(self.db_path, read_only=True) as conn:
+            exists = conn.execute(
+                "SELECT COUNT(*) FROM information_schema.tables WHERE table_name = ?",
+                [ORG_LOAD_METADATA_TABLE],
+            ).fetchone()
+            if not exists or exists[0] == 0:
+                return {}
+            rows = conn.execute(
+                f"SELECT org_id, loaded_at FROM {ORG_LOAD_METADATA_TABLE} WHERE table_name = ?",  # nosec B608
+                [table_name],
+            ).fetchall()
+        return {row[0]: row[1] for row in rows}
 
     def get_load_metadata(self) -> Dict[str, datetime]:
         """Return each loaded table's last-loaded time, or an empty mapping.
