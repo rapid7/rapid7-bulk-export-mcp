@@ -12,6 +12,7 @@ from src.config import (
     key_configured,
     load_config,
     load_org_configs,
+    load_org_labels,
     redact_secret,
 )
 
@@ -304,3 +305,44 @@ class TestRedactSecret:
         with patch.dict(os.environ, {"RAPID7_API_KEY": self.FAKE_KEY}, clear=True):
             text = "a totally benign error message"
             assert redact_secret(text) == text
+
+
+class TestLoadOrgLabels:
+    """load_org_labels() lets coverage run on a server that holds no keys."""
+
+    @staticmethod
+    def _write_orgs(tmp_path, orgs):
+        path = tmp_path / "orgs.json"
+        path.write_text(json.dumps({"orgs": orgs}), encoding="utf-8")
+        return str(path)
+
+    def test_returns_labels_without_resolving_any_key(self, tmp_path):
+        orgs_file = self._write_orgs(
+            tmp_path,
+            [{"label": "fogcutter", "key_ref": "R7_KEY_NOT_SET"}, {"label": "beta", "key_ref": "R7_KEY_ALSO_NOT_SET"}],
+        )
+        with (
+            patch.dict(os.environ, {"RAPID7_ORGS_FILE": orgs_file}, clear=True),
+            patch("src.config._get_key_from_keychain", return_value=None),
+        ):
+            assert load_org_labels() == ["fogcutter", "beta"]
+
+    def test_empty_when_no_org_file_is_configured(self):
+        with patch.dict(os.environ, {}, clear=True):
+            assert load_org_labels() == []
+
+    @pytest.mark.parametrize(
+        ("orgs", "error"),
+        [
+            ([{"label": "a", "key_ref": "K1"}, {"label": "a", "key_ref": "K2"}], "reuses the label"),
+            ([{"label": "a", "key_ref": "K1", "api_key": "inline"}], "inline api_key"),
+            ([], "non-empty 'orgs' array"),
+        ],
+    )
+    def test_rejects_a_malformed_org_file(self, tmp_path, orgs, error):
+        orgs_file = self._write_orgs(tmp_path, orgs)
+        with (
+            patch.dict(os.environ, {"RAPID7_ORGS_FILE": orgs_file}, clear=True),
+            pytest.raises(ValueError, match=error),
+        ):
+            load_org_labels()

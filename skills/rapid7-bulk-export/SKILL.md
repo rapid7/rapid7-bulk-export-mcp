@@ -70,6 +70,10 @@ change that. So a portfolio view is one export per organization, each downloaded
 unioned locally on the `orgId` column. Every organization needs its own organization
 API key, listed in the file named by `RAPID7_ORGS_FILE`.
 
+Steps 1 to 3 export new data and need every organization's key. If the user only wants
+the dashboard or answers from data that is already loaded, skip them and start at step 4.
+Coverage needs no keys, so a server that holds none can still check and report.
+
 ```
 1. list_rapid7_orgs()
    → Confirms every configured organization's key resolves. If it reports a problem,

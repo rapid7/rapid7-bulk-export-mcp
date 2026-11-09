@@ -25,7 +25,7 @@ from mcp.types import ToolAnnotations
 from . import orchestrator
 from .artifact_store import download_artifact, storage_configured
 from .auth import ENV_AUDIENCE, ENV_ISSUER, ENV_JWKS_URI, build_auth
-from .config import ORGS_FILE_ENV, key_configured, load_config, load_org_configs, redact_secret
+from .config import ORGS_FILE_ENV, key_configured, load_config, load_org_configs, load_org_labels, redact_secret
 from .dashboard_queries import run_card
 from .download import download_all_files
 from .duckdb_loader import VulnerabilityDatabase, utc_now
@@ -1694,7 +1694,7 @@ def get_rapid7_org_coverage() -> str:
         _db_lock.release()
 
     try:
-        configured = [config["label"] for config in load_org_configs() if config.get("label")]
+        configured = load_org_labels()
     except Exception:
         # Coverage of loaded data is still worth reporting when the org file is broken.
         configured = []

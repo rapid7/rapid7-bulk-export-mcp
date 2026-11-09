@@ -136,3 +136,16 @@ def _free_for_another_thread(lock) -> bool:
     probe.start()
     probe.join(timeout=10)
     return outcome == [True]
+
+
+def test_coverage_checks_configured_orgs_on_a_server_with_no_keys(loaded, tmp_path, monkeypatch):
+    """A read-only server holds no keys, but coverage still needs to know which orgs to expect."""
+    orgs_file = tmp_path / "orgs.json"
+    orgs_file.write_text(json.dumps({"orgs": [{"label": "fogcutter", "key_ref": "R7_KEY_NOT_SET"}]}))
+    monkeypatch.setenv("RAPID7_ORGS_FILE", str(orgs_file))
+    monkeypatch.delenv("R7_KEY_NOT_SET", raising=False)
+    monkeypatch.setattr("src.config._get_key_from_keychain", lambda _: None)
+
+    coverage = mcp_server.get_rapid7_org_coverage()
+
+    assert "Configured organizations: 1" in coverage

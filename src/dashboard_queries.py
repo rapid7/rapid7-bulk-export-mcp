@@ -78,7 +78,8 @@ PORTFOLIO_SUMMARY = Card(
 ORG_RISK_DISTRIBUTION = Card(
     title="Organisation risk distribution",
     definition=(
-        "Mean, median, and maximum assets.riskScore per organisation. The export has no "
+        "Mean, median, and maximum assets.riskScore over every asset in each organisation, whether "
+        "or not it has an active finding. The export has no "
         "organisation-level risk score, and vulnerabilities.riskScore is content-level and "
         "identical across organisations, so the asset score stands in. The portfolio median "
         "is the median of the organisation means, unweighted, so each organisation counts once."
@@ -200,7 +201,8 @@ UNRESOLVED_AGE_SEVERITY = Card(
 ORG_COMPARISON = Card(
     title="Organisation comparison",
     definition=(
-        "Per organisation: mean asset risk score, asset count, and active, exploitable, and "
+        "Per organisation: mean asset risk score and asset count over every asset, with or without an "
+        "active finding, and the active, exploitable, and "
         "reintroduced findings. Exploitable means hasExploits; the export has no CISA KEV flag. "
         "Reintroduced stands in for remediated, which is not available per organisation."
     ),
