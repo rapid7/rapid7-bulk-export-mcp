@@ -1156,12 +1156,18 @@ def get_rapid7_dashboard_card(card: str) -> str:
     and show no portfolio total if an organization is missing.
 
     Args:
-        card: One of portfolio_summary, org_risk_distribution, vulnerability_activity,
-            unresolved_age_severity, org_comparison, weaponised_critical.
+        card: One of:
+            - portfolio_summary: active findings by severity, and assets affected.
+            - org_risk_distribution: mean asset risk score per organization, with the median.
+            - vulnerability_activity: new and reintroduced critical and high findings per quarter.
+            - unresolved_age_severity: open findings by days active and severity.
+            - org_comparison: risk, assets, active, exploitable, and reintroduced per organization.
+            - weaponised_critical: critical, exploitable, network-reachable findings with EPSS 0.5+.
 
     Returns:
         JSON with the card title, its definition (state it on the card), the data date
-        (as_of), the organizations included, and the result rows of each query.
+        (as_of), the organizations included, and the result rows of each query. In a
+        hosted deployment it also carries data_loaded, the age of that same data date.
     """
     global db
 
@@ -1178,11 +1184,15 @@ def get_rapid7_dashboard_card(card: str) -> str:
         if db is None or not db.has_data():
             return "Error: No data loaded. Load the vulnerability exports before building the dashboard."
         result = run_card(db, card)
-        return json.dumps(result, indent=2, default=str) + _freshness_note()
+        # Inside the JSON, and aged from the card's own as_of: _freshness_note() would break
+        # the JSON and report the newest load of any table, which can be a different date.
+        if storage_configured():
+            result["data_loaded"] = _humanize_age(_dt.datetime.fromisoformat(result["as_of"]), _dt.datetime.now())
+        return json.dumps(result, indent=2, default=str)
     except ValueError as e:
-        return f"✗ {str(e)}"
+        return f"✗ {redact_secret(str(e))}"
     except Exception as e:
-        return f"✗ Error building dashboard card '{card}': {str(e)}"
+        return f"✗ Error building dashboard card '{card}': {redact_secret(str(e))}"
     finally:
         _db_lock.release()
 

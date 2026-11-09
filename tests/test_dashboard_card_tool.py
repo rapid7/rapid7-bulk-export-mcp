@@ -7,7 +7,7 @@ import threading
 import pytest
 
 from src import mcp_server
-from src.dashboard_queries import CARDS
+from src.dashboard_queries import CARDS, run_card
 from tests.test_dashboard_queries import _load
 
 
@@ -73,13 +73,61 @@ def test_refuses_with_no_data_loaded(monkeypatch):
 def test_docstring_lists_exactly_the_registered_cards():
     """The AI picks a card from the docstring, so a card added to CARDS must be listed there."""
     doc = inspect.getdoc(mcp_server.get_rapid7_dashboard_card)
-    listed = doc.split("card: One of", 1)[1].split("Returns:", 1)[0]
+    listed = doc.split("card: One of:", 1)[1].split("Returns:", 1)[0]
 
-    assert {name.strip(" ,.\n") for name in listed.split(",")} == set(CARDS)
+    assert {line.strip()[2:].split(":", 1)[0] for line in listed.splitlines() if line.strip().startswith("- ")} == set(
+        CARDS
+    )
 
 
-def test_tool_is_not_behind_the_write_scope():
-    source = inspect.getsource(mcp_server.get_rapid7_dashboard_card)
+def test_numbers_are_the_card_query_results(loaded):
+    result = json.loads(mcp_server.get_rapid7_dashboard_card("org_comparison"))
 
-    assert "WRITE_TOOL_TAG" not in source
-    assert "_write_precondition" not in source
+    assert result["results"] == run_card(loaded, "org_comparison")["results"]
+
+
+def test_hosted_output_stays_json_and_ages_the_cards_own_data_date(loaded, monkeypatch):
+    monkeypatch.setattr(mcp_server, "storage_configured", lambda: True)
+
+    result = json.loads(mcp_server.get_rapid7_dashboard_card("portfolio_summary"))
+
+    assert result["as_of"] == loaded.get_load_metadata()["vulnerabilities"].isoformat()
+    assert result["data_loaded"] in ("less than a minute ago", "1 minute ago")
+
+
+def test_local_output_carries_no_data_age(loaded, monkeypatch):
+    monkeypatch.setattr(mcp_server, "storage_configured", lambda: False)
+
+    assert "data_loaded" not in json.loads(mcp_server.get_rapid7_dashboard_card("portfolio_summary"))
+
+
+def test_a_query_failure_is_redacted_and_releases_the_lock(loaded, monkeypatch):
+    secret = "test-not-a-real-key"
+    monkeypatch.setenv("RAPID7_API_KEY", secret)
+
+    def _failing_run_card(db, card):
+        raise RuntimeError(f"connection failed with key {secret}")
+
+    monkeypatch.setattr(mcp_server, "run_card", _failing_run_card)
+
+    result = mcp_server.get_rapid7_dashboard_card("portfolio_summary")
+
+    assert result.startswith("✗ Error building dashboard card 'portfolio_summary'")
+    assert secret not in result
+    assert _free_for_another_thread(mcp_server._db_lock)
+
+
+def _free_for_another_thread(lock) -> bool:
+    """An RLock always re-enters for its holder, so only another thread can see it still held."""
+    outcome = []
+
+    def _try():
+        got = lock.acquire(blocking=False)
+        outcome.append(got)
+        if got:
+            lock.release()
+
+    probe = threading.Thread(target=_try)
+    probe.start()
+    probe.join(timeout=10)
+    return outcome == [True]

@@ -95,6 +95,8 @@ API key, listed in the file named by `RAPID7_ORGS_FILE`.
    → Use only these numbers on the dashboard. Do NOT write your own SQL for them:
      the cards are fixed, tested queries, and ad hoc SQL can apply different rules.
      State each card's definition, data date (as_of), and organizations on the card.
+   → If step 4 warned that an organization is missing, show per-organization figures
+     only and leave out every portfolio total.
 
 6. For other questions, analyse with query_rapid7(), grouping or filtering by "orgId",
    and label those answers as ad hoc rather than as dashboard figures.
