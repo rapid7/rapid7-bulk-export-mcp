@@ -26,6 +26,7 @@ from . import orchestrator
 from .artifact_store import download_artifact, storage_configured
 from .auth import ENV_AUDIENCE, ENV_ISSUER, ENV_JWKS_URI, build_auth
 from .config import ORGS_FILE_ENV, key_configured, load_config, load_org_configs, redact_secret
+from .dashboard_queries import run_card
 from .download import download_all_files
 from .duckdb_loader import VulnerabilityDatabase
 from .export_manager import (
@@ -1134,6 +1135,54 @@ def get_rapid7_stats() -> str:
         return f"Database statistics:\n\n{stats_text}"
     except Exception as e:
         return f"Error getting statistics: {str(e)}"
+    finally:
+        _db_lock.release()
+
+
+@mcp.tool(
+    annotations=ToolAnnotations(
+        title="Get Rapid7 Dashboard Card",
+        readOnlyHint=True,
+        destructiveHint=False,
+        idempotentHint=True,
+        openWorldHint=False,
+    )
+)
+def get_rapid7_dashboard_card(card: str) -> str:
+    """Return the numbers behind one multi-org exposure dashboard card.
+
+    Every number comes from fixed, tested SQL, so use this tool for the dashboard and
+    do not write your own SQL for these figures. Run get_rapid7_org_coverage() first
+    and show no portfolio total if an organization is missing.
+
+    Args:
+        card: One of portfolio_summary, org_risk_distribution, vulnerability_activity,
+            unresolved_age_severity, org_comparison, weaponised_critical.
+
+    Returns:
+        JSON with the card title, its definition (state it on the card), the data date
+        (as_of), the organizations included, and the result rows of each query.
+    """
+    global db
+
+    precondition = _read_precondition()
+    if precondition is not None:
+        return precondition
+
+    if not _db_lock.acquire(blocking=False):
+        return (
+            "⏳ A background download/load is in progress, so the dashboard can't be "
+            "read safely right now. Try again once loading has finished."
+        )
+    try:
+        if db is None or not db.has_data():
+            return "Error: No data loaded. Load the vulnerability exports before building the dashboard."
+        result = run_card(db, card)
+        return json.dumps(result, indent=2, default=str) + _freshness_note()
+    except ValueError as e:
+        return f"✗ {str(e)}"
+    except Exception as e:
+        return f"✗ Error building dashboard card '{card}': {str(e)}"
     finally:
         _db_lock.release()
 
