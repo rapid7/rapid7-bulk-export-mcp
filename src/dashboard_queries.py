@@ -153,7 +153,7 @@ UNRESOLVED_AGE_SEVERITY = Card(
     definition=(
         "Active findings by severity in the PRD age bands 0 to 7, 8 to 30, 31 to 60, 61 to 90, "
         "and 91+ days. Days run from when each finding became active to when its organisation's data was loaded. "
-        "A finding with neither a first-found nor a reintroduced date goes in a separate 'no date' band. "
+        "A finding with no first-found or reintroduced date is counted in 91+, as the dashboard does. "
         "Unknown and None severities are left out."
     ),
     queries=(
@@ -174,14 +174,12 @@ UNRESOLVED_AGE_SEVERITY = Card(
                   WHERE e."orgId" = v."orgId" AND e."assetId" = v."assetId" AND e."vulnId" = v."vulnId")
             ), banded AS (
               SELECT "cvssV3Severity",
-                CASE WHEN days_active IS NULL THEN 'no date'
-                     WHEN days_active <= 7 THEN '0-7'
+                CASE WHEN days_active <= 7 THEN '0-7'
                      WHEN days_active <= 30 THEN '8-30'
                      WHEN days_active <= 60 THEN '31-60'
                      WHEN days_active <= 90 THEN '61-90'
                      ELSE '91+' END AS band,
-                CASE WHEN days_active IS NULL THEN 6
-                     WHEN days_active <= 7 THEN 1
+                CASE WHEN days_active <= 7 THEN 1
                      WHEN days_active <= 30 THEN 2
                      WHEN days_active <= 60 THEN 3
                      WHEN days_active <= 90 THEN 4

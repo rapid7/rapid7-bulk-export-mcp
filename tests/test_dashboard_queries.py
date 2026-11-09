@@ -225,7 +225,7 @@ def test_age_band_edges(tmp_path, days, band):
     assert bands == [{"band": band, "critical": 0, "high": 1, "medium": 0, "low": 0}]
 
 
-def test_a_finding_with_no_date_is_not_reported_as_the_oldest(tmp_path):
+def test_a_finding_with_no_date_is_counted_in_91_plus_as_the_dashboard_does(tmp_path):
     rows = [("ORG-A", "A1", "V1", "High", False, None, None, "Local", 0.1)]
     database = _load(tmp_path, with_exceptions=False, rows=rows)
     try:
@@ -233,7 +233,7 @@ def test_a_finding_with_no_date_is_not_reported_as_the_oldest(tmp_path):
     finally:
         database.close()
 
-    assert [row["band"] for row in bands] == ["no date"]
+    assert [row["band"] for row in bands] == ["91+"]
 
 
 def test_missing_severity_counts_as_unscored(tmp_path):
