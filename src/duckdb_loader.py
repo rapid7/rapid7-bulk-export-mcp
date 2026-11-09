@@ -47,11 +47,6 @@ LOAD_METADATA_TABLE = "_load_metadata"
 # to it would age an older org's findings against a later org's load.
 ORG_LOAD_METADATA_TABLE = "_org_load_metadata"
 
-# The org ids each configured org label resolved to on its last load. A refresh whose
-# export carries no rows at all names no org in its files, so this is the only way to
-# know whose old rows to clear.
-ORG_LABEL_TABLE = "_org_labels"
-
 # Tables an org-scoped refresh replaces for the refreshed org even when the new export
 # has no rows for them. Only the vulnerability export loads per org today, and it
 # writes these three. Without this, an org whose last exception was lifted, or whose
@@ -234,13 +229,17 @@ class VulnerabilityDatabase:
             append: When True, insert rows into existing tables rather than dropping
                 and recreating them. Use for additive loads (e.g. remediation chunks).
                 Default False preserves snapshot-replace behavior.
-            org_scoped: When True, replace only the rows whose org identifier appears
-                in the incoming files, leaving every other org in the table intact.
-                Use for multi-org loads, where a per-org export must refresh that org
-                without discarding the tenants loaded before it. Mutually exclusive
-                with append. Does not compact the database file, because a fan-out
-                across many orgs would otherwise compact once per org; call compact()
-                after the batch instead.
+            org_scoped: When True, refresh the orgs named in the incoming files: their
+                rows are cleared from every table this load writes and from every
+                ORG_SCOPED_TABLES table, then the new rows are inserted. Every other
+                org is left intact. Pass the org's full export in one call: a table
+                with no file is treated as having no rows, so a partial call clears
+                the org's other tables. Mutually exclusive with append. Does not
+                compact the database file, because a fan-out across many orgs would
+                otherwise compact once per org; call compact() after the batch instead.
+            org_label: The configured label of the org being refreshed. An org-scoped
+                export with no rows names no org, so it deletes nothing and any previous
+                rows for that org are kept.
 
         Raises:
             ValueError: If both append and org_scoped are True, or if an org-scoped
@@ -311,7 +310,7 @@ class VulnerabilityDatabase:
                 # rather than fail midway and rely on a rollback.
                 deletions: List[Tuple[str, str, Optional[str], List[Any]]] = []
                 found_orgs: Set[Any] = set()
-                targets: Dict[str, Optional[str]] = {}
+                targets: Dict[str, Set[Optional[str]]] = {}
                 for prefix, file_paths in prefix_file_map.items():
                     if prefix in skip_prefixes:
                         continue
@@ -354,23 +353,22 @@ class VulnerabilityDatabase:
                                 f"org cannot be refreshed per org and would duplicate on every load."
                             )
                         found_orgs.update(org_ids)
-                        targets.setdefault(table_name, source_value)
+                        targets.setdefault(table_name, set()).add(source_value)
 
-                # Decide once, for the whole export, which orgs this refresh replaces. The
-                # files win when they name an org: a label whose key now reaches another
-                # org must not delete the old org's data. Only an export with no rows at
-                # all falls back to the orgs the label resolved to last time.
-                refreshed_orgs: Set[Any] = set(found_orgs)
-                if not refreshed_orgs and org_label is not None:
-                    refreshed_orgs = self._remembered_org_ids(conn, org_label, preexisting)
+                # Decide once, for the whole export, which orgs this refresh replaces.
+                # An export with no rows names no org, so it deletes nothing: guessing from
+                # an earlier load could delete a different org's data if the key now reaches
+                # another org. Any previous rows for the org stay, and the caller says so.
                 for table_name in ORG_SCOPED_TABLES:
-                    targets.setdefault(table_name, None)
-                org_ids_by_table = {table_name: set(refreshed_orgs) for table_name in targets}
+                    targets.setdefault(table_name, {None})
+                org_ids_by_table = {table_name: set(found_orgs) for table_name in targets}
 
-                for table_name, source_value in targets.items():
+                for table_name, source_values in targets.items():
                     org_column = self._table_org_column(conn, table_name) if table_name in preexisting else None
-                    if refreshed_orgs and org_column is not None:
-                        deletions.append((table_name, org_column, source_value, sorted(refreshed_orgs, key=str)))
+                    if org_column is None or not found_orgs:
+                        continue
+                    for source_value in sorted(source_values, key=str):
+                        deletions.append((table_name, org_column, source_value, sorted(found_orgs, key=str)))
 
                 conn.begin()
                 try:
@@ -462,8 +460,6 @@ class VulnerabilityDatabase:
                         loaded_at = datetime.now()
                         self._record_load_metadata(conn, tables_touched, loaded_at)
                         self._record_org_load_metadata(conn, org_ids_by_table, loaded_at, replace=False)
-                    if org_label is not None and found_orgs:
-                        self._remember_org_ids(conn, org_label, found_orgs)
                 except Exception:
                     conn.rollback()
                     raise
@@ -560,25 +556,6 @@ class VulnerabilityDatabase:
         """Return a loaded table's org identifier column, or None if it has none."""
         columns = {row[0].lower(): row[0] for row in conn.execute(f"DESCRIBE {table_name}").fetchall()}  # nosec B608
         return next((columns[c.lower()] for c in ORG_COLUMN_CANDIDATES if c.lower() in columns), None)
-
-    @staticmethod
-    def _remembered_org_ids(conn, org_label: str, preexisting: Set[str]) -> Set[Any]:
-        """Return the org ids a label resolved to on its last load, or none."""
-        if ORG_LABEL_TABLE not in preexisting:
-            return set()
-        rows = conn.execute(f"SELECT org_id FROM {ORG_LABEL_TABLE} WHERE org_label = ?", [org_label]).fetchall()  # nosec B608
-        return {row[0] for row in rows}
-
-    @staticmethod
-    def _remember_org_ids(conn, org_label: str, org_ids: Set[Any]) -> None:
-        """Replace the org ids recorded for a label with the ones this load found."""
-        conn.execute(
-            f"CREATE TABLE IF NOT EXISTS {ORG_LABEL_TABLE} "  # nosec B608
-            "(org_label VARCHAR NOT NULL, org_id VARCHAR NOT NULL, PRIMARY KEY (org_label, org_id))"
-        )
-        conn.execute(f"DELETE FROM {ORG_LABEL_TABLE} WHERE org_label = ?", [org_label])  # nosec B608
-        for org_id in org_ids:
-            conn.execute(f"INSERT INTO {ORG_LABEL_TABLE} (org_label, org_id) VALUES (?, ?)", [org_label, str(org_id)])  # nosec B608
 
     @classmethod
     def _distinct_table_orgs(cls, conn, table_name: str) -> Set[Any]:

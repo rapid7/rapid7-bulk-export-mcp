@@ -95,22 +95,18 @@ def test_findings_that_were_all_fixed_do_not_survive_the_refresh(two_orgs, tmp_p
     assert _count(two_orgs, "assets", "ORG-A") == 1
 
 
-def test_an_export_with_no_rows_at_all_clears_the_org_by_its_label(two_orgs, tmp_path):
-    _refresh(two_orgs, tmp_path, "ORG-A", "alpha", [], [], [], "a-day2")
+@pytest.mark.parametrize("label", ["alpha", None])
+def test_an_export_with_no_rows_at_all_deletes_nothing(two_orgs, tmp_path, label):
+    """Its files name no org, and guessing could delete another org's data if the key moved."""
+    _refresh(two_orgs, tmp_path, "ORG-A", label, [], [], [], "a-day2")
 
     for table in ("vulnerabilities", "assets", "vulnerability_exceptions"):
-        assert _count(two_orgs, table, "ORG-A") == 0, table
-
-
-def test_without_a_label_an_export_with_no_rows_cannot_name_the_org(two_orgs, tmp_path):
-    """Nothing in the files or the call says whose rows these were, so nothing is deleted."""
-    _refresh(two_orgs, tmp_path, "ORG-A", None, [], [], [], "a-day2")
-
-    assert _count(two_orgs, "vulnerabilities", "ORG-A") == 1
+        assert _count(two_orgs, table, "ORG-A") == 1, table
+    assert _count(two_orgs, "vulnerabilities", "ORG-B") == 1
 
 
 def test_refreshing_one_org_never_touches_another(two_orgs, tmp_path):
-    _refresh(two_orgs, tmp_path, "ORG-A", "alpha", [], [], [], "a-day2")
+    _refresh(two_orgs, tmp_path, "ORG-A", "alpha", [], ["A1"], [], "a-day2")
 
     assert _count(two_orgs, "vulnerabilities", "ORG-B") == 1
     assert _count(two_orgs, "assets", "ORG-B") == 1
@@ -124,9 +120,32 @@ def test_a_label_that_now_reaches_another_org_does_not_delete_the_old_org(two_or
     assert _count(two_orgs, "vulnerabilities", "ORG-C") == 1
 
 
-def test_the_label_follows_the_org_its_files_named_last(two_orgs, tmp_path):
-    _refresh(two_orgs, tmp_path, "ORG-C", "alpha", [("C1", "V5")], ["C1"], [], "c-day2")
-    _refresh(two_orgs, tmp_path, "ORG-C", "alpha", [], [], [], "c-day3")
+def test_a_partial_call_treats_the_missing_tables_as_empty(two_orgs, tmp_path):
+    """Callers must pass the full export: a table with no file is cleared for the org."""
+    files = _export(tmp_path, "ORG-A", [("A1", "V1")], None, None, "a-partial")
+    two_orgs.load_parquet_files_by_prefix(files, org_scoped=True, org_label="alpha")
 
-    assert _count(two_orgs, "vulnerabilities", "ORG-C") == 0
     assert _count(two_orgs, "vulnerabilities", "ORG-A") == 1
+    assert _count(two_orgs, "assets", "ORG-A") == 0
+
+
+def test_both_policy_sources_are_replaced_without_duplicating(db, tmp_path):
+    def _policies(name, assets):
+        return _parquet(
+            tmp_path,
+            name,
+            {"orgId": pa.array(["ORG-A"] * len(assets), pa.string()), "assetId": pa.array(assets, pa.string())},
+        )
+
+    for day in ("day1", "day2"):
+        db.load_parquet_files_by_prefix(
+            {
+                "asset_policy": [_policies(f"agent-{day}", ["A1"])],
+                "asset_scan_policy": [_policies(f"scan-{day}", ["A1", "A2"])],
+            },
+            org_scoped=True,
+            org_label="alpha",
+        )
+
+    rows = db.query("SELECT source, COUNT(*) AS c FROM policies GROUP BY source ORDER BY source")
+    assert rows == [{"source": "agent", "c": 1}, {"source": "scan", "c": 2}]

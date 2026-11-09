@@ -133,6 +133,25 @@ class TestOrgScopedLoad:
             orchestrator.download_and_load_files(ctx, export_type, _status(prefix=export_type), "k", org_scoped=True)
         assert db.load_calls == []
 
+    def test_an_empty_org_export_warns_that_previous_data_was_kept(self, tmp_path):
+        db = OrgFakeDB(row_counts={"vulnerabilities": 0})
+        ctx = _context(tmp_path, db)
+
+        _, _, _, warnings = orchestrator.download_and_load_files(
+            ctx, "vulnerability", _status(), "k", org_scoped=True, org_label="europe"
+        )
+
+        assert any("export for org 'europe' has no rows" in w and "was kept" in w for w in warnings)
+
+    def test_a_loaded_org_export_carries_no_empty_export_warning(self, tmp_path):
+        ctx = _context(tmp_path, OrgFakeDB())
+
+        _, _, _, warnings = orchestrator.download_and_load_files(
+            ctx, "vulnerability", _status(), "k", org_scoped=True, org_label="europe"
+        )
+
+        assert not any("has no rows" in w for w in warnings)
+
 
 class TestRunDownloadAndLoadForAnOrg:
     @staticmethod

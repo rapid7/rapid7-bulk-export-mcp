@@ -170,8 +170,8 @@ def download_and_load_files(
     the files are actually downloaded and before the load begins, so a
     caller can record the LOADING phase honestly. When org_scoped is set, the load
     replaces only the rows of the orgs present in the files, so loading one org does
-    not discard the orgs already loaded. org_label lets an export with no rows still
-    clear that org's old rows. Returns (row_count, row_counts, stats,
+    not discard the orgs already loaded. org_label names the org in the warning when its
+    export has no rows. Returns (row_count, row_counts, stats,
     validation_warnings).
     """
     parquet_urls = status_info["parquetFiles"]
@@ -223,6 +223,13 @@ def download_and_load_files(
                 row_counts = db.load_parquet_files_by_prefix(prefix_file_map)
 
             row_count = sum(row_counts.values())
+            if org_scoped and row_count == 0:
+                who = f"org '{org_label}'" if org_label else "this org"
+                validation_warnings.append(
+                    f"⚠️  The export for {who} has no rows, so it names no org and nothing was "
+                    f"replaced. Any data previously loaded for it was kept. If the org should "
+                    f"have data, check that its key still reaches the right org."
+                )
             if row_count == 0 and len(file_data) > 0:
                 validation_warnings.append(
                     f"⚠️  {len(file_data)} file(s) downloaded but 0 rows loaded. "
