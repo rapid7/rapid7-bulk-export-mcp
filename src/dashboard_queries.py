@@ -27,6 +27,9 @@ class Card:
     """The card's lead copy, worded as the UX reference has it wherever the data allows."""
     definition: str
     queries: Tuple[Tuple[str, str], ...]
+    per_org: Tuple[str, ...] = ()
+    """Queries whose every row describes one organisation alone. Any other query combines
+    organisations, so it is wrong while an organisation is missing."""
 
 
 PORTFOLIO_SUMMARY = Card(
@@ -39,6 +42,7 @@ PORTFOLIO_SUMMARY = Card(
         "The export does not carry CISA KEV, so active findings with a known exploit (hasExploits) "
         "stand in for findings in CISA KEV. A known exploit is not the same as known exploitation."
     ),
+    per_org=("by_org",),
     queries=(
         (
             "by_org",
@@ -95,6 +99,7 @@ ORG_RISK_DISTRIBUTION = Card(
         "asset risk score stands in. The portfolio median is the median of the organisation means, "
         "unweighted, so each organisation counts once."
     ),
+    per_org=("by_org",),
     queries=(
         (
             "by_org",
@@ -128,6 +133,7 @@ NEW_VULNERABILITIES = Card(
         "firstFoundTimestamp and reintroducedTimestamp. Weeks start on Monday. One daily snapshot "
         "holds only findings that are still open, so a finding remediated since does not appear."
     ),
+    per_org=("by_week",),
     queries=(
         (
             "by_week",
@@ -160,6 +166,7 @@ REMEDIATED_VULNERABILITIES = Card(
         "Monday. The remediation export cannot be scoped to one organisation, so reintroduced "
         "findings stand in for remediated ones."
     ),
+    per_org=("by_week",),
     queries=(
         (
             "by_week",
@@ -241,6 +248,7 @@ ORG_COMPARISON = Card(
         "record. CISA KEV per assessed asset and exploited in the wild have no stand-in, so those "
         "columns are left out."
     ),
+    per_org=("by_org",),
     queries=(
         (
             "by_org",
@@ -346,6 +354,7 @@ def run_card(db: VulnerabilityDatabase, card: str, as_of: Optional[datetime] = N
         "as_of": _utc_iso(min(as_of_by_org.values())),
         "as_of_by_org": {org: _utc_iso(when) for org, when in as_of_by_org.items()},
         "orgs": orgs,
+        "per_org": list(spec.per_org),
         "results": results,
     }
 
