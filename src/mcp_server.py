@@ -1223,9 +1223,15 @@ UNSUPPORTED_AGGREGATIONS_WARNING = (
 def _write_private_file(path: Path, text: str) -> None:
     """Create a file only its owner can read, failing rather than overwriting one."""
     path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+    # mkdir leaves an existing directory's mode alone, and the umask can loosen a new one.
+    os.chmod(path.parent, 0o700)
     fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
-    with os.fdopen(fd, "w", encoding="utf-8") as handle:
-        handle.write(text)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            handle.write(text)
+    except BaseException:
+        path.unlink(missing_ok=True)
+        raise
 
 
 @mcp.tool(
@@ -1235,7 +1241,9 @@ def _write_private_file(path: Path, text: str) -> None:
         destructiveHint=False,
         idempotentHint=False,
         openWorldHint=False,
-    )
+    ),
+    tags={WRITE_TOOL_TAG},
+    auth=_require_write_scope,
 )
 def generate_rapid7_dashboard_report() -> str:
     """Build the multi-org exposure report as one HTML file from the data already loaded.
@@ -1267,6 +1275,9 @@ def generate_rapid7_dashboard_report() -> str:
             return "Error: No data loaded. Load the vulnerability exports before building the report."
         orgs_in_data = db.query('SELECT COUNT(DISTINCT "orgId") AS n FROM vulnerabilities')[0]["n"]
         cards = [run_card(db, name) for name in CARDS]
+        # Inside the lock: a load records itself in the tracker after it releases the lock,
+        # so a load seen here as complete finished before the cards were read.
+        configured, _loaded_today, warnings = _coverage_warnings(orgs_in_data)
     except ValueError as e:
         return f"✗ {redact_secret(str(e))}"
     except Exception as e:
@@ -1274,7 +1285,11 @@ def generate_rapid7_dashboard_report() -> str:
     finally:
         _db_lock.release()
 
-    _configured, _loaded_today, warnings = _coverage_warnings(orgs_in_data)
+    if not configured and orgs_in_data > 1:
+        warnings.append(
+            f"The data holds {orgs_in_data} organizations but no organization list could be read, "
+            "so coverage cannot be confirmed."
+        )
     generated = utc_now()
     html = render_report(
         cards,
