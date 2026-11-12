@@ -201,6 +201,16 @@ def test_every_card_states_its_orgs_data_date_and_definition(db, card):
     assert set(result["results"]) == {name for name, _ in CARDS[card].queries}
 
 
+@pytest.mark.parametrize("card", list(CARDS))
+def test_a_per_org_query_gives_one_org_per_row_and_names_a_real_query(db, card):
+    result = run_card(db, card, as_of=AS_OF)
+
+    assert set(result["per_org"]) <= set(result["results"])
+    for name in result["per_org"]:
+        rows = result["results"][name]
+        assert rows and all(row["orgId"] in result["orgs"] for row in rows), name
+
+
 def test_as_of_defaults_to_when_the_vulnerability_data_was_loaded(db):
     loaded_at = db.get_load_metadata()["vulnerabilities"]
 

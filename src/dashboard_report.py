@@ -7,7 +7,7 @@ carries host names, titles and solution text that reach a browser.
 
 from decimal import Decimal
 from html import escape
-from typing import Any, Dict, Iterable, List, Optional
+from typing import Any, Dict, List, Optional
 
 _STYLE = """
 body { font-family: -apple-system, "Segoe UI", Roboto, sans-serif; margin: 2rem; color: #1b1f24; }
@@ -46,7 +46,10 @@ def _cell(value: Any) -> str:
 
 def _decimal_text(value: Any) -> str:
     """Thousands separators, trailing zeros dropped: 617381.3 and 0.9422 stay as written."""
-    text = f"{Decimal(str(value)):,f}"
+    number = Decimal(str(value))
+    if not number.is_finite():
+        return ""
+    text = f"{number.copy_abs() if number.is_zero() else number:,f}"
     return text.rstrip("0").rstrip(".") if "." in text else text
 
 
@@ -59,12 +62,6 @@ def _table(rows: List[Dict[str, Any]]) -> str:
     return f"<table><thead><tr>{head}</tr></thead><tbody>{body}</tbody></table>"
 
 
-def is_cross_org(rows: Iterable[Dict[str, Any]]) -> bool:
-    """True when a result aggregates across organisations, so it has no orgId column."""
-    first = next(iter(rows), None)
-    return first is not None and "orgId" not in first
-
-
 def _card_section(card: Dict[str, Any], coverage_complete: bool) -> str:
     dates = sorted(set(card.get("as_of_by_org", {}).values())) or [card["as_of"]]
     date_text = dates[0] if len(dates) == 1 else f"from {dates[0]} to {dates[-1]}, by organisation"
@@ -75,9 +72,10 @@ def _card_section(card: Dict[str, Any], coverage_complete: bool) -> str:
         f'<p class="definition">{escape(card["definition"])}</p>',
         f'<p class="meta">Data date (UTC): {escape(date_text)}. Organisations: {escape(orgs)}.</p>',
     ]
+    per_org = set(card.get("per_org", ()))
     for name, rows in card["results"].items():
         parts.append(f"<h3>{escape(_label(name))}</h3>")
-        if not coverage_complete and is_cross_org(rows):
+        if not coverage_complete and name not in per_org:
             parts.append('<p class="note">Left out: this combines organisations, and coverage is incomplete.</p>')
         else:
             parts.append(_table(rows))
