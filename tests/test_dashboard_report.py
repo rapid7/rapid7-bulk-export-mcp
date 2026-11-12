@@ -72,7 +72,8 @@ def _shades(values):
     ("values", "steps"),
     [
         (list(range(1, 11)), [0, 0, 1, 1, 2, 2, 3, 3, 4, 4]),
-        ([1, 5, 5], [1, 4, 4]),
+        ([1, 5, 5], [0, 4, 4]),
+        ([1, 1, 1, 1, 100], [1, 1, 1, 1, 4]),
         ([7], [4]),
         ([0, 0, 100], [None, None, 4]),
         ([Decimal("2"), 1, 3.0, float("nan"), 4, 5], [1, 0, 2, None, 3, 4]),
@@ -88,7 +89,7 @@ def test_a_tile_falls_back_to_a_table_when_its_column_is_missing():
     html = _html([_card({"portfolio": [{"active_total": 5}]})], complete=True)
 
     assert '<div class="k">Active findings</div>' not in html
-    assert "<table" in html or '<div class="k">Active total</div>' in html
+    assert '<div class="k">Active total</div><div class="v">5</div>' in html
 
 
 def test_hostile_text_is_escaped_in_tiles_and_the_heat_table():
@@ -271,3 +272,18 @@ def test_incomplete_coverage_draws_no_chart_of_a_combined_result(cards):
     after = _section(_html(cards, complete=False), "weaponised_critical").split("<h3>Solution types</h3>", 1)[1]
 
     assert "<svg" not in after.split("<h3>", 1)[0]
+
+
+def test_more_than_three_orgs_each_get_their_own_colour():
+    orgs = [f"ORG-{i}" for i in range(10)]
+    rows = [{"orgId": org, "n": 1} for org in orgs]
+    html = _html([_card({"by_org": rows}, per_org=["by_org"], orgs=orgs)])
+
+    swatches = re.findall(r'<span class="swatch" style="background:(#[0-9a-f]{6})"></span>', html)
+    assert len(swatches) == 10 == len(set(swatches))
+
+
+def test_incomplete_coverage_still_draws_the_per_org_charts(cards):
+    section = _section(_html(cards, complete=False), "vulnerability_activity")
+
+    assert section.count("<polyline") >= 2
