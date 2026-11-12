@@ -1,7 +1,9 @@
 """Tests for the generate_rapid7_dashboard_report MCP tool."""
 
+import os
 import stat
 import threading
+from datetime import datetime
 
 import pytest
 
@@ -64,11 +66,52 @@ def test_an_org_that_did_not_load_today_leaves_out_the_combined_figures(loaded, 
     assert "Left out: this combines organisations" in html
 
 
-def test_two_reports_never_overwrite_each_other(loaded):
+def test_a_report_never_overwrites_an_existing_file(loaded, monkeypatch):
+    monkeypatch.setattr(mcp_server, "utc_now", lambda: datetime(2026, 9, 23, 9, 0, 0))
     mcp_server.generate_rapid7_dashboard_report()
+    [first] = _reports(loaded)
+    before = first.read_text(encoding="utf-8")
+
+    result = mcp_server.generate_rapid7_dashboard_report()
+
+    assert result.startswith("✗ Could not write the report")
+    assert _reports(loaded) == [first]
+    assert first.read_text(encoding="utf-8") == before
+
+
+def test_an_existing_loose_reports_directory_is_made_private(loaded):
+    (loaded / "reports").mkdir(parents=True)
+    os.chmod(loaded / "reports", 0o755)
+
     mcp_server.generate_rapid7_dashboard_report()
 
-    assert len(_reports(loaded)) == 2
+    assert stat.S_IMODE((loaded / "reports").stat().st_mode) == 0o700
+
+
+@pytest.mark.parametrize("org_list", ["empty", "broken"])
+def test_several_orgs_with_no_readable_org_list_is_not_called_complete(loaded, monkeypatch, org_list):
+    def _broken():
+        raise ValueError("bad org file")
+
+    monkeypatch.setattr(mcp_server, "load_org_labels", (lambda: []) if org_list == "empty" else _broken)
+
+    result = mcp_server.generate_rapid7_dashboard_report()
+
+    assert "Coverage: incomplete" in result
+    assert "coverage cannot be confirmed" in result
+    assert "Left out: this combines organisations" in _reports(loaded)[0].read_text(encoding="utf-8")
+
+
+def test_a_tracker_failure_is_reported_and_writes_no_file(loaded, monkeypatch):
+    def _failing_tracker():
+        raise RuntimeError("tracker unavailable")
+
+    monkeypatch.setattr(mcp_server, "_tracker", _failing_tracker)
+
+    result = mcp_server.generate_rapid7_dashboard_report()
+
+    assert result.startswith("✗ Error building the dashboard report")
+    assert not (loaded / "reports").exists()
 
 
 def test_no_data_writes_no_file(loaded, monkeypatch):
