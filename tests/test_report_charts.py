@@ -90,3 +90,45 @@ def test_a_non_finite_value_is_drawn_as_zero_rather_than_breaking_the_chart():
     svg = line_chart(rows, "quarter", "n", "orgId", COLOURS, _fmt)
 
     assert "nan" not in svg.lower()
+    assert "<title>ORG-A 2026-01: 0</title>" in svg
+    first_y = float(re.search(r'<polyline points="([^"]+)"', svg).group(1).split()[0].split(",")[1])
+    assert first_y == 180.0
+
+
+def test_a_gap_between_quarters_keeps_its_width_and_a_missing_quarter_is_dropped():
+    rows = [
+        {"quarter": "2024-01", "orgId": "ORG-A", "n": 1},
+        {"quarter": "2024-10", "orgId": "ORG-A", "n": 2},
+        {"quarter": None, "orgId": "ORG-A", "n": 9},
+    ]
+
+    svg = line_chart(rows, "quarter", "n", "orgId", COLOURS, _fmt)
+
+    points = re.search(r'<polyline points="([^"]+)"', svg).group(1).split()
+    assert len(points) == 4
+    assert "None" not in svg
+    assert "<title>ORG-A 2024-04: 0</title>" in svg
+
+
+def test_an_org_with_no_risk_score_is_left_off_the_dot_plot():
+    rows = [{"orgId": "ORG-A", "mean_risk": 100}, {"orgId": "ORG-B", "mean_risk": None}]
+
+    svg = dot_plot(rows, "mean_risk", "orgId", COLOURS, _fmt)
+
+    assert svg.count("<circle") == 1
+    assert "ORG-B" not in svg
+
+
+def test_negative_and_huge_values_still_give_valid_charts():
+    bars = bar_chart([{"t": "a", "n": -5}, {"t": "b", "n": 1.7e308}], "t", "n", _fmt)
+    line = line_chart([{"quarter": "2026-01", "orgId": "ORG-A", "n": -3}], "quarter", "n", "orgId", COLOURS, _fmt)
+
+    assert 'height="-' not in bars
+    assert "inf" not in bars.lower() and "nan" not in bars.lower()
+    assert float(re.search(r'points="([^"]+)"', line).group(1).split(",")[1]) <= 180.0
+
+
+def test_axis_title_and_ticks_are_escaped():
+    svg = bar_chart([{"t": "a", HOSTILE: 3}], "t", HOSTILE, _fmt)
+
+    assert "<b " not in svg

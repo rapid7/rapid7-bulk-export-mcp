@@ -22,8 +22,20 @@ from .report_charts import bar_chart, dot_plot, line_chart
 
 _ASSETS = Path(__file__).parent / "assets"
 
-SERIES_COLOURS = ("#77b8ec", "#ff3d82", "#7262c4")
-"""RDS categorical data-viz colours, used in order so each org keeps one colour."""
+SERIES_COLOURS = (
+    "#77b8ec",
+    "#ff3d82",
+    "#7262c4",
+    "#4edaca",
+    "#c39bf2",
+    "#f4d35e",
+    "#ff8a65",
+    "#a5d6a7",
+    "#f48fb1",
+    "#90a4ae",
+)
+"""Org series colours. The first three are the RDS categorical data-viz colours. The rest
+extend them for portfolios of more than three organisations, avoiding the severity colours."""
 
 HEAT_RAMP = (
     ("#ffe100", "#181d1f"),
@@ -259,9 +271,13 @@ def _headline_tiles(rows: List[Dict[str, Any]], colours: Dict[str, str]) -> str:
 
 
 def _heat_step(value: float, values: Sequence[float]) -> int:
-    """Quintile of value among values, counting ties upwards, so the largest is always darkest."""
+    """Quintile of value among values, by its mid rank so ties share a step. The largest is darkest."""
+    if value >= max(values):
+        return len(HEAT_RAMP) - 1
+    below = sum(1 for v in values if v < value)
     at_or_below = sum(1 for v in values if v <= value)
-    return max(0, math.ceil(at_or_below * len(HEAT_RAMP) / len(values)) - 1)
+    mid_rank = (below + at_or_below) / 2
+    return max(0, math.ceil(mid_rank * len(HEAT_RAMP) / len(values)) - 1)
 
 
 def _heat_table(rows: List[Dict[str, Any]], colours: Dict[str, str]) -> str:
