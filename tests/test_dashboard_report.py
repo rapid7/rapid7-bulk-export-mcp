@@ -1,5 +1,6 @@
 """Tests for rendering the dashboard cards as one HTML document."""
 
+import re
 from datetime import datetime
 from decimal import Decimal
 
@@ -32,14 +33,50 @@ def test_every_card_appears_with_its_definition_and_data_date(cards):
         assert f'id="{card["card"]}"' in html
         assert card["title"] in html
         assert card["definition"].split(".")[0] in html
-    assert "Data date (UTC): 2026-09-23T00:00:00+00:00" in html
+    assert "Data date: 2026-09-23 00:00 UTC" in html
 
 
 def test_the_document_is_self_contained(cards):
-    html = _html(cards).lower()
+    html = _html(cards)
+    without_fonts = re.sub(r"url\(data:font/woff2;base64,[A-Za-z0-9+/=]+\)", "", html)
+    without_svg_namespace = without_fonts.replace('xmlns="http://www.w3.org/2000/svg"', "")
 
-    for marker in ("<script", "<link", "<iframe", "<img", "url(", "@import", "//"):
-        assert marker not in html.replace("<!doctype html>", ""), marker
+    assert html.count("url(data:font/woff2;base64,") == 2
+    for marker in ("<script", "<link", "<iframe", "<img", "<object", "<embed", "@import", "http", "//"):
+        assert marker not in without_svg_namespace.lower(), marker
+    assert set(re.findall(r"url\(([^)]*)\)", without_svg_namespace)) <= {"#r7logo"}
+
+
+def test_the_report_uses_the_callisto_dark_theme_and_the_logo(cards):
+    html = _html(cards)
+
+    assert '<html lang="en" data-rds-brand="callisto" data-rds-mode="dark">' in html
+    assert 'aria-label="Rapid7"' in html
+    assert "--rds-bg-default: #181d1f" in html
+
+
+def test_portfolio_totals_show_as_tiles(cards):
+    portfolio = next(c for c in cards if c["card"] == "portfolio_summary")["results"]["portfolio"][0]
+    section = _section(_html(cards), "portfolio_summary")
+
+    assert f'<div class="k">Active critical</div><div class="v">{portfolio["critical"]:,}</div>' in section
+
+
+def test_age_bands_use_the_heat_ramp_from_warning_to_critical():
+    rows = [{"band": "0-7", "critical": 1, "high": 2}, {"band": "91+", "critical": 50, "high": 9}]
+    html = _html([_card({"by_band": rows}, card="unresolved_age_severity")])
+
+    assert '<td style="background:#ffe100;color:#181d1f">1</td>' in html
+    assert '<td style="background:#982c35;color:#ffffff">50</td>' in html
+
+
+def test_each_org_keeps_one_colour_on_every_card():
+    rows = [{"orgId": "ORG-B", "n": 1}, {"orgId": "ORG-A", "n": 2}]
+    cards = [_card({"by_org": rows}, per_org=["by_org"], card=f"c{i}", orgs=["ORG-A", "ORG-B"]) for i in (1, 2)]
+    html = _html(cards)
+
+    assert html.count('<span class="swatch" style="background:#77b8ec"></span>ORG-A') == 2
+    assert html.count('<span class="swatch" style="background:#ff3d82"></span>ORG-B') == 2
 
 
 def _card(results, per_org=(), **overrides):
@@ -92,14 +129,14 @@ def test_incomplete_coverage_hides_combined_results_and_keeps_per_org_ones(cards
             heading = f"<h3>{_label(name)}</h3>"
             after = section.split(heading, 1)[1].split("<h3>", 1)[0]
             if name in card["per_org"]:
-                assert "<table>" in after or "No rows." in after, f"{card['card']}.{name}"
+                assert "<table" in after or "No rows." in after, f"{card['card']}.{name}"
             else:
                 assert "Left out: this combines organisations" in after, f"{card['card']}.{name}"
-                assert "<table>" not in after, f"{card['card']}.{name}"
+                assert "<table" not in after, f"{card['card']}.{name}"
     portfolio = next(c for c in cards if c["card"] == "portfolio_summary")
     total = f"{portfolio['results']['portfolio'][0]['active_total']:,}"
-    assert f'<td class="number">{total}</td>' in _section(complete, "portfolio_summary")
-    assert "<td>ORG-A</td>" in html
+    assert f'<div class="v">{total}</div>' in _section(complete, "portfolio_summary")
+    assert "ORG-A</td>" in html
 
 
 def test_the_cross_org_top_assets_ranking_is_hidden_when_coverage_is_incomplete(cards):
@@ -119,7 +156,7 @@ def test_a_card_without_a_per_org_list_hides_everything_when_coverage_is_incompl
     card = _card({"by_org": [{"orgId": "ORG-A", "n": 1}]})
     del card["per_org"]
 
-    assert "<table>" not in _html([card], complete=False)
+    assert "<table" not in _html([card], complete=False)
 
 
 def test_complete_coverage_shows_the_cross_org_results(cards):
@@ -153,7 +190,7 @@ def test_numbers_keep_their_precision_and_get_separators(value, shown):
         "results": {"by_org": [{"orgId": "ORG-A", "figure": value}]},
     }
 
-    assert f'<td class="number">{shown}</td>' in _html([card])
+    assert f'<td class="n">{shown}</td>' in _html([card])
 
 
 def test_different_org_data_dates_are_shown_as_a_range():
@@ -167,4 +204,17 @@ def test_different_org_data_dates_are_shown_as_a_range():
         "results": {"by_org": []},
     }
 
-    assert "from 2026-09-21T00:00:00+00:00 to 2026-09-25T00:00:00+00:00, by organisation" in _html([card])
+    assert "from 2026-09-21 00:00 UTC to 2026-09-25 00:00 UTC, by organisation" in _html([card])
+
+
+def test_a_single_combined_number_shows_as_a_tile():
+    html = _html([_card({"portfolio_median": [{"median_of_org_means": Decimal("617381.30")}]})])
+
+    assert '<div class="k">Median of org means</div><div class="v">617,381.3</div>' in html
+    assert "<table" not in html
+
+
+def test_tiles_come_before_the_per_org_table(cards):
+    section = _section(_html(cards), "portfolio_summary")
+
+    assert section.index('class="tiles"') < section.index("<table")
