@@ -31,10 +31,11 @@ def test_it_names_every_registered_card():
         assert name in text and card.title in text, name
 
 
-def test_it_checks_coverage_before_any_card():
+def test_the_server_builds_the_report_and_the_ai_does_not_retype_it():
     text = _served_text()
 
-    assert text.index("get_rapid7_org_coverage()") < text.index("get_rapid7_dashboard_card(card)")
+    assert text.index("generate_rapid7_dashboard_report()") < text.index("get_rapid7_dashboard_card(card)")
+    assert "Do not retype the report's figures" in text
 
 
 def test_it_uses_the_last_loaded_exports_and_never_writes_its_own_sql():
@@ -44,5 +45,5 @@ def test_it_uses_the_last_loaded_exports_and_never_writes_its_own_sql():
     assert "Do not call query_rapid7" in text
 
 
-def test_it_drops_portfolio_totals_when_coverage_warns():
-    assert "leave out every portfolio total" in _served_text()
+def test_it_tells_the_user_the_report_left_out_portfolio_totals_when_coverage_warns():
+    assert "the report leaves out every portfolio total" in _served_text()

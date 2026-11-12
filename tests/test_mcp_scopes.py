@@ -44,6 +44,7 @@ READ_TOOLS = (
     "list_rapid7_orgs",
     "get_rapid7_org_coverage",
     "get_rapid7_dashboard_card",
+    "generate_rapid7_dashboard_report",
 )
 
 

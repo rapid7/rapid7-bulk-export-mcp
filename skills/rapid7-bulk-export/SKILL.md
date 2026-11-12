@@ -26,6 +26,7 @@ This skill ONLY works with the Rapid7 MCP server. You must:
    - `download_rapid7_export(export_id, export_type)` - Start downloading a completed export and loading it in the background; poll `check_rapid7_export_status(export_id)` until it reports the load is complete. (Not used for `remediation` — that is loaded by the job started in `start_rapid7_export`.)
    - `query_rapid7(sql)` - Execute SQL queries against all tables
    - `get_rapid7_dashboard_card(card)` - Fixed, tested numbers for one multi-org dashboard card
+   - `generate_rapid7_dashboard_report()` - Write every dashboard card to one HTML report file and return its path
    - `get_rapid7_schema()` - View table schemas for all tables
 
 2. **Check data availability FIRST** - Before ANY analysis:
@@ -101,6 +102,9 @@ Coverage needs no keys, so a server that holds none can still check and report.
      State each card's description, definition, data date (as_of), and organizations on the card.
    → If step 4 warned that an organization is missing, show per-organization figures
      only and leave out every portfolio total.
+   → For the report as a document, call generate_rapid7_dashboard_report() instead.
+     The server checks coverage, runs every card, and writes one HTML file. Give the
+     user its path. Do not retype its figures.
 
 6. For other questions, analyse with query_rapid7(), grouping or filtering by "orgId",
    and label those answers as ad hoc rather than as dashboard figures. If a question
