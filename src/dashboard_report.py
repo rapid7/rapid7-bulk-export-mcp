@@ -10,12 +10,15 @@ SIL Open Font License, which ships beside the font files in assets/.
 """
 
 import base64
+import math
 from datetime import datetime, timezone
 from decimal import Decimal
 from functools import lru_cache
 from html import escape
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
+
+from .report_charts import bar_chart, dot_plot, line_chart
 
 _ASSETS = Path(__file__).parent / "assets"
 
@@ -78,6 +81,12 @@ table.mx th { font-weight: 500; color: var(--rds-text-secondary); font-size: var
 table.mx th.rh { text-align: left; }
 table.mx td { text-align: right; padding: 5px 9px; border-radius: 4px; font-variant-numeric: tabular-nums; }
 table.mx td.rl { background: var(--rds-bg-subtle); text-align: left; font-size: var(--rds-fs-overline); }
+.legend { display: flex; flex-wrap: wrap; gap: 14px; margin: 6px 0 4px; }
+.legend span { font-size: var(--rds-fs-overline); color: var(--rds-text-secondary);
+  display: inline-flex; align-items: center; gap: 5px; }
+.legend i { width: 14px; height: 2.5px; border-radius: 2px; display: inline-block; }
+details { margin-top: 6px; }
+summary { font-size: var(--rds-fs-overline); color: var(--rds-text-secondary); cursor: pointer; }
 .swatch { display: inline-block; width: 8px; height: 8px; border-radius: 2px; margin-right: 6px; vertical-align: 1px; }
 """
 
@@ -156,7 +165,7 @@ def _when(value: str) -> str:
 
 def _single_value_tiles(rows: List[Dict[str, Any]]) -> Optional[str]:
     """One combined row of numbers reads better as tiles than as a one-row table."""
-    if len(rows) != 1 or "orgId" in rows[0] or not all(_is_number(v) for v in rows[0].values()):
+    if len(rows) != 1 or not rows[0] or "orgId" in rows[0] or not all(_is_number(v) for v in rows[0].values()):
         return None
     return _tiles([(_label(key), value, "") for key, value in rows[0].items()])
 
@@ -203,49 +212,77 @@ def _tiles(items: Sequence[Tuple[str, Any, str]]) -> str:
     return f'<div class="tiles">{tiles}</div>'
 
 
-def _portfolio_tiles(rows: List[Dict[str, Any]], colours: Dict[str, str]) -> str:
+def _tiles_or_table(
+    rows: List[Dict[str, Any]], colours: Dict[str, str], items: Sequence[Tuple[str, str]], notes: Dict[str, str]
+) -> str:
+    """Tiles from the one row of a combined result, or the plain table if a column is missing."""
     if not rows:
         return '<p class="hint">No rows.</p>'
     row = rows[0]
-    assets = row.get("assets_with_findings")
-    across = f"across {_number_text(assets)} assets" if _is_number(assets) else ""
-    return _tiles(
+    if len(rows) != 1 or any(key not in row for _, key in items):
+        return _table(rows, colours)
+    return _tiles([(label, row[key], notes.get(key, "")) for label, key in items])
+
+
+def _note(prefix: str, value: Any, suffix: str = "") -> str:
+    return f"{prefix} {_number_text(value)}{suffix}" if _is_number(value) else ""
+
+
+def _portfolio_tiles(rows: List[Dict[str, Any]], colours: Dict[str, str]) -> str:
+    row = rows[0] if rows else {}
+    return _tiles_or_table(
+        rows,
+        colours,
         [
-            ("Active findings", row.get("active_total"), across),
-            ("Active critical", row.get("critical"), ""),
-            ("Active high", row.get("high"), ""),
-            ("Active medium", row.get("medium"), ""),
-        ]
+            ("Active findings", "active_total"),
+            ("Active critical", "critical"),
+            ("Active high", "high"),
+            ("Active medium", "medium"),
+        ],
+        {"active_total": _note("across", row.get("assets_with_findings"), " assets")},
     )
 
 
 def _headline_tiles(rows: List[Dict[str, Any]], colours: Dict[str, str]) -> str:
-    if not rows:
-        return '<p class="hint">No rows.</p>'
-    row = rows[0]
-    return _tiles(
+    row = rows[0] if rows else {}
+    return _tiles_or_table(
+        rows,
+        colours,
         [
-            ("Weaponised critical findings", row.get("findings"), ""),
-            ("Assets affected", row.get("assets"), ""),
-            ("Distinct vulnerabilities", row.get("distinct_vulns"), ""),
-            ("Median days open", row.get("median_days_open"), f"mean {_text(row.get('mean_days_open'))}"),
-        ]
+            ("Weaponised critical findings", "findings"),
+            ("Assets affected", "assets"),
+            ("Distinct vulnerabilities", "distinct_vulns"),
+            ("Median days open", "median_days_open"),
+        ],
+        {"median_days_open": _note("mean", row.get("mean_days_open"))},
     )
 
 
+def _heat_step(value: float, values: Sequence[float]) -> int:
+    """Quintile of value among values, counting ties upwards, so the largest is always darkest."""
+    at_or_below = sum(1 for v in values if v <= value)
+    return max(0, math.ceil(at_or_below * len(HEAT_RAMP) / len(values)) - 1)
+
+
 def _heat_table(rows: List[Dict[str, Any]], colours: Dict[str, str]) -> str:
-    """Age band by severity, each cell shaded by the quintile of its count among all cells."""
+    """Age band by severity, each non-zero cell shaded by its quintile among the non-zero cells."""
     if not rows:
         return '<p class="hint">No rows.</p>'
     severities = [c for c in rows[0] if c != "band"]
-    values = sorted(v for r in rows for c in severities if _is_number(v := r.get(c)))
+
+    def count(value: Any) -> Optional[float]:
+        if not _is_number(value):
+            return None
+        number = float(value)
+        return number if math.isfinite(number) and number > 0 else None
+
+    values = [v for r in rows for c in severities if (v := count(r.get(c))) is not None]
 
     def shade(value: Any) -> str:
-        if not _is_number(value) or not values:
-            return "<td></td>"
-        below = sum(1 for v in values if v < value)
-        step = below * (len(HEAT_RAMP) - 1) // max(1, len(values) - 1)
-        background, text = HEAT_RAMP[step]
+        number = count(value)
+        if number is None:
+            return f"<td>{_text(value)}</td>"
+        background, text = HEAT_RAMP[_heat_step(number, values)]
         return f'<td style="background:{background};color:{text}">{_text(value)}</td>'
 
     head = "".join(f"<th>{escape(_label(c))}</th>" for c in severities)
@@ -258,10 +295,44 @@ def _heat_table(rows: List[Dict[str, Any]], colours: Dict[str, str]) -> str:
     )
 
 
+def _with_figures(chart: str, rows: List[Dict[str, Any]], colours: Dict[str, str]) -> str:
+    """A chart with its exact figures in a collapsed table beneath it."""
+    return f"{chart}<details><summary>Show the figures</summary>{_table(rows, colours)}</details>"
+
+
+def _quarterly(y_key: str) -> Callable[[List[Dict[str, Any]], Dict[str, str]], str]:
+    def render(rows: List[Dict[str, Any]], colours: Dict[str, str]) -> str:
+        if not rows:
+            return '<p class="hint">No rows.</p>'
+        return _with_figures(line_chart(rows, "quarter", y_key, "orgId", colours, _number_text), rows, colours)
+
+    return render
+
+
+def _risk_dots(rows: List[Dict[str, Any]], colours: Dict[str, str]) -> str:
+    if not rows:
+        return '<p class="hint">No rows.</p>'
+    return dot_plot(rows, "mean_risk", "orgId", colours, _number_text) + _table(rows, colours)
+
+
+def _solution_type_bars(rows: List[Dict[str, Any]], colours: Dict[str, str]) -> str:
+    if not rows:
+        return '<p class="hint">No rows.</p>'
+    return bar_chart(rows, "solution_type", "findings", _number_text) + _table(rows, colours)
+
+
+_LEAD = {("portfolio_summary", "portfolio"), ("weaponised_critical", "headline")}
+"""Results shown first on their card, as the example dashboard leads with its tiles."""
+
 _FEATURED: Dict[Tuple[str, str], Callable[[List[Dict[str, Any]], Dict[str, str]], str]] = {
     ("portfolio_summary", "portfolio"): _portfolio_tiles,
     ("unresolved_age_severity", "by_band"): _heat_table,
     ("weaponised_critical", "headline"): _headline_tiles,
+    ("org_risk_distribution", "by_org"): _risk_dots,
+    ("vulnerability_activity", "new_by_quarter"): _quarterly("new_critical_high"),
+    ("vulnerability_activity", "reintroduced_by_quarter"): _quarterly("reintroduced_critical_high"),
+    ("weaponised_critical", "by_quarter"): _quarterly("weaponised_critical"),
+    ("weaponised_critical", "solution_types"): _solution_type_bars,
 }
 
 
@@ -275,7 +346,7 @@ def _card_section(card: Dict[str, Any], number: int, coverage_complete: bool, co
         f'<p class="hint">Data date: {escape(date_text)}. Organisations: {escape(orgs)}.</p>',
     ]
     per_org = set(card.get("per_org", ()))
-    featured_first = sorted(card["results"].items(), key=lambda item: (card["card"], item[0]) not in _FEATURED)
+    featured_first = sorted(card["results"].items(), key=lambda item: (card["card"], item[0]) not in _LEAD)
     for name, rows in featured_first:
         parts.append(f"<h3>{escape(_label(name))}</h3>")
         if not coverage_complete and name not in per_org:
@@ -317,7 +388,8 @@ def render_report(
         "<!doctype html>",
         '<html lang="en" data-rds-brand="callisto" data-rds-mode="dark"><head><meta charset="utf-8">',
         "<title>Multi-Org Exposure Report</title>",
-        f'<style>{_font_faces()}\n{_STYLE}</style></head><body><div class="wrap">',
+        f"<style>/* Inter, copyright The Inter Project Authors, SIL Open Font License 1.1 */\n"
+        f'{_font_faces()}\n{_STYLE}</style></head><body><div class="wrap">',
         f'<div class="topbar">{_logo()}</div>',
         "<h1>Multi-Org Exposure Report</h1>",
         f'<p class="sub">Generated {escape(_when(generated_at))} &middot; {len(orgs)} organisation(s) &middot; '

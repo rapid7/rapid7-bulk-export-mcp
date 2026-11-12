@@ -7,7 +7,7 @@ from decimal import Decimal
 import pytest
 
 from src.dashboard_queries import CARDS, run_card
-from src.dashboard_report import _label, render_report
+from src.dashboard_report import HEAT_RAMP, _label, render_report
 from tests.test_dashboard_queries import _load
 
 AS_OF = datetime(2026, 9, 23)
@@ -62,12 +62,52 @@ def test_portfolio_totals_show_as_tiles(cards):
     assert f'<div class="k">Active critical</div><div class="v">{portfolio["critical"]:,}</div>' in section
 
 
-def test_age_bands_use_the_heat_ramp_from_warning_to_critical():
-    rows = [{"band": "0-7", "critical": 1, "high": 2}, {"band": "91+", "critical": 50, "high": 9}]
+def _shades(values):
+    rows = [{"band": str(i), "critical": v} for i, v in enumerate(values)]
     html = _html([_card({"by_band": rows}, card="unresolved_age_severity")])
+    return re.findall(r'<td(?: style="background:(#[0-9a-f]{6});color:#[0-9a-f]{6}")?>', html.split("<tbody>")[1])
 
-    assert '<td style="background:#ffe100;color:#181d1f">1</td>' in html
-    assert '<td style="background:#982c35;color:#ffffff">50</td>' in html
+
+@pytest.mark.parametrize(
+    ("values", "steps"),
+    [
+        (list(range(1, 11)), [0, 0, 1, 1, 2, 2, 3, 3, 4, 4]),
+        ([1, 5, 5], [1, 4, 4]),
+        ([7], [4]),
+        ([0, 0, 100], [None, None, 4]),
+        ([Decimal("2"), 1, 3.0, float("nan"), 4, 5], [1, 0, 2, None, 3, 4]),
+    ],
+)
+def test_age_bands_shade_by_quintile_with_the_largest_darkest_and_zero_unshaded(values, steps):
+    ramp = [background for background, _ in HEAT_RAMP]
+    expected = [ramp[step] if step is not None else "" for step in steps]
+    assert _shades(values) == expected
+
+
+def test_a_tile_falls_back_to_a_table_when_its_column_is_missing():
+    html = _html([_card({"portfolio": [{"active_total": 5}]})], complete=True)
+
+    assert '<div class="k">Active findings</div>' not in html
+    assert "<table" in html or '<div class="k">Active total</div>' in html
+
+
+def test_hostile_text_is_escaped_in_tiles_and_the_heat_table():
+    hostile = '<b x="1">&'
+    cards = [
+        _card({"portfolio": [{"active_total": 1, "critical": 1, "high": 1, "medium": 1}]}),
+        _card({"by_band": [{"band": hostile, "critical": 3}]}, card="unresolved_age_severity"),
+        _card(
+            {"headline": [{"findings": 1, "assets": 1, "distinct_vulns": 1, "median_days_open": 1}]},
+            card="weaponised_critical",
+        ),
+        _card({"by_org": [{"orgId": hostile, "n": 1}]}, per_org=["by_org"], card="org_comparison", orgs=[hostile]),
+    ]
+
+    html = _html(cards)
+
+    assert "<b " not in html
+    assert '<td class="rl">&lt;b x=&quot;1&quot;&gt;&amp;</td>' in html
+    assert "</span>&lt;b x=&quot;1&quot;&gt;&amp;</td>" in html
 
 
 def test_each_org_keeps_one_colour_on_every_card():
@@ -218,3 +258,16 @@ def test_tiles_come_before_the_per_org_table(cards):
     section = _section(_html(cards), "portfolio_summary")
 
     assert section.index('class="tiles"') < section.index("<table")
+
+
+def test_quarterly_results_show_as_line_charts_with_their_figures(cards):
+    section = _section(_html(cards), "vulnerability_activity")
+
+    assert section.count("<polyline") >= 2
+    assert section.count("<summary>Show the figures</summary>") == 2
+
+
+def test_incomplete_coverage_draws_no_chart_of_a_combined_result(cards):
+    after = _section(_html(cards, complete=False), "weaponised_critical").split("<h3>Solution types</h3>", 1)[1]
+
+    assert "<svg" not in after.split("<h3>", 1)[0]
