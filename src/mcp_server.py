@@ -26,7 +26,7 @@ from . import orchestrator
 from .artifact_store import download_artifact, storage_configured
 from .auth import ENV_AUDIENCE, ENV_ISSUER, ENV_JWKS_URI, build_auth
 from .config import ORGS_FILE_ENV, key_configured, load_config, load_org_configs, load_org_labels, redact_secret
-from .dashboard_queries import run_card
+from .dashboard_queries import CARDS, run_card
 from .download import download_all_files
 from .duckdb_loader import VulnerabilityDatabase, utc_now
 from .export_manager import (
@@ -1199,6 +1199,30 @@ def get_rapid7_dashboard_card(card: str) -> str:
         return f"✗ Error building dashboard card '{card}': {redact_secret(str(e))}"
     finally:
         _db_lock.release()
+
+
+@mcp.prompt(
+    name="multi_org_report",
+    title="Multi-Org Exposure Report",
+    description="Build the multi-org exposure report from the most recently loaded exports.",
+)
+def multi_org_report() -> str:
+    """Instructions for building the report from the data already loaded, with no new exports."""
+    cards = "\n".join(f"   - {name}: {card.title}" for name, card in CARDS.items())
+    return (
+        "Build the multi-org exposure report from the exports that are already loaded. "
+        "Do not start or download any export.\n\n"
+        "1. Call get_rapid7_org_coverage(). If it reports no data, stop and say that exports "
+        "must be loaded first. If it warns that an organization is missing, or that data was "
+        "not loaded today, say so at the top of the report and leave out every portfolio total.\n"
+        "2. Call get_rapid7_dashboard_card(card) once for each of these cards, in this order:\n"
+        f"{cards}\n"
+        "3. For each card, show its title, its definition, its data date (as_of) and the "
+        "organizations it covers, then its figures. Use only the numbers the card returns. "
+        "Do not call query_rapid7 and do not write SQL for any figure in this report.\n"
+        "4. Label anything you work out yourself from those numbers, such as a ratio or a "
+        "share, as your own interpretation, so it is not read as a card figure."
+    )
 
 
 @mcp.tool(
