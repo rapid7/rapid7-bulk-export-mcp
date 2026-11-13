@@ -1813,6 +1813,8 @@ def _coverage_warnings(orgs_in_data: int) -> tuple:
     except Exception:
         # Coverage of loaded data is still worth reporting when the org file is broken.
         configured = []
+    if not configured:
+        return configured, [], []
 
     # Identity, not cardinality. Comparing counts alone passes when a stale org from an
     # earlier run masks an org that failed today, which is exactly the plausible-but-
@@ -1829,8 +1831,6 @@ def _coverage_warnings(orgs_in_data: int) -> tuple:
         tracker.close()
 
     warnings: list = []
-    if not configured:
-        return configured, loaded_today, warnings
     missing = sorted(set(configured) - set(loaded_today))
     if missing:
         warnings.append(
