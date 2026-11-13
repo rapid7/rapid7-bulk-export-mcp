@@ -50,4 +50,7 @@ def test_it_tells_the_user_the_report_left_out_portfolio_totals_when_coverage_wa
 
 
 def test_it_gives_the_user_the_clickable_link():
-    assert "clickable link on its Open it line" in _served_text()
+    text = _served_text()
+
+    assert "clickable link on its Open it line" in text
+    assert "opened the report in the browser" in text
