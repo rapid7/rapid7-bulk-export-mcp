@@ -109,7 +109,9 @@ VULNERABILITY_ACTIVITY = Card(
     title="Vulnerability activity by organisation",
     definition=(
         "Active critical and high findings per calendar quarter, by the quarter each became "
-        "active: the later of firstFoundTimestamp and reintroducedTimestamp. Remediated counts "
+        "active: the later of firstFoundTimestamp and reintroducedTimestamp. So the first chart "
+        "counts findings that became active, new or reintroduced, and a reintroduced finding also "
+        "appears in the reintroduced chart for its quarter. Remediated counts "
         "are not available per organisation, so reintroduced findings stand in for them. "
         "One daily snapshot has no history, so quarters replace weekly buckets."
     ),
@@ -240,7 +242,12 @@ WEAPONISED_CRITICAL = Card(
     definition=(
         "Active findings that are critical, have a known exploit, are reachable over the "
         "network, and have an EPSS score of 0.5 or more. Days open run from firstFoundTimestamp "
-        "to when its organisation's data was loaded."
+        "to when its organisation's data was loaded, so unlike card 4 a reintroduced finding keeps "
+        "its first-found age. Per organisation, critical exploitable is any critical finding with "
+        "an exploit, exploitable EPSS 50 is any finding with an exploit and EPSS of 0.5 or more, "
+        "and EPSS 90 is any finding with EPSS of 0.9 or more, at any severity. Top vulnerabilities "
+        "is wider than the weaponised set: critical or high findings with an exploit and EPSS of "
+        "0.5 or more, at any attack vector."
     ),
     queries=(
         (

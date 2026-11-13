@@ -269,3 +269,25 @@ def test_no_loaded_data_is_refused(tmp_path):
             run_card(database, "portfolio_summary", as_of=AS_OF)
     finally:
         database.close()
+
+
+@pytest.mark.parametrize(
+    ("card", "phrases"),
+    [
+        ("vulnerability_activity", ["new or reintroduced", "also appears in the reintroduced chart"]),
+        (
+            "weaponised_critical",
+            [
+                "unlike card 4 a reintroduced finding keeps its first-found age",
+                "critical exploitable is any critical finding with an exploit",
+                "EPSS 90 is any finding with EPSS of 0.9 or more, at any severity",
+                "Top vulnerabilities is wider than the weaponised set",
+                "at any attack vector",
+            ],
+        ),
+    ],
+)
+def test_the_definition_states_every_scope_a_reader_could_misread(card, phrases):
+    """Each phrase pins a scope that differs from what the card title suggests."""
+    for phrase in phrases:
+        assert phrase in CARDS[card].definition, phrase
