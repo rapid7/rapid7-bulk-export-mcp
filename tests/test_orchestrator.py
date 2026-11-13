@@ -101,9 +101,17 @@ class TestDownloadAndLoadFiles:
 
 
 class OrgFakeDB(FakeDB):
-    def load_parquet_files_by_prefix(self, prefix_file_map, skip_prefixes=None, append=False, org_scoped=False):
+    def load_parquet_files_by_prefix(
+        self, prefix_file_map, skip_prefixes=None, append=False, org_scoped=False, org_label=None
+    ):
         self.load_calls.append(
-            {"map": dict(prefix_file_map), "skip": skip_prefixes, "append": append, "org_scoped": org_scoped}
+            {
+                "map": dict(prefix_file_map),
+                "skip": skip_prefixes,
+                "append": append,
+                "org_scoped": org_scoped,
+                "org_label": org_label,
+            }
         )
         return dict(self.row_counts)
 
@@ -124,6 +132,25 @@ class TestOrgScopedLoad:
         with pytest.raises(ValueError, match="cannot|only"):
             orchestrator.download_and_load_files(ctx, export_type, _status(prefix=export_type), "k", org_scoped=True)
         assert db.load_calls == []
+
+    def test_an_empty_org_export_warns_that_previous_data_was_kept(self, tmp_path):
+        db = OrgFakeDB(row_counts={"vulnerabilities": 0})
+        ctx = _context(tmp_path, db)
+
+        _, _, _, warnings = orchestrator.download_and_load_files(
+            ctx, "vulnerability", _status(), "k", org_scoped=True, org_label="europe"
+        )
+
+        assert any("export for org 'europe' has no rows" in w and "was kept" in w for w in warnings)
+
+    def test_a_loaded_org_export_carries_no_empty_export_warning(self, tmp_path):
+        ctx = _context(tmp_path, OrgFakeDB())
+
+        _, _, _, warnings = orchestrator.download_and_load_files(
+            ctx, "vulnerability", _status(), "k", org_scoped=True, org_label="europe"
+        )
+
+        assert not any("has no rows" in w for w in warnings)
 
 
 class TestRunDownloadAndLoadForAnOrg:
@@ -174,6 +201,7 @@ class TestRunDownloadAndLoadForAnOrg:
         assert "for org 'japan'" in row["message"]
         assert seen_keys == ["japan-key"]
         assert db.load_calls[0]["org_scoped"] is True
+        assert db.load_calls[0]["org_label"] == "japan"
 
     def test_labelled_export_without_an_org_list_fails_closed(self, tmp_path):
         """Falling back to the default key would export the wrong tenant under the right name."""

@@ -160,6 +160,7 @@ def download_and_load_files(
     api_key: str,
     on_downloaded=None,
     org_scoped: bool = False,
+    org_label: Optional[str] = None,
 ) -> tuple:
     """Download an export's parquet files and load them into DuckDB.
 
@@ -169,7 +170,8 @@ def download_and_load_files(
     the files are actually downloaded and before the load begins, so a
     caller can record the LOADING phase honestly. When org_scoped is set, the load
     replaces only the rows of the orgs present in the files, so loading one org does
-    not discard the orgs already loaded. Returns (row_count, row_counts, stats,
+    not discard the orgs already loaded. org_label names the org in the warning when its
+    export has no rows. Returns (row_count, row_counts, stats,
     validation_warnings).
     """
     parquet_urls = status_info["parquetFiles"]
@@ -212,7 +214,7 @@ def download_and_load_files(
                         f"only {', '.join(MULTI_ORG_EXPORT_TYPES)} can be loaded per org, and any "
                         f"other mode would replace the whole table and discard the other orgs."
                     )
-                row_counts = db.load_parquet_files_by_prefix(prefix_file_map, org_scoped=True)
+                row_counts = db.load_parquet_files_by_prefix(prefix_file_map, org_scoped=True, org_label=org_label)
             elif export_type == "policy":
                 row_counts = db.load_parquet_files_by_prefix(prefix_file_map, skip_prefixes={"asset"})
             elif export_type == "remediation":
@@ -221,6 +223,13 @@ def download_and_load_files(
                 row_counts = db.load_parquet_files_by_prefix(prefix_file_map)
 
             row_count = sum(row_counts.values())
+            if org_scoped and row_count == 0:
+                who = f"org '{org_label}'" if org_label else "this org"
+                validation_warnings.append(
+                    f"⚠️  The export for {who} has no rows, so it names no org and nothing was "
+                    f"replaced. Any data previously loaded for it was kept. If the org should "
+                    f"have data, check that its key still reaches the right org."
+                )
             if row_count == 0 and len(file_data) > 0:
                 validation_warnings.append(
                     f"⚠️  {len(file_data)} file(s) downloaded but 0 rows loaded. "
@@ -298,6 +307,7 @@ def run_download_and_load(ctx: OrchestratorContext, export_id: str, export_type:
             config["api_key"],
             on_downloaded=_mark_loading,
             org_scoped=org_label is not None,
+            org_label=org_label,
         )
         row_info = f"Rows loaded: {row_count}\nPer-table row counts: {json.dumps(row_counts, default=str)}"
 

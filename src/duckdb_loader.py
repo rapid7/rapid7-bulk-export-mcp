@@ -5,11 +5,12 @@ This module handles loading Parquet files into DuckDB for efficient querying
 of vulnerability data.
 """
 
+import logging
 import math
 import os
 import sys
 import threading
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional, Set, Tuple, Union
 
 import duckdb
@@ -41,6 +42,56 @@ KNOWN_TABLES = [
 # it never appears in schema/stats output or is mistaken for Rapid7 data — the
 # leading underscore also marks it as internal.
 LOAD_METADATA_TABLE = "_load_metadata"
+
+
+def utc_now() -> datetime:
+    """Current time as a naive UTC clock time, the form the export's own timestamps take.
+
+    The export writes UTC clock times with no zone, so load times in the same form compare
+    with them directly, with no per-row conversion, on any operator's machine.
+    """
+    return datetime.now(timezone.utc).replace(tzinfo=None)
+
+
+def _stamp_in_utc(loaded_at: datetime, in_utc: Optional[bool]) -> datetime:
+    """Return a stored load time as UTC. Stamps written before UTC stamping are local times.
+
+    A legacy stamp is converted with this machine's zone, which is right when the same
+    machine wrote it, as it does for a local install. Each reload restamps in UTC.
+    """
+    if in_utc:
+        return loaded_at
+    return loaded_at.astimezone(timezone.utc).replace(tzinfo=None)
+
+
+def _mark_utc_column(conn, table_name: str) -> None:
+    """Add the in_utc marker in place. Existing rows default to false, which marks them legacy.
+
+    Checked first because DuckDB's ADD COLUMN IF NOT EXISTS resets an existing column to its
+    default, which would mark every other org's UTC stamp as legacy on each load.
+    """
+    if not _has_column(conn, table_name, "in_utc"):
+        conn.execute(f"ALTER TABLE {table_name} ADD COLUMN in_utc BOOLEAN DEFAULT FALSE")  # nosec B608
+
+
+def _has_column(conn, table_name: str, column: str) -> bool:
+    row = conn.execute(
+        "SELECT COUNT(*) FROM information_schema.columns WHERE table_name = ? AND column_name = ?",
+        [table_name, column],
+    ).fetchone()
+    return bool(row and row[0])
+
+
+# Per-org load times. One table holds several orgs loaded at different times, and the
+# per-table time above is overwritten by whichever org loaded last, so ageing every org
+# to it would age an older org's findings against a later org's load.
+ORG_LOAD_METADATA_TABLE = "_org_load_metadata"
+
+# Tables an org-scoped refresh replaces for the refreshed org even when the new export
+# has no rows for them. Only the vulnerability export loads per org today, and it
+# writes these three. Without this, an org whose last exception was lifted, or whose
+# findings were all fixed, would keep its old rows because no file named the org.
+ORG_SCOPED_TABLES = ("assets", "vulnerabilities", "vulnerability_exceptions")
 
 # Maps Rapid7 API result prefixes to target DuckDB tables.
 # Tuple values indicate (table_name, source_column_value) for policy prefixes.
@@ -190,6 +241,7 @@ class VulnerabilityDatabase:
         skip_prefixes: Set[str] = None,
         append: bool = False,
         org_scoped: bool = False,
+        org_label: Optional[str] = None,
     ) -> Dict[str, int]:
         """
         Load Parquet files into tables based on prefix routing.
@@ -217,13 +269,17 @@ class VulnerabilityDatabase:
             append: When True, insert rows into existing tables rather than dropping
                 and recreating them. Use for additive loads (e.g. remediation chunks).
                 Default False preserves snapshot-replace behavior.
-            org_scoped: When True, replace only the rows whose org identifier appears
-                in the incoming files, leaving every other org in the table intact.
-                Use for multi-org loads, where a per-org export must refresh that org
-                without discarding the tenants loaded before it. Mutually exclusive
-                with append. Does not compact the database file, because a fan-out
-                across many orgs would otherwise compact once per org; call compact()
-                after the batch instead.
+            org_scoped: When True, refresh the orgs named in the incoming files: their
+                rows are cleared from every table this load writes and from every
+                ORG_SCOPED_TABLES table, then the new rows are inserted. Every other
+                org is left intact. Pass the org's full export in one call: a table
+                with no file is treated as having no rows, so a partial call clears
+                the org's other tables. Mutually exclusive with append. Does not
+                compact the database file, because a fan-out across many orgs would
+                otherwise compact once per org; call compact() after the batch instead.
+            org_label: The configured label of the org being refreshed. An org-scoped
+                export with no rows names no org, so it deletes nothing and any previous
+                rows for that org are kept.
 
         Raises:
             ValueError: If both append and org_scoped are True, or if an org-scoped
@@ -270,6 +326,9 @@ class VulnerabilityDatabase:
             # Tables we write to in this call (tracks CREATE vs INSERT decisions).
             tables_touched: Set[str] = set()
 
+            # Orgs each table received in an org-scoped load, for per-org load times.
+            org_ids_by_table: Dict[str, Set[Any]] = {}
+
             # Files this call could not read. Tolerated in snapshot and append mode
             # (pre-existing behaviour), fatal in org-scoped mode.
             failed_files: List[str] = []
@@ -290,6 +349,8 @@ class VulnerabilityDatabase:
                 # that cannot be read must abort the load having changed nothing,
                 # rather than fail midway and rely on a rollback.
                 deletions: List[Tuple[str, str, Optional[str], List[Any]]] = []
+                found_orgs: Set[Any] = set()
+                targets: Dict[str, Set[Optional[str]]] = {}
                 for prefix, file_paths in prefix_file_map.items():
                     if prefix in skip_prefixes:
                         continue
@@ -331,8 +392,23 @@ class VulnerabilityDatabase:
                                 f"{null_org_rows} row(s) with a NULL '{org_column}'. Rows without an "
                                 f"org cannot be refreshed per org and would duplicate on every load."
                             )
-                        if org_ids and table_name in preexisting:
-                            deletions.append((table_name, org_column, source_value, org_ids))
+                        found_orgs.update(org_ids)
+                        targets.setdefault(table_name, set()).add(source_value)
+
+                # Decide once, for the whole export, which orgs this refresh replaces.
+                # An export with no rows names no org, so it deletes nothing: guessing from
+                # an earlier load could delete a different org's data if the key now reaches
+                # another org. Any previous rows for the org stay, and the caller says so.
+                for table_name in ORG_SCOPED_TABLES:
+                    targets.setdefault(table_name, {None})
+                org_ids_by_table = {table_name: set(found_orgs) for table_name in targets}
+
+                for table_name, source_values in targets.items():
+                    org_column = self._table_org_column(conn, table_name) if table_name in preexisting else None
+                    if org_column is None or not found_orgs:
+                        continue
+                    for source_value in sorted(source_values, key=str):
+                        deletions.append((table_name, org_column, source_value, sorted(found_orgs, key=str)))
 
                 conn.begin()
                 try:
@@ -416,6 +492,17 @@ class VulnerabilityDatabase:
                         "Org-scoped load rolled back: could not read "
                         f"{len(failed_files)} file(s): {', '.join(failed_files)}"
                     )
+                # Inside the transaction, so the rows and their load times commit or
+                # roll back together. Committed rows with an older time would age
+                # negatively, and a reader could see new rows with the old date.
+                try:
+                    if tables_touched:
+                        loaded_at = utc_now()
+                        self._record_load_metadata(conn, tables_touched, loaded_at)
+                        self._record_org_load_metadata(conn, org_ids_by_table, loaded_at, replace=False)
+                except Exception:
+                    conn.rollback()
+                    raise
                 conn.commit()
 
             # Report rows inserted BY THIS CALL: current total minus the
@@ -426,10 +513,12 @@ class VulnerabilityDatabase:
                 row_counts[table_name] = after - counts_before.get(table_name, 0)
 
             # Stamp each table we wrote with a load time, so a query can report
-            # how old the data is. Same connection as the load so the timestamps
-            # commit atomically with the rows they describe.
-            if tables_touched:
-                self._record_load_metadata(conn, tables_touched)
+            # how old the data is. Org-scoped loads stamped theirs before committing.
+            if tables_touched and not org_scoped:
+                loaded_at = utc_now()
+                self._record_load_metadata(conn, tables_touched, loaded_at)
+                if not append:
+                    self._refresh_org_load_metadata(conn, tables_touched, loaded_at)
 
         # Reclaim disk space from dropped tables. DuckDB does not shrink the file
         # on DROP TABLE or VACUUM — the only way is to copy to a fresh database.
@@ -471,7 +560,7 @@ class VulnerabilityDatabase:
             if os.path.exists(compact_path):
                 os.remove(compact_path)
 
-    def _record_load_metadata(self, conn, table_names: Set[str]) -> None:
+    def _record_load_metadata(self, conn, table_names: Set[str], loaded_at: Optional[datetime] = None) -> None:
         """Record the current time as the last-loaded time for each table.
 
         Written on the same connection as the load so the stamp commits with
@@ -486,16 +575,111 @@ class VulnerabilityDatabase:
             )
             """  # nosec B608
         )
-        now = datetime.now()
+        _mark_utc_column(conn, LOAD_METADATA_TABLE)
+        now = loaded_at or utc_now()
         for table_name in table_names:
             conn.execute(
                 f"""
-                INSERT INTO {LOAD_METADATA_TABLE} (table_name, loaded_at)
-                VALUES (?, ?)
-                ON CONFLICT (table_name) DO UPDATE SET loaded_at = EXCLUDED.loaded_at
+                INSERT INTO {LOAD_METADATA_TABLE} (table_name, loaded_at, in_utc)
+                VALUES (?, ?, TRUE)
+                ON CONFLICT (table_name) DO UPDATE SET loaded_at = EXCLUDED.loaded_at, in_utc = TRUE
                 """,  # nosec B608
                 [table_name, now],
             )
+
+    @staticmethod
+    def _table_org_column(conn, table_name: str) -> Optional[str]:
+        """Return a loaded table's org identifier column, or None if it has none."""
+        columns = {row[0].lower(): row[0] for row in conn.execute(f"DESCRIBE {table_name}").fetchall()}  # nosec B608
+        return next((columns[c.lower()] for c in ORG_COLUMN_CANDIDATES if c.lower() in columns), None)
+
+    @classmethod
+    def _distinct_table_orgs(cls, conn, table_name: str) -> Set[Any]:
+        """Return the orgs in a loaded table, or none if it has no org column."""
+        org_column = cls._table_org_column(conn, table_name)
+        if org_column is None:
+            return set()
+        rows = conn.execute(
+            f'SELECT DISTINCT "{org_column}" FROM {table_name} WHERE "{org_column}" IS NOT NULL'  # nosec B608
+        ).fetchall()
+        return {row[0] for row in rows}
+
+    def _refresh_org_load_metadata(self, conn, table_names: Set[str], loaded_at: datetime) -> None:
+        """Record per-org load times after a snapshot load, without ever failing that load.
+
+        Per-org times were added for the multi-org dashboard. A snapshot load has already
+        committed its rows by now, so a failure here must not report the load as failed:
+        the entries for these tables are cleared instead, and the cards fall back to the
+        table-level load time.
+        """
+        try:
+            conn.begin()
+            self._record_org_load_metadata(
+                conn, {table: self._distinct_table_orgs(conn, table) for table in table_names}, loaded_at, replace=True
+            )
+            conn.commit()
+        except Exception:
+            logging.getLogger(__name__).warning("Could not record per-org load times", exc_info=True)
+            try:
+                conn.rollback()
+            except Exception:
+                pass
+            try:
+                placeholders = ", ".join("?" * len(table_names))
+                conn.execute(
+                    f"DELETE FROM {ORG_LOAD_METADATA_TABLE} WHERE table_name IN ({placeholders})",  # nosec B608
+                    sorted(table_names),
+                )
+            except Exception:
+                pass
+
+    def _record_org_load_metadata(
+        self, conn, org_ids_by_table: Dict[str, Set[Any]], loaded_at: datetime, replace: bool
+    ) -> None:
+        """Record the current time as each listed org's load time for each table.
+
+        With replace, a table's previous entries are dropped first, because a snapshot
+        load replaces the whole table and an org missing from it no longer has data.
+        """
+        conn.execute(
+            f"""
+            CREATE TABLE IF NOT EXISTS {ORG_LOAD_METADATA_TABLE} (
+                table_name VARCHAR NOT NULL,
+                org_id VARCHAR NOT NULL,
+                loaded_at TIMESTAMP NOT NULL,
+                PRIMARY KEY (table_name, org_id)
+            )
+            """  # nosec B608
+        )
+        _mark_utc_column(conn, ORG_LOAD_METADATA_TABLE)
+        for table_name, org_ids in org_ids_by_table.items():
+            if replace:
+                conn.execute(f"DELETE FROM {ORG_LOAD_METADATA_TABLE} WHERE table_name = ?", [table_name])  # nosec B608
+            for org_id in org_ids:
+                conn.execute(
+                    f"""
+                    INSERT INTO {ORG_LOAD_METADATA_TABLE} (table_name, org_id, loaded_at, in_utc)
+                    VALUES (?, ?, ?, TRUE)
+                    ON CONFLICT (table_name, org_id) DO UPDATE SET loaded_at = EXCLUDED.loaded_at, in_utc = TRUE
+                    """,  # nosec B608
+                    [table_name, str(org_id), loaded_at],
+                )
+
+    def get_org_load_metadata(self, table_name: str) -> Dict[str, datetime]:
+        """Return each org's last load time for one table, or an empty mapping."""
+        with duckdb_connection(self.db_path, read_only=True) as conn:
+            exists = conn.execute(
+                "SELECT COUNT(*) FROM information_schema.tables WHERE table_name = ?",
+                [ORG_LOAD_METADATA_TABLE],
+            ).fetchone()
+            if not exists or exists[0] == 0:
+                return {}
+            in_utc = "in_utc" if _has_column(conn, ORG_LOAD_METADATA_TABLE, "in_utc") else "FALSE"
+            rows = conn.execute(
+                f"SELECT org_id, loaded_at, {in_utc} FROM {ORG_LOAD_METADATA_TABLE} WHERE table_name = ?",  # nosec B608
+                [table_name],
+            ).fetchall()
+        return {row[0]: _stamp_in_utc(row[1], row[2]) for row in rows}
 
     def get_load_metadata(self) -> Dict[str, datetime]:
         """Return each loaded table's last-loaded time, or an empty mapping.
@@ -511,8 +695,9 @@ class VulnerabilityDatabase:
             ).fetchone()
             if not exists or exists[0] == 0:
                 return {}
-            rows = conn.execute(f"SELECT table_name, loaded_at FROM {LOAD_METADATA_TABLE}").fetchall()  # nosec B608
-        return {row[0]: row[1] for row in rows}
+            in_utc = "in_utc" if _has_column(conn, LOAD_METADATA_TABLE, "in_utc") else "FALSE"
+            rows = conn.execute(f"SELECT table_name, loaded_at, {in_utc} FROM {LOAD_METADATA_TABLE}").fetchall()  # nosec B608
+        return {row[0]: _stamp_in_utc(row[1], row[2]) for row in rows}
 
     def query(self, sql: str, params: Optional[Dict[str, Any]] = None) -> List[Dict[str, Any]]:
         """

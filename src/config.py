@@ -177,6 +177,49 @@ def _validate_org_entry(entry: Any, index: int) -> None:
             raise ValueError(f"orgs[{index}] is missing a non-empty '{field}'")
 
 
+def _read_org_entries() -> Optional[List[Any]]:
+    """Return the raw entries of the RAPID7_ORGS_FILE org list, or None when it is unset."""
+    orgs_path = os.environ.get(ORGS_FILE_ENV)
+    if not orgs_path:
+        return None
+    try:
+        with open(os.path.expanduser(orgs_path), encoding="utf-8") as handle:
+            document = json.load(handle)
+    except OSError as e:
+        raise ValueError(f"Cannot read {ORGS_FILE_ENV} at '{orgs_path}': {e}") from e
+    except json.JSONDecodeError as e:
+        raise ValueError(f"{ORGS_FILE_ENV} at '{orgs_path}' is not valid JSON: {e}") from e
+
+    entries = document.get("orgs") if isinstance(document, dict) else None
+    if not isinstance(entries, list) or not entries:
+        raise ValueError(f"{ORGS_FILE_ENV} at '{orgs_path}' must contain a non-empty 'orgs' array")
+    return entries
+
+
+def load_org_labels() -> List[str]:
+    """Return the configured org labels without resolving any key.
+
+    Checking which orgs are loaded needs only their labels. Resolving keys here would
+    leave a read-only server, such as a hosted replica that holds no key, unable to
+    check coverage at all. Returns an empty list when RAPID7_ORGS_FILE is unset.
+
+    Raises:
+        ValueError: If the file is unreadable or malformed, an entry carries an inline
+            api_key, or a label is duplicated.
+    """
+    entries = _read_org_entries()
+    if entries is None:
+        return []
+    labels: List[str] = []
+    for index, entry in enumerate(entries):
+        _validate_org_entry(entry, index)
+        label = entry["label"].strip()
+        if label in labels:
+            raise ValueError(f"orgs[{index}] reuses the label '{label}'. Labels must be unique.")
+        labels.append(label)
+    return labels
+
+
 def load_org_configs() -> List[Dict[str, str]]:
     """Load one API credential per organization.
 
@@ -207,22 +250,10 @@ def load_org_configs() -> List[Dict[str, str]]:
             cannot be resolved. Failing here is deliberate: a partially resolved
             org list would silently report a subset of the tenant as the whole.
     """
-    orgs_path = os.environ.get(ORGS_FILE_ENV)
-    if not orgs_path:
+    entries = _read_org_entries()
+    if entries is None:
         single = load_config()
         return [{**single, "label": None}]
-
-    try:
-        with open(os.path.expanduser(orgs_path), encoding="utf-8") as handle:
-            document = json.load(handle)
-    except OSError as e:
-        raise ValueError(f"Cannot read {ORGS_FILE_ENV} at '{orgs_path}': {e}") from e
-    except json.JSONDecodeError as e:
-        raise ValueError(f"{ORGS_FILE_ENV} at '{orgs_path}' is not valid JSON: {e}") from e
-
-    entries = document.get("orgs") if isinstance(document, dict) else None
-    if not isinstance(entries, list) or not entries:
-        raise ValueError(f"{ORGS_FILE_ENV} at '{orgs_path}' must contain a non-empty 'orgs' array")
 
     default_region = os.environ.get("RAPID7_REGION", "us")
     configs: List[Dict[str, str]] = []
