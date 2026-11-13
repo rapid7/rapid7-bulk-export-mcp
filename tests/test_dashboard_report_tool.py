@@ -31,6 +31,7 @@ def loaded(tmp_path, monkeypatch):
     monkeypatch.setattr(mcp_server, "_DATA_DIR", tmp_path / "data")
     monkeypatch.setattr(mcp_server, "load_org_labels", lambda: ["org-a", "org-b"])
     monkeypatch.setattr(mcp_server, "_tracker", lambda: _Tracker({"org-a", "org-b"}))
+    monkeypatch.setenv(mcp_server.REPORT_AUTO_OPEN_ENV, "false")
     yield tmp_path / "data"
     database.close()
 
@@ -144,3 +145,45 @@ def test_refuses_while_a_load_holds_the_lock(loaded):
 
     assert result.startswith("⏳")
     assert not (loaded / "reports").exists()
+
+
+@pytest.mark.parametrize(
+    ("auto_open", "hosted", "browser_ok", "opened"),
+    [
+        ("true", False, True, True),
+        (None, False, True, True),
+        ("false", False, True, False),
+        ("0", False, True, False),
+        ("true", True, True, False),
+        ("true", False, False, False),
+    ],
+)
+def test_the_report_opens_in_the_browser_only_when_local_and_not_turned_off(
+    loaded, monkeypatch, auto_open, hosted, browser_ok, opened
+):
+    calls = []
+    monkeypatch.setattr(mcp_server.webbrowser, "open", lambda url: calls.append(url) or browser_ok)
+    monkeypatch.setattr(mcp_server, "storage_configured", lambda: hosted)
+    if auto_open is None:
+        monkeypatch.delenv(mcp_server.REPORT_AUTO_OPEN_ENV, raising=False)
+    else:
+        monkeypatch.setenv(mcp_server.REPORT_AUTO_OPEN_ENV, auto_open)
+
+    result = mcp_server.generate_rapid7_dashboard_report()
+
+    [report] = _reports(loaded)
+    assert ("Opened it in the default browser." in result) is opened
+    assert (f"Open it: [{report.name}]({report.as_uri()})" in result) is not opened
+    assert calls == ([report.as_uri()] if not hosted and auto_open not in ("false", "0") else [])
+
+
+def test_a_browser_error_falls_back_to_the_link(loaded, monkeypatch):
+    def _broken(url):
+        raise RuntimeError("no display")
+
+    monkeypatch.setattr(mcp_server.webbrowser, "open", _broken)
+    monkeypatch.setenv(mcp_server.REPORT_AUTO_OPEN_ENV, "true")
+
+    result = mcp_server.generate_rapid7_dashboard_report()
+
+    assert "Open it: [" in result

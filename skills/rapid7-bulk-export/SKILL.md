@@ -103,8 +103,9 @@ Coverage needs no keys, so a server that holds none can still check and report.
    → If step 4 warned that an organization is missing, show per-organization figures
      only and leave out every portfolio total.
    → For the report as a document, call generate_rapid7_dashboard_report() instead.
-     The server checks coverage, runs every card, and writes one HTML file. Give the
-     user the clickable link on its "Open it" line. Do not retype its figures.
+     The server checks coverage, runs every card, writes one HTML file, and opens it in
+     the default browser when it runs locally. Otherwise give the user the clickable
+     link on its "Open it" line. Do not retype its figures.
 
 6. For other questions, analyse with query_rapid7(), grouping or filtering by "orgId",
    and label those answers as ad hoc rather than as dashboard figures. If a question
