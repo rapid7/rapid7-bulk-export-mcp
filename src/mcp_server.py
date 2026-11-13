@@ -1287,7 +1287,7 @@ def generate_rapid7_dashboard_report() -> str:
         return f"✗ Could not write the report: {redact_secret(str(e))}"
 
     coverage = "complete" if not warnings else "incomplete, so figures that combine organizations are left out"
-    lines = [f"✓ Report written to {path}", f"Coverage: {coverage}."]
+    lines = [f"✓ Report written to {path}", f"Open it: [{path.name}]({path.as_uri()})", f"Coverage: {coverage}."]
     lines += [f"  - {warning}" for warning in warnings]
     lines.append(f"Cards: {', '.join(card['title'] for card in cards)}.")
     return "\n".join(lines)
@@ -1306,7 +1306,8 @@ def multi_org_report() -> str:
         "Do not start or download any export.\n\n"
         "1. Call generate_rapid7_dashboard_report(). If it reports no data, stop and say that "
         "exports must be loaded first.\n"
-        "2. Give the user the path of the report file it wrote, and its coverage line. If coverage "
+        "2. Give the user the report as the clickable link on its Open it line, exactly as returned, "
+        "and its coverage line. If coverage "
         "is incomplete, name the organizations it lists and say that the report leaves out every "
         "portfolio total and every other figure that combines organizations.\n"
         "3. The report holds these cards, in this order:\n"

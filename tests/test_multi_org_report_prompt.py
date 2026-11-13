@@ -47,3 +47,7 @@ def test_it_uses_the_last_loaded_exports_and_never_writes_its_own_sql():
 
 def test_it_tells_the_user_the_report_left_out_portfolio_totals_when_coverage_warns():
     assert "the report leaves out every portfolio total" in _served_text()
+
+
+def test_it_gives_the_user_the_clickable_link():
+    assert "clickable link on its Open it line" in _served_text()

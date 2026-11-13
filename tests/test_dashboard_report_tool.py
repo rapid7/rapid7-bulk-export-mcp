@@ -44,6 +44,7 @@ def test_writes_every_card_to_a_file_only_its_owner_can_read(loaded):
 
     [report] = _reports(loaded)
     assert str(report) in result
+    assert f"Open it: [{report.name}]({report.as_uri()})" in result
     assert "Coverage: complete." in result
     assert stat.S_IMODE(report.stat().st_mode) == 0o600
     assert stat.S_IMODE(report.parent.stat().st_mode) == 0o700
