@@ -5,6 +5,7 @@ This module handles loading Parquet files into DuckDB for efficient querying
 of vulnerability data.
 """
 
+import logging
 import math
 import os
 import sys
@@ -517,12 +518,7 @@ class VulnerabilityDatabase:
                 loaded_at = utc_now()
                 self._record_load_metadata(conn, tables_touched, loaded_at)
                 if not append:
-                    self._record_org_load_metadata(
-                        conn,
-                        {table: self._distinct_table_orgs(conn, table) for table in tables_touched},
-                        loaded_at,
-                        replace=True,
-                    )
+                    self._refresh_org_load_metadata(conn, tables_touched, loaded_at)
 
         # Reclaim disk space from dropped tables. DuckDB does not shrink the file
         # on DROP TABLE or VACUUM — the only way is to copy to a fresh database.
@@ -607,6 +603,35 @@ class VulnerabilityDatabase:
             f'SELECT DISTINCT "{org_column}" FROM {table_name} WHERE "{org_column}" IS NOT NULL'  # nosec B608
         ).fetchall()
         return {row[0] for row in rows}
+
+    def _refresh_org_load_metadata(self, conn, table_names: Set[str], loaded_at: datetime) -> None:
+        """Record per-org load times after a snapshot load, without ever failing that load.
+
+        Per-org times were added for the multi-org dashboard. A snapshot load has already
+        committed its rows by now, so a failure here must not report the load as failed:
+        the entries for these tables are cleared instead, and the cards fall back to the
+        table-level load time.
+        """
+        try:
+            conn.begin()
+            self._record_org_load_metadata(
+                conn, {table: self._distinct_table_orgs(conn, table) for table in table_names}, loaded_at, replace=True
+            )
+            conn.commit()
+        except Exception:
+            logging.getLogger(__name__).warning("Could not record per-org load times", exc_info=True)
+            try:
+                conn.rollback()
+            except Exception:
+                pass
+            try:
+                placeholders = ", ".join("?" * len(table_names))
+                conn.execute(
+                    f"DELETE FROM {ORG_LOAD_METADATA_TABLE} WHERE table_name IN ({placeholders})",  # nosec B608
+                    sorted(table_names),
+                )
+            except Exception:
+                pass
 
     def _record_org_load_metadata(
         self, conn, org_ids_by_table: Dict[str, Set[Any]], loaded_at: datetime, replace: bool
