@@ -104,7 +104,7 @@ Coverage needs no keys, so a server that holds none can still check and report.
      only and leave out every portfolio total.
    → For the report as a document, call generate_rapid7_dashboard_report() instead.
      The server checks coverage, runs every card, and writes one HTML file. Give the
-     user its path. Do not retype its figures.
+     user the clickable link on its "Open it" line. Do not retype its figures.
 
 6. For other questions, analyse with query_rapid7(), grouping or filtering by "orgId",
    and label those answers as ad hoc rather than as dashboard figures. If a question
