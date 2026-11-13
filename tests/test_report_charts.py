@@ -132,3 +132,21 @@ def test_axis_title_and_ticks_are_escaped():
     svg = bar_chart([{"t": "a", HOSTILE: 3}], "t", HOSTILE, _fmt)
 
     assert "<b " not in svg
+
+
+def test_an_org_with_no_rows_still_gets_a_flat_line_and_a_legend_entry():
+    rows = [{"quarter": "2026-01", "orgId": "ORG-A", "n": 4}]
+
+    svg = line_chart(rows, "quarter", "n", "orgId", COLOURS, _fmt, series=["ORG-A", "ORG-B"])
+
+    assert svg.count("<polyline") == 2
+    assert "<title>ORG-B 2026-01: 0</title>" in svg
+    assert "</i>ORG-B</span>" in svg
+
+
+def test_axis_ticks_carry_no_float_error():
+    rows = [{"orgId": "ORG-A", "mean_risk": 139837.4}, {"orgId": "ORG-B", "mean_risk": 617381.3}]
+
+    svg = dot_plot(rows, "mean_risk", "orgId", COLOURS, lambda v: repr(float(v)))
+
+    assert ">378609.35<" in svg

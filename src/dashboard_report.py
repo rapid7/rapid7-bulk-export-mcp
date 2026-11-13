@@ -320,7 +320,9 @@ def _quarterly(y_key: str) -> Callable[[List[Dict[str, Any]], Dict[str, str]], s
     def render(rows: List[Dict[str, Any]], colours: Dict[str, str]) -> str:
         if not rows:
             return '<p class="hint">No rows.</p>'
-        return _with_figures(line_chart(rows, "quarter", y_key, "orgId", colours, _number_text), rows, colours)
+        return _with_figures(
+            line_chart(rows, "quarter", y_key, "orgId", colours, _number_text, series=list(colours)), rows, colours
+        )
 
     return render
 

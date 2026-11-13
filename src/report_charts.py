@@ -55,6 +55,11 @@ def _quarters(xs: List[str]) -> List[str]:
     return filled
 
 
+def _tick(value: float) -> float:
+    """An axis value rounded to two decimals, so float error such as 0.35000000003 never shows."""
+    return round(value, 2)
+
+
 def nice_max(value: float) -> float:
     """The smallest of 1, 2, 2.5, 5 or 10 times a power of ten that is at least value."""
     if value <= 0:
@@ -83,7 +88,7 @@ def _y_axis(top: float, fmt: Formatter, title: str, left: int, right: int, y0: i
             )
         parts.append(
             f'<text x="{left - 6}" y="{y + 3:.2f}" font-size="10" fill="{_LABEL}" text-anchor="end">'
-            f"{escape(fmt(top * i / 4))}</text>"
+            f"{escape(fmt(_tick(top * i / 4)))}</text>"
         )
     parts.append(f'<line x1="{left}" y1="{y0}" x2="{left}" y2="{y1}" stroke="{_AXIS}" stroke-width="1"/>')
     parts.append(f'<line x1="{left}" y1="{y1}" x2="{right}" y2="{y1}" stroke="{_AXIS}" stroke-width="1"/>')
@@ -96,12 +101,23 @@ def _y_axis(top: float, fmt: Formatter, title: str, left: int, right: int, y0: i
 
 
 def line_chart(
-    rows: List[Dict[str, Any]], x_key: str, y_key: str, series_key: str, colours: Dict[str, str], fmt: Formatter
+    rows: List[Dict[str, Any]],
+    x_key: str,
+    y_key: str,
+    series_key: str,
+    colours: Dict[str, str],
+    fmt: Formatter,
+    series: Sequence[str] = (),
 ) -> str:
-    """One line per series over the sorted x values. A missing point counts as zero."""
+    """One line per series over the sorted x values. A missing point counts as zero.
+
+    Args:
+        series: Names to draw even with no rows, so a zero series shows as a flat line
+            rather than vanishing from the chart and the legend.
+    """
     rows = [r for r in rows if r.get(x_key) is not None]
     xs = _quarters(sorted({str(r.get(x_key)) for r in rows}))
-    names = sorted({str(r.get(series_key)) for r in rows})
+    names = sorted({str(r.get(series_key)) for r in rows} | {str(name) for name in series})
     if not xs:
         return ""
     points: Dict[str, Dict[str, float]] = {name: {} for name in names}
@@ -160,7 +176,7 @@ def dot_plot(
             f'<circle cx="{x_at(v):.2f}" cy="{dot_y}" r="4" fill="{colours.get(label, _FALLBACK)}" opacity="0.85">'
             f"<title>{escape(label)}: {escape(fmt(v))}</title></circle>"
         )
-    ticks = [low] if high == low else [low, (low + high) / 2, high]
+    ticks = [low] if high == low else [low, _tick((low + high) / 2), high]
     for v in ticks:
         parts.append(
             f'<text x="{x_at(v):.2f}" y="88" font-size="6" fill="{_LABEL}" text-anchor="middle">{escape(fmt(v))}</text>'
