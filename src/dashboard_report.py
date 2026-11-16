@@ -129,6 +129,7 @@ _LABELS = {
     "portfolio": "Portfolio totals",
     "by_band": "Days active by severity",
     "reintroduced_critical_high": "Remediated Critical and High Vulnerabilities (reintroduced stands in)",
+    "total_known_exploit_findings": "Total CISA KEV findings (known exploits stand in)",
 }
 
 
@@ -351,18 +352,16 @@ _FEATURED: Dict[Tuple[str, str], Callable[[List[Dict[str, Any]], Dict[str, str]]
 }
 
 
-def _risk_distribution(card: Dict[str, Any], coverage_complete: bool, colours: Dict[str, str]) -> List[str]:
-    """Dots per organisation, with the portfolio median drawn on the chart only when it covers everyone."""
-    rows = card["results"].get("by_org", [])
+def _risk_distribution(rows: List[Dict[str, Any]], median: Any, colours: Dict[str, str]) -> List[str]:
+    """Dots per organisation, with the median on the chart when it covers every organisation."""
     if not rows:
         return ['<p class="hint">No rows.</p>']
-    median_rows = card["results"].get("portfolio_median", [])
-    median = median_rows[0].get("median_of_org_means") if coverage_complete and median_rows else None
-    parts = [dot_plot(rows, "mean_risk", "orgId", colours, _number_text, median=median)]
-    if not coverage_complete:
-        parts.append(_left_out("Median"))
-    parts.append(_by_organisation(_table(rows, colours), open_=False))
-    return parts
+    chart = dot_plot(rows, "mean_risk", "orgId", colours, _number_text, median=median)
+    return [chart, _by_organisation(_table(rows, colours), open_=False)]
+
+
+_DRAWN_ON = {("org_risk_distribution", "portfolio_median"): ("org_risk_distribution", "by_org")}
+"""Combined results drawn onto another result's chart, rather than shown on their own."""
 
 
 def _left_out(what: str) -> str:
@@ -370,19 +369,26 @@ def _left_out(what: str) -> str:
 
 
 def _card_body(card: Dict[str, Any], coverage_complete: bool, colours: Dict[str, str]) -> List[str]:
-    if card["card"] == "org_risk_distribution":
-        return _risk_distribution(card, coverage_complete, colours)
     per_org = set(card.get("per_org", ()))
-    parts = []
-    ordered = sorted(card["results"].items(), key=lambda item: (card["card"], item[0]) not in _LEAD)
+    results = card["results"]
+    parts: List[str] = []
+    ordered = sorted(results.items(), key=lambda item: (card["card"], item[0]) not in _LEAD)
     for name, rows in ordered:
+        key = (card["card"], name)
         if not coverage_complete and name not in per_org:
-            parts.append(_left_out(_label(name)))
+            parts.append(_left_out("Median" if key in _DRAWN_ON else _label(name)))
             continue
-        if (card["card"], name) in _SUPPORTING:
+        if key in _DRAWN_ON:
+            continue
+        if key == ("org_risk_distribution", "by_org"):
+            median_rows = results.get("portfolio_median") or []
+            usable = coverage_complete or "portfolio_median" in per_org
+            median = median_rows[0].get("median_of_org_means") if median_rows and usable else None
+            parts += _risk_distribution(rows, median, colours)
+        elif key in _SUPPORTING:
             parts.append(_by_organisation(_table(rows, colours), open_=not coverage_complete))
-            continue
-        parts.append(_FEATURED.get((card["card"], name), _table)(rows, colours))
+        else:
+            parts.append(_FEATURED.get(key, _table)(rows, colours))
     return parts
 
 

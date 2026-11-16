@@ -7,7 +7,7 @@ from decimal import Decimal
 import pytest
 
 from src.dashboard_queries import CARDS, run_card
-from src.dashboard_report import HEAT_RAMP, _label, render_report
+from src.dashboard_report import HEAT_RAMP, _label, _number_text, render_report
 from tests.test_dashboard_queries import _load
 
 AS_OF = datetime(2026, 9, 23)
@@ -139,6 +139,7 @@ def test_hostile_text_is_escaped_on_every_path():
         per_org=[hostile],
         card=hostile,
         title=hostile,
+        description=hostile,
         definition=hostile,
         as_of=hostile,
         orgs=[hostile],
@@ -148,7 +149,8 @@ def test_hostile_text_is_escaped_on_every_path():
 
     assert "<b " not in html
     assert f'id="{shown}"' in html
-    assert html.count(shown) >= 8
+    assert html.count(shown) >= 9
+    assert f'<p class="hint">{shown}</p>' in html
 
 
 def _section(html, card):
@@ -263,22 +265,50 @@ def test_complete_coverage_draws_the_median_on_the_risk_chart(cards):
 
     section = _section(_html(cards), "org_risk_distribution")
 
-    assert f">median {median['median_of_org_means']:,.0f}<" in section
+    assert f">median {_number_text(median['median_of_org_means'])}<" in section
+
+
+PROTOTYPE_COPY = {
+    "portfolio_summary": ("Portfolio summary", "Totals across all selected organisations."),
+    "unresolved_age_severity": (
+        "Unresolved findings by days active and severity",
+        "All selected organisations. Days active measured from discovery date.",
+    ),
+    "org_comparison": ("Organisation comparison", "Every selected organisation. Default sorted by risk score."),
+    "new_vulnerabilities": (
+        "New critical and high vulnerabilities",
+        "Count of critical and high vulnerabilities first detected or reintroduced in each week.",
+    ),
+    "remediated_vulnerabilities": ("Remediated critical and high vulnerabilities", None),
+    "org_risk_distribution": ("Organisation risk distribution", None),
+}
+"""Copy taken from the UX phase 1 prototype. None means the data cannot support the prototype's wording."""
 
 
 def test_the_report_carries_the_ux_titles_and_copy(cards):
     html = _html(cards)
 
     assert "<h1>Multi-Org Exposure Dashboard</h1>" in html
-    for card in cards:
-        section = _section(html, card["card"])
-        assert f'<p class="sec">{card["title"]}</p>' in section
-        assert f'<p class="hint">{card["description"]}</p>' in section
+    for card, (title, description) in PROTOTYPE_COPY.items():
+        section = _section(html, card)
+        assert f'<p class="sec">{title}</p>' in section, card
+        if description:
+            assert description in section, card
     age = _section(html, "unresolved_age_severity")
     assert '<div class="k">91+ days</div>' in age
     assert 'Critical<span class="range">CVSS 9.0-10.0</span>' in age
     assert "light amber (lowest) to dark red (highest)" in age
-    assert "Remediated Critical and High Vulnerabilities (reintroduced stands in)" in _section(html, "org_comparison")
+    comparison = _section(html, "org_comparison")
+    assert "Remediated Critical and High Vulnerabilities (reintroduced stands in)" in comparison
+    assert "Total CISA KEV findings (known exploits stand in)" in comparison
+
+
+@pytest.mark.parametrize(("complete", "opened"), [(True, False), (False, True)])
+def test_the_by_organisation_table_opens_when_coverage_is_incomplete(cards, complete, opened):
+    section = _section(_html(cards, complete=complete), "portfolio_summary")
+
+    assert ("<details open><summary>By organisation</summary>" in section) is opened
+    assert "<summary>By organisation</summary>" in section
 
 
 def test_more_than_three_orgs_each_get_their_own_colour():
