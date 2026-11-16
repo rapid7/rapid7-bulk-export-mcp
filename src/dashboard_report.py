@@ -100,14 +100,21 @@ table.mx td.rl { background: var(--rds-bg-subtle); text-align: left; font-size: 
 .legend i { width: 14px; height: 2.5px; border-radius: 2px; display: inline-block; }
 details { margin-top: 6px; }
 summary { font-size: var(--rds-fs-overline); color: var(--rds-text-secondary); cursor: pointer; }
-.chart circle { stroke: transparent; stroke-width: 10px; cursor: pointer; }
-.chart.focusing polyline:not(.focus), .chart.focusing circle:not(.focus) { opacity: 0.15; }
-.chart polyline.focus { stroke-width: 3; }
+.chart { position: relative; }
+.chart .pt { cursor: pointer; }
+.chart .series:not(.lead) .mk { opacity: 0; }
+.chart .series:not(.lead) .ln { opacity: 0.9; }
+.chart.focusing .ln { opacity: 0.15; }
+.chart.focusing .mk { opacity: 0; }
+.chart.focusing .series.focus .ln { opacity: 1; stroke-width: 3.2; }
+.chart.focusing .series.focus .mk { opacity: 1; }
 .chart .legend span { cursor: pointer; }
 .chart.focusing .legend span:not(.focus) { opacity: 0.4; }
 #tip { position: fixed; display: none; pointer-events: none; z-index: 10; white-space: nowrap;
-  background: var(--rds-bg-paper); border: 1px solid var(--rds-divider); border-radius: 6px;
-  padding: 4px 8px; font-size: var(--rds-fs-overline); color: var(--rds-text-primary); }
+  background: #ffffff; color: #181d1f; border-radius: 4px; padding: 8px 10px; font-size: 12px;
+  box-shadow: 0 2px 8px rgba(0,0,0,0.4); }
+#tip .tip-heading { color: #5b676c; font-size: 11px; margin-bottom: 3px; }
+#tip .tip-dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; margin-right: 6px; }
 .swatch { display: inline-block; width: 8px; height: 8px; border-radius: 2px; margin-right: 6px; vertical-align: 1px; }
 """
 
@@ -119,58 +126,66 @@ _SCRIPT = """
   document.body.appendChild(tip);
   var pinned = null;
   function chartOf(el) { return el.closest(".chart"); }
-  function focus(chart, series) {
+  function seriesOf(el) { return el.closest("[data-series]"); }
+  function focus(chart, name) {
     if (!chart) { return; }
-    chart.classList.toggle("focusing", series !== null);
+    chart.classList.toggle("focusing", name !== null);
     chart.querySelectorAll("[data-series]").forEach(function (el) {
-      el.classList.toggle("focus", el.getAttribute("data-series") === series);
+      el.classList.toggle("focus", el.getAttribute("data-series") === name);
     });
   }
-  function show(dot, event) {
-    tip.textContent = dot.getAttribute("data-tip");
-    tip.style.display = "block";
-    var box = dot.getBoundingClientRect();
-    var x = event && event.clientX ? event.clientX : box.right;
-    var y = event && event.clientY ? event.clientY : box.top;
-    tip.style.left = Math.max(8, Math.min(x + 12, window.innerWidth - tip.offsetWidth - 8)) + "px";
-    tip.style.top = Math.max(8, y - tip.offsetHeight - 10) + "px";
+  function line(text, className) {
+    var el = document.createElement("div");
+    el.className = className;
+    el.textContent = text;
+    return el;
   }
+  function show(point) {
+    var group = seriesOf(point);
+    tip.replaceChildren();
+    tip.appendChild(line(point.getAttribute("data-heading"), "tip-heading"));
+    var body = document.createElement("div");
+    var dot = document.createElement("span");
+    dot.className = "tip-dot";
+    dot.style.background = group.getAttribute("data-colour");
+    var value = document.createElement("b");
+    value.textContent = point.getAttribute("data-value");
+    body.append(dot, group.getAttribute("data-series") + " · " + point.getAttribute("data-metric") + ": ", value);
+    tip.appendChild(body);
+    tip.style.display = "block";
+    var box = point.getBoundingClientRect();
+    var left = box.left + box.width / 2 + 14;
+    if (left + tip.offsetWidth > window.innerWidth - 8) { left = box.left - tip.offsetWidth - 14; }
+    tip.style.left = Math.max(8, left) + "px";
+    tip.style.top = Math.max(8, box.top + box.height / 2 - tip.offsetHeight / 2) + "px";
+  }
+  function hide() { tip.style.display = "none"; }
   function release() {
     if (!pinned) { return; }
     var chart = chartOf(pinned);
     pinned = null;
-    tip.style.display = "none";
+    hide();
     focus(chart, null);
   }
-  document.querySelectorAll(".chart circle").forEach(function (dot) {
-    var title = dot.querySelector("title");
-    if (!title) { return; }
-    dot.setAttribute("data-tip", title.textContent);
-    dot.setAttribute("tabindex", "0");
-    title.remove();
-    dot.addEventListener("mouseenter", function (event) {
-      if (pinned) { return; }
-      show(dot, event);
-      focus(chartOf(dot), dot.getAttribute("data-series"));
+  document.querySelectorAll(".chart .pt").forEach(function (point) {
+    var title = point.querySelector("title");
+    if (title) { title.remove(); }
+    point.setAttribute("tabindex", "0");
+    function on() { show(point); focus(chartOf(point), seriesOf(point).getAttribute("data-series")); }
+    point.addEventListener("mouseenter", function () { if (!pinned) { on(); } });
+    point.addEventListener("mouseleave", function () {
+      if (!pinned) { hide(); focus(chartOf(point), null); }
     });
-    dot.addEventListener("mouseleave", function () {
-      if (pinned) { return; }
-      tip.style.display = "none";
-      focus(chartOf(dot), null);
-    });
-    dot.addEventListener("click", function (event) {
+    point.addEventListener("click", function (event) {
       event.stopPropagation();
-      var again = pinned === dot;
+      var again = pinned === point;
       release();
-      if (again) { return; }
-      pinned = dot;
-      show(dot, event);
-      focus(chartOf(dot), dot.getAttribute("data-series"));
+      if (!again) { pinned = point; on(); }
     });
   });
-  document.querySelectorAll(".chart polyline, .chart .legend span").forEach(function (el) {
+  document.querySelectorAll(".chart .ln, .chart .legend span").forEach(function (el) {
     el.addEventListener("mouseenter", function () {
-      if (!pinned) { focus(chartOf(el), el.getAttribute("data-series")); }
+      if (!pinned) { focus(chartOf(el), seriesOf(el).getAttribute("data-series")); }
     });
     el.addEventListener("mouseleave", function () { if (!pinned) { focus(chartOf(el), null); } });
   });
