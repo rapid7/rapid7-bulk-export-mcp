@@ -31,6 +31,9 @@ WRITE_TOOLS = (
     "download_rapid7_export",
     "load_rapid7_parquet",
     "purge_rapid7_data",
+    "start_rapid7_multi_org_export",
+    "check_rapid7_multi_org_export",
+    "compact_rapid7_database",
 )
 READ_TOOLS = (
     "query_rapid7",
@@ -38,6 +41,9 @@ READ_TOOLS = (
     "get_rapid7_stats",
     "list_rapid7_exports",
     "check_rapid7_export_status",
+    "list_rapid7_orgs",
+    "get_rapid7_org_coverage",
+    "get_rapid7_dashboard_card",
 )
 
 
@@ -88,6 +94,12 @@ def test_write_tools_are_tagged_and_gated():
         tool = tools[name]
         assert "write" in tool.tags, f"{name} should carry the write tag"
         assert tool.auth is not None, f"{name} should have a scope check"
+
+
+def test_every_registered_tool_is_classified():
+    """An unlisted tool escapes both checks above, so a new write tool could ship ungated."""
+    unclassified = set(_tools_by_name()) - set(WRITE_TOOLS) - set(READ_TOOLS)
+    assert not unclassified, f"classify these tools as read or write: {sorted(unclassified)}"
 
 
 def test_read_tools_are_open():

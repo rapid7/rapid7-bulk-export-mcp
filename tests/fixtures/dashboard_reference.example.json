@@ -1,0 +1,20 @@
+{
+  "source": "Exposure Management dashboard, organisation <name>, read on <date> by <person>",
+  "as_of": "2026-11-10T00:00:00",
+  "checks": [
+    {
+      "card": "portfolio_summary",
+      "query": "by_org",
+      "match": {"orgId": "<reference org UUID>"},
+      "expected": {"critical": 0, "high": 0, "medium": 0, "assets_with_findings": 0},
+      "tolerance_pct": 0
+    },
+    {
+      "card": "unresolved_age_severity",
+      "query": "by_band",
+      "match": {"band": "91+"},
+      "expected": {"critical": 0, "high": 0},
+      "tolerance_pct": 1
+    }
+  ]
+}

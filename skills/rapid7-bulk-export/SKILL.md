@@ -25,6 +25,7 @@ This skill ONLY works with the Rapid7 MCP server. You must:
    - `check_rapid7_export_status(export_id)` - Check progress once (instant, non-blocking). Reports the platform export status, the local download/load progress, or a remediation job's per-window progress. Accepts an export id or a remediation job id.
    - `download_rapid7_export(export_id, export_type)` - Start downloading a completed export and loading it in the background; poll `check_rapid7_export_status(export_id)` until it reports the load is complete. (Not used for `remediation` — that is loaded by the job started in `start_rapid7_export`.)
    - `query_rapid7(sql)` - Execute SQL queries against all tables
+   - `get_rapid7_dashboard_card(card)` - Fixed, tested numbers for one multi-org dashboard card
    - `get_rapid7_schema()` - View table schemas for all tables
 
 2. **Check data availability FIRST** - Before ANY analysis:
@@ -69,6 +70,10 @@ change that. So a portfolio view is one export per organization, each downloaded
 unioned locally on the `orgId` column. Every organization needs its own organization
 API key, listed in the file named by `RAPID7_ORGS_FILE`.
 
+Steps 1 to 3 export new data and need every organization's key. If the user only wants
+the dashboard or answers from data that is already loaded, skip them and start at step 4.
+Coverage needs no keys, so a server that holds none can still check and report.
+
 ```
 1. list_rapid7_orgs()
    → Confirms every configured organization's key resolves. If it reports a problem,
@@ -88,7 +93,17 @@ API key, listed in the file named by `RAPID7_ORGS_FILE`.
      shortfall, report that to the user and do NOT present the totals as complete —
      a missing organization reads as a fall in the numbers, not as an error.
 
-5. Analyse with query_rapid7(), grouping or filtering by "orgId".
+5. For the multi-org dashboard, call get_rapid7_dashboard_card(card) once per card:
+   portfolio_summary, org_risk_distribution, vulnerability_activity,
+   unresolved_age_severity, org_comparison, weaponised_critical.
+   → Use only these numbers on the dashboard. Do NOT write your own SQL for them:
+     the cards are fixed, tested queries, and ad hoc SQL can apply different rules.
+     State each card's definition, data date (as_of), and organizations on the card.
+   → If step 4 warned that an organization is missing, show per-organization figures
+     only and leave out every portfolio total.
+
+6. For other questions, analyse with query_rapid7(), grouping or filtering by "orgId",
+   and label those answers as ad hoc rather than as dashboard figures.
 ```
 
 Rules that matter for correctness:

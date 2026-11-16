@@ -25,9 +25,10 @@ from mcp.types import ToolAnnotations
 from . import orchestrator
 from .artifact_store import download_artifact, storage_configured
 from .auth import ENV_AUDIENCE, ENV_ISSUER, ENV_JWKS_URI, build_auth
-from .config import ORGS_FILE_ENV, key_configured, load_config, load_org_configs, redact_secret
+from .config import ORGS_FILE_ENV, key_configured, load_config, load_org_configs, load_org_labels, redact_secret
+from .dashboard_queries import CARDS, run_card
 from .download import download_all_files
-from .duckdb_loader import VulnerabilityDatabase
+from .duckdb_loader import VulnerabilityDatabase, utc_now
 from .export_manager import (
     build_remediation_date_chunks,
     create_asset_software_export,
@@ -339,7 +340,7 @@ def _freshness_note() -> str:
         if not metadata:
             return ""
         newest = max(metadata.values())
-        return f"\n\nData last loaded {_humanize_age(newest, _dt.datetime.now())}."
+        return f"\n\nData last loaded {_humanize_age(newest, utc_now())}."
     except Exception:
         return ""
 
@@ -775,6 +776,7 @@ def _download_and_load_files(
     api_key: str,
     on_downloaded=None,
     org_scoped: bool = False,
+    org_label: Optional[str] = None,
 ) -> tuple:
     """Download an export's parquet files and load them into DuckDB.
 
@@ -789,6 +791,7 @@ def _download_and_load_files(
         api_key,
         on_downloaded=on_downloaded,
         org_scoped=org_scoped,
+        org_label=org_label,
     )
 
 
@@ -1136,6 +1139,90 @@ def get_rapid7_stats() -> str:
         return f"Error getting statistics: {str(e)}"
     finally:
         _db_lock.release()
+
+
+@mcp.tool(
+    annotations=ToolAnnotations(
+        title="Get Rapid7 Dashboard Card",
+        readOnlyHint=True,
+        destructiveHint=False,
+        idempotentHint=True,
+        openWorldHint=False,
+    )
+)
+def get_rapid7_dashboard_card(card: str) -> str:
+    """Return the numbers behind one multi-org exposure dashboard card.
+
+    Every number comes from fixed, tested SQL, so use this tool for the dashboard and
+    do not write your own SQL for these figures. Run get_rapid7_org_coverage() first
+    and show no portfolio total if an organization is missing.
+
+    Args:
+        card: One of:
+            - portfolio_summary: active findings by severity, and assets affected.
+            - org_risk_distribution: mean asset risk score per organization, with the median.
+            - vulnerability_activity: new and reintroduced critical and high findings per quarter.
+            - unresolved_age_severity: open findings by days active and severity.
+            - org_comparison: risk, assets, active, exploitable, and reintroduced per organization.
+            - weaponised_critical: critical, exploitable, network-reachable findings with EPSS 0.5+.
+
+    Returns:
+        JSON with the card title, its definition (state it on the card), each organization's
+        data date (as_of_by_org), the oldest of them (as_of), the organizations included, and
+        the result rows of each query. In a hosted deployment it also carries data_loaded,
+        the age of as_of.
+    """
+    global db
+
+    precondition = _read_precondition()
+    if precondition is not None:
+        return precondition
+
+    if not _db_lock.acquire(blocking=False):
+        return (
+            "⏳ A background download/load is in progress, so the dashboard can't be "
+            "read safely right now. Try again once loading has finished."
+        )
+    try:
+        if db is None or not db.has_data():
+            return "Error: No data loaded. Load the vulnerability exports before building the dashboard."
+        result = run_card(db, card)
+        # Inside the JSON, and aged from the card's own as_of: _freshness_note() would break
+        # the JSON and report the newest load of any table, which can be a different date.
+        if storage_configured():
+            as_of = _dt.datetime.fromisoformat(result["as_of"]).astimezone(_dt.timezone.utc).replace(tzinfo=None)
+            result["data_loaded"] = _humanize_age(as_of, utc_now())
+        return json.dumps(result, indent=2, default=str)
+    except ValueError as e:
+        return f"✗ {redact_secret(str(e))}"
+    except Exception as e:
+        return f"✗ Error building dashboard card '{card}': {redact_secret(str(e))}"
+    finally:
+        _db_lock.release()
+
+
+@mcp.prompt(
+    name="multi_org_report",
+    title="Multi-Org Exposure Report",
+    description="Build the multi-org exposure report from the most recently loaded exports.",
+)
+def multi_org_report() -> str:
+    """Instructions for building the report from the data already loaded, with no new exports."""
+    cards = "\n".join(f"   - {name}: {card.title}" for name, card in CARDS.items())
+    return (
+        "Build the multi-org exposure report from the exports that are already loaded. "
+        "Do not start or download any export.\n\n"
+        "1. Call get_rapid7_org_coverage(). If it reports no data, stop and say that exports "
+        "must be loaded first. If it warns that an organization is missing, or that data was "
+        "not loaded today, say so at the top of the report and leave out every portfolio total.\n"
+        "2. Call get_rapid7_dashboard_card(card) once for each of these cards, in this order:\n"
+        f"{cards}\n"
+        "3. For each card, show its title, its definition, its data date (as_of) and the "
+        "organizations it covers, then its figures. Use only the numbers the card returns. "
+        "Do not call query_rapid7 and do not write SQL for any figure in this report.\n"
+        "4. Label anything you work out yourself from those numbers, such as a ratio or a "
+        "share, as your own interpretation, so it is not read as a card figure."
+    )
 
 
 @mcp.tool(
@@ -1631,7 +1718,7 @@ def get_rapid7_org_coverage() -> str:
         _db_lock.release()
 
     try:
-        configured = [config["label"] for config in load_org_configs() if config.get("label")]
+        configured = load_org_labels()
     except Exception:
         # Coverage of loaded data is still worth reporting when the org file is broken.
         configured = []
