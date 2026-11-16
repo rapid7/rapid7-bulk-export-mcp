@@ -107,7 +107,8 @@ summary { font-size: var(--rds-fs-overline); color: var(--rds-text-secondary); c
 .chart.focusing .ln { opacity: 0.15; }
 .chart.focusing .mk { opacity: 0; }
 .chart.focusing .series.focus .ln { opacity: 1; stroke-width: 3.2; }
-.chart.focusing .series.focus .mk { opacity: 1; }
+.chart.focusing .series.focus.lead .mk { opacity: 1; }
+.chart .mk.on { opacity: 1; }
 .chart .legend span { cursor: pointer; }
 .chart.focusing .legend span:not(.focus) { opacity: 0.4; }
 #tip { position: fixed; display: none; pointer-events: none; z-index: 10; white-space: nowrap;
@@ -153,13 +154,19 @@ _SCRIPT = """
     body.append(dot, group.getAttribute("data-series") + " · " + point.getAttribute("data-metric") + ": ", value);
     tip.appendChild(body);
     tip.style.display = "block";
+    document.querySelectorAll(".chart .mk.on").forEach(function (mark) { mark.classList.remove("on"); });
+    var mark = point.previousElementSibling;
+    if (mark && mark.classList.contains("mk")) { mark.classList.add("on"); }
     var box = point.getBoundingClientRect();
     var left = box.left + box.width / 2 + 14;
     if (left + tip.offsetWidth > window.innerWidth - 8) { left = box.left - tip.offsetWidth - 14; }
     tip.style.left = Math.max(8, left) + "px";
     tip.style.top = Math.max(8, box.top + box.height / 2 - tip.offsetHeight / 2) + "px";
   }
-  function hide() { tip.style.display = "none"; }
+  function hide() {
+    tip.style.display = "none";
+    document.querySelectorAll(".chart .mk.on").forEach(function (mark) { mark.classList.remove("on"); });
+  }
   function release() {
     if (!pinned) { return; }
     var chart = chartOf(pinned);
