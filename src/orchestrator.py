@@ -315,7 +315,6 @@ def run_download_and_load(ctx: OrchestratorContext, export_id: str, export_type:
             org_label=org_label,
         )
         row_info = f"Rows loaded: {row_count}\nPer-table row counts: {json.dumps(row_counts, default=str)}"
-        kev_note = _refresh_kev(ctx) if org_label is not None and export_type == "vulnerability" else ""
 
         warnings_section = ""
         if validation_warnings:
@@ -327,7 +326,7 @@ def run_download_and_load(ctx: OrchestratorContext, export_id: str, export_type:
             f"Export ID: {export_id}\n"
             f"Files processed: {len(parquet_urls)}\n"
             f"{row_info}\n"
-            f"{warnings_section}{kev_note}\n"
+            f"{warnings_section}\n"
             f"Statistics:\n"
             f"{json.dumps(stats, indent=2, default=str)}\n\n"
             f"Query the data with query_rapid7, get_rapid7_schema, or get_rapid7_stats."
@@ -342,6 +341,14 @@ def run_download_and_load(ctx: OrchestratorContext, export_id: str, export_type:
             org_label=org_label,
         )
         tracker.set_phase(export_id, PHASE_COMPLETE, phase_detail=None, message=message, row_count=row_count)
+        # After COMPLETE is recorded, so a slow or failed catalogue refresh can never hold the
+        # load in LOADING or fail it. Its note is added to the finished message.
+        if org_label is not None and export_type == "vulnerability":
+            kev_note = _refresh_kev(ctx)
+            if kev_note:
+                tracker.set_phase(
+                    export_id, PHASE_COMPLETE, phase_detail=None, message=f"{message}\n{kev_note}", row_count=row_count
+                )
 
     except Exception as e:
         error_text = f"{e}\n{traceback.format_exc()}"
@@ -362,19 +369,20 @@ def run_download_and_load(ctx: OrchestratorContext, export_id: str, export_type:
 
 
 def _refresh_kev(ctx: OrchestratorContext) -> str:
-    """Refresh the CISA KEV catalogue after a multi-org load, never failing the load itself."""
-    db = ctx.get_db()
-    if ctx.refresh_kev is None or db is None:
-        return ""
+    """Refresh the CISA KEV catalogue after a multi-org load. Never raises, so it cannot fail the load."""
     try:
+        db = ctx.get_db()
+        if ctx.refresh_kev is None or db is None:
+            return ""
         status = ctx.refresh_kev(db.db_path, write_lock=ctx.db_lock)
+        return "CISA KEV catalogue: " + ("updated.\n" if status == "updated" else "already up to date.\n")
     except Exception as e:
-        logging.getLogger(__name__).warning("CISA KEV catalogue refresh failed: %s", _redact_secret(str(e)))
+        reason = _redact_secret(str(e))
+        logging.getLogger(__name__).warning("CISA KEV catalogue refresh failed: %s", reason)
         return (
-            f"⚠️  CISA KEV catalogue not refreshed: {_redact_secret(str(e))} The report keeps its "
-            "stand-ins for KEV until a refresh succeeds.\n"
+            f"⚠️  CISA KEV catalogue not refreshed: {reason} The report keeps its stand-ins for KEV "
+            "until a refresh succeeds.\n"
         )
-    return "CISA KEV catalogue: " + ("updated.\n" if status == "updated" else "already up to date.\n")
 
 
 def create_remediation_chunk_waiting(ctx: OrchestratorContext, config: dict, chunk_start: str, chunk_end: str) -> str:

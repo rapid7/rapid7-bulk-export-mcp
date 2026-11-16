@@ -46,8 +46,10 @@ class _Session:
     def __init__(self, *responses):
         self.responses, self.calls = list(responses), []
 
-    def get(self, url, headers, timeout, stream):
-        self.calls.append({"url": url, "headers": headers, "timeout": timeout, "stream": stream})
+    def get(self, url, headers, timeout, stream, allow_redirects):
+        self.calls.append(
+            {"url": url, "headers": headers, "timeout": timeout, "stream": stream, "redirects": allow_redirects}
+        )
         response = self.responses.pop(0)
         if isinstance(response, Exception):
             raise response
@@ -75,6 +77,24 @@ def test_a_valid_catalogue_is_parsed_with_its_version_and_hash():
         pytest.param(_document(entries=[]), id="empty"),
         pytest.param(_document(entries=[{"cveID": "CVE-2021-44228<b>", "dateAdded": "2021-12-10"}]), id="bad CVE"),
         pytest.param(_document(entries=[{"cveID": "CVE-2021-44228", "dateAdded": "10/12/2021"}]), id="bad date"),
+        pytest.param(_document(entries=[{"cveID": "CVE-2021-44228", "dateAdded": "2026-13-45"}]), id="impossible date"),
+        pytest.param(
+            _document(
+                entries=[
+                    {"cveID": "CVE-2021-44228", "dateAdded": "2021-12-10", "knownRansomwareCampaignUse": "\x1b[2J"}
+                ]
+            ),
+            id="ransomware flag outside the allow-list",
+        ),
+        pytest.param(
+            _document(
+                entries=[
+                    {"cveID": "CVE-2021-44228", "dateAdded": "2021-12-10"},
+                    {"cveID": "CVE-2021-44228", "dateAdded": "2022-01-01"},
+                ]
+            ),
+            id="conflicting duplicate",
+        ),
         pytest.param(
             _document(
                 entries=[{"cveID": "CVE-2021-44228", "dateAdded": "2021-12-10", "knownRansomwareCampaignUse": 1}]
@@ -96,6 +116,7 @@ def test_a_fetch_sends_the_stored_validators_and_streams_from_cisa():
 
     [call] = session.calls
     assert call["url"] == FEED and call["stream"] is True and call["timeout"] == kev.TIMEOUT_SECONDS
+    assert call["redirects"] is False
     assert call["headers"]["If-None-Match"] == '"old"'
     assert call["headers"]["If-Modified-Since"] == "Sun, 15 Nov 2026"
     assert (download.etag, download.last_modified) == ('"abc"', "Mon, 16 Nov 2026")
@@ -108,8 +129,8 @@ def test_not_modified_downloads_nothing():
 @pytest.mark.parametrize(
     ("response", "message"),
     [
-        (_Response(_document(), url="https://evil.example/kev.json"), "left CISA's site"),
-        (_Response(_document(), url="http://www.cisa.gov/sites/default/files/feeds/x.json"), "left CISA's site"),
+        (_Response(status=302, headers={"Location": "https://evil.example/kev.json"}), "redirect"),
+        (_Response(status=301, headers={"Location": "http://www.cisa.gov/x.json"}), "redirect"),
         (_Response(b"x" * (kev.MAX_BYTES + 1)), "larger than"),
         (_Response(status=500), "could not be downloaded"),
         (requests.ConnectionError("down"), "could not be downloaded"),
@@ -171,3 +192,91 @@ def test_a_failed_refresh_keeps_the_stored_copy(tmp_path):
 
 def test_no_stored_catalogue_reads_as_none(tmp_path):
     assert kev.stored_catalogue(_db(tmp_path)) is None
+
+
+def test_an_identical_duplicate_is_kept_once():
+    same = {"cveID": "CVE-2021-44228", "dateAdded": "2021-12-10", "knownRansomwareCampaignUse": "Known"}
+
+    assert len(kev.parse_catalogue(_document(entries=[same, dict(same)])).entries) == 1
+
+
+class _SlowBody(_Response):
+    def iter_content(self, chunk_size):
+        yield from (b"{" for _ in range(10))
+
+
+def test_a_download_that_runs_past_the_deadline_is_stopped():
+    ticks = iter(range(0, 1000, 30))
+
+    with pytest.raises(kev.KevCatalogueError, match="longer than"):
+        kev.fetch_catalogue(_Session(_SlowBody()), clock=lambda: next(ticks))
+
+
+def test_a_same_version_answer_keeps_the_newest_validators(tmp_path):
+    db = _db(tmp_path)
+    kev.refresh_catalogue(db, _Session(_Response(_document(), headers={"ETag": '"v1"'})))
+
+    kev.refresh_catalogue(db, _Session(_Response(_document(), headers={"ETag": '"v2"'})))
+
+    assert kev.stored_catalogue(db)["etag"] == '"v2"'
+
+
+class _RecordingLock:
+    def __init__(self):
+        self.held, self.entries = False, 0
+
+    def __enter__(self):
+        self.held, self.entries = True, self.entries + 1
+
+    def __exit__(self, *exc):
+        self.held = False
+
+
+def test_the_download_runs_outside_the_lock_and_every_database_access_inside_it(tmp_path, monkeypatch):
+    db, lock = _db(tmp_path), _RecordingLock()
+    held_during = {}
+
+    class _Watching(_Session):
+        def get(self, *args, **kwargs):
+            held_during["download"] = lock.held
+            return super().get(*args, **kwargs)
+
+    real_stored, real_store = kev.stored_catalogue, kev.store_catalogue
+
+    def _stored(path):
+        held_during["read"] = lock.held
+        return real_stored(path)
+
+    def _store(*args, **kwargs):
+        held_during["write"] = lock.held
+        return real_store(*args, **kwargs)
+
+    monkeypatch.setattr(kev, "stored_catalogue", _stored)
+    monkeypatch.setattr(kev, "store_catalogue", _store)
+
+    kev.refresh_catalogue(db, _Watching(_Response(_document())), write_lock=lock)
+
+    assert held_during == {"read": True, "download": False, "write": True}
+
+
+def test_a_failed_write_rolls_back_to_the_stored_copy(tmp_path):
+    db = _db(tmp_path)
+    kev.refresh_catalogue(db, _Session(_Response(_document())))
+    before = kev.stored_catalogue(db)
+    broken = kev.KevCatalogue(
+        version="2026.11.17",
+        released="2026-11-17T00:00:00Z",
+        sha256="0" * 64,
+        source=FEED,
+        entries=(kev.KevEntry("CVE-2024-3400", "not-a-date", None),),
+    )
+
+    with pytest.raises(Exception):
+        kev.store_catalogue(db, broken)
+
+    assert kev.stored_catalogue(db) == before
+
+
+def test_the_test_suite_cannot_reach_the_network():
+    with pytest.raises(requests.ConnectionError):
+        requests.get("https://192.0.2.1/", timeout=2)

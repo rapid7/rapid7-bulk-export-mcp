@@ -1,8 +1,7 @@
 import logging
+import socket
 
 import pytest
-
-from src import kev_catalogue
 
 
 @pytest.fixture(autouse=True)
@@ -32,13 +31,17 @@ def _restore_refresh_logger():
 
 
 @pytest.fixture(autouse=True)
-def _no_kev_network(monkeypatch):
-    """No test may reach cisa.gov. A test that needs a catalogue passes its own session."""
+def _no_outside_network(monkeypatch):
+    """No test may open a connection off this machine, however it reaches the network.
 
-    def _blocked(session=None, etag=None, last_modified=None):
-        if session is None:
-            raise kev_catalogue.KevCatalogueError("network is off in tests.")
-        return _real_fetch(session, etag=etag, last_modified=last_modified)
+    A test that needs a KEV catalogue passes a stub session to kev_catalogue instead.
+    """
+    real_connect = socket.socket.connect
 
-    _real_fetch = kev_catalogue.fetch_catalogue
-    monkeypatch.setattr(kev_catalogue, "fetch_catalogue", _blocked)
+    def _local_only(sock, address):
+        host = address[0] if isinstance(address, tuple) else address
+        if isinstance(host, str) and host not in ("127.0.0.1", "::1", "localhost") and sock.family != socket.AF_UNIX:
+            raise ConnectionRefusedError(f"tests may not reach {host}")
+        return real_connect(sock, address)
+
+    monkeypatch.setattr(socket.socket, "connect", _local_only)

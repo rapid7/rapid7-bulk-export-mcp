@@ -13,11 +13,11 @@ import hashlib
 import json
 import os
 import re
+import time
 from contextlib import nullcontext
 from dataclasses import dataclass
-from datetime import datetime, timezone
-from typing import Any, ContextManager, Dict, Optional, Tuple
-from urllib.parse import urlparse
+from datetime import date, datetime, timezone
+from typing import Any, Callable, ContextManager, Dict, Optional, Tuple
 
 import requests
 
@@ -29,9 +29,11 @@ KEV_TABLE = "cisa_kev"
 KEV_METADATA_TABLE = "_kev_catalogue_metadata"
 MAX_BYTES = 10 * 1024 * 1024
 MAX_ENTRIES = 100_000
-TIMEOUT_SECONDS = 30
+TIMEOUT_SECONDS = (10, 20)
+"""Connect and per-read timeouts. DEADLINE_SECONDS bounds the whole download."""
+DEADLINE_SECONDS = 60
+_RANSOMWARE_VALUES = {"Known", "Unknown"}
 
-_HOST = urlparse(KEV_FEED_URL).hostname
 _CVE_ID = re.compile(r"CVE-\d{4}-\d{4,7}")
 _DATE = re.compile(r"\d{4}-\d{2}-\d{2}")
 _VERSION = re.compile(r"[0-9A-Za-z.\-]{1,32}")
@@ -88,7 +90,8 @@ def parse_catalogue(raw: bytes, source: str = KEV_FEED_URL) -> KevCatalogue:
         entry = _entry(item)
         if entry is None:
             raise KevCatalogueError(f"Catalogue entry {index} is not a valid KEV entry.")
-        entries.setdefault(entry.cve_id, entry)
+        if entries.setdefault(entry.cve_id, entry) != entry:
+            raise KevCatalogueError(f"Catalogue lists {entry.cve_id} twice with different details.")
     return KevCatalogue(
         version=version,
         released=released,
@@ -106,6 +109,14 @@ def _parses_as_time(value: str) -> bool:
     return True
 
 
+def _is_date(value: str) -> bool:
+    try:
+        date.fromisoformat(value)
+    except ValueError:
+        return False
+    return True
+
+
 def _entry(item: Any) -> Optional[KevEntry]:
     if not isinstance(item, dict):
         return None
@@ -113,9 +124,9 @@ def _entry(item: Any) -> Optional[KevEntry]:
     ransomware = item.get("knownRansomwareCampaignUse")
     if not isinstance(cve_id, str) or not _CVE_ID.fullmatch(cve_id):
         return None
-    if not isinstance(date_added, str) or not _DATE.fullmatch(date_added):
+    if not isinstance(date_added, str) or not _DATE.fullmatch(date_added) or not _is_date(date_added):
         return None
-    if ransomware is not None and (not isinstance(ransomware, str) or len(ransomware) > 32):
+    if ransomware is not None and ransomware not in _RANSOMWARE_VALUES:
         return None
     return KevEntry(cve_id=cve_id, date_added=date_added, known_ransomware_use=ransomware)
 
@@ -128,7 +139,10 @@ class Download:
 
 
 def fetch_catalogue(
-    session: Optional[requests.Session] = None, etag: Optional[str] = None, last_modified: Optional[str] = None
+    session: Optional[requests.Session] = None,
+    etag: Optional[str] = None,
+    last_modified: Optional[str] = None,
+    clock: Callable[[], float] = time.monotonic,
 ) -> Optional[Download]:
     """Download and check the catalogue from CISA's feed, unless CISA says it has not changed.
 
@@ -140,8 +154,8 @@ def fetch_catalogue(
         The checked catalogue and its validators, or None when CISA answers 304 Not Modified.
 
     Raises:
-        KevCatalogueError: If the download fails, leaves CISA's host, is too large, or the
-            document fails a check.
+        KevCatalogueError: If the download fails, redirects, is too large, runs past
+            DEADLINE_SECONDS, or the document fails a check.
     """
     http = session or requests
     headers = {"User-Agent": USER_AGENT, "Accept": "application/json"}
@@ -150,17 +164,20 @@ def fetch_catalogue(
     if last_modified:
         headers["If-Modified-Since"] = last_modified
     try:
-        response = http.get(KEV_FEED_URL, headers=headers, timeout=TIMEOUT_SECONDS, stream=True)
-        if urlparse(response.url).scheme != "https" or urlparse(response.url).hostname != _HOST:
-            raise KevCatalogueError("The catalogue download left CISA's site.")
+        deadline = clock() + DEADLINE_SECONDS
+        response = http.get(KEV_FEED_URL, headers=headers, timeout=TIMEOUT_SECONDS, stream=True, allow_redirects=False)
         if response.status_code == 304:
             return None
+        if 300 <= response.status_code < 400:
+            raise KevCatalogueError("CISA's feed answered with a redirect, which is not followed.")
         response.raise_for_status()
         raw = bytearray()
         for chunk in response.iter_content(chunk_size=65536):
             raw.extend(chunk)
             if len(raw) > MAX_BYTES:
                 raise KevCatalogueError(f"The catalogue is larger than {MAX_BYTES} bytes.")
+            if clock() > deadline:
+                raise KevCatalogueError(f"The catalogue took longer than {DEADLINE_SECONDS} seconds to download.")
     except requests.RequestException as e:
         raise KevCatalogueError(f"The catalogue could not be downloaded: {type(e).__name__}.") from e
     return Download(
@@ -183,8 +200,9 @@ def refresh_catalogue(
 ) -> str:
     """Bring the stored catalogue up to date, and leave it alone when it already is.
 
-    The download runs outside write_lock, so a slow fetch never blocks queries. Only the
-    final write takes it.
+    Every read and write of the database takes write_lock, because DuckDB refuses a second
+    connection to one file with a different configuration. The download runs outside it, so
+    a slow fetch never blocks queries or another organisation's load.
 
     Returns:
         "unchanged" when CISA reports no change or sends the stored version again, else "updated".
@@ -193,17 +211,32 @@ def refresh_catalogue(
         KevCatalogueError: If the catalogue could not be fetched or failed a check. The stored
             copy, if any, is left as it was.
     """
-    stored = stored_catalogue(db_path)
+    lock = write_lock if write_lock is not None else nullcontext()
+    with lock:
+        stored = stored_catalogue(db_path)
     download = fetch_catalogue(
         session,
         etag=stored.get("etag") if stored else None,
         last_modified=stored.get("last_modified") if stored else None,
     )
-    if download is None or (stored and stored.get("version") == download.catalogue.version):
+    if download is None:
         return "unchanged"
-    with write_lock if write_lock is not None else nullcontext():
+    with lock:
+        if stored and stored.get("version") == download.catalogue.version:
+            _update_validators(db_path, download.etag, download.last_modified)
+            return "unchanged"
         store_catalogue(db_path, download.catalogue, etag=download.etag, last_modified=download.last_modified)
     return "updated"
+
+
+def _update_validators(db_path: str, etag: Optional[str], last_modified: Optional[str]) -> None:
+    """Keep the validators CISA sent, so the next refresh can be answered with 304. Missing ones are kept."""
+    with duckdb_connection(db_path) as conn:
+        conn.execute(
+            f"UPDATE {KEV_METADATA_TABLE} SET etag = COALESCE(?, etag), "  # nosec B608
+            "last_modified = COALESCE(?, last_modified)",
+            [etag, last_modified],
+        )
 
 
 def store_catalogue(
