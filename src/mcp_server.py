@@ -23,7 +23,7 @@ from fastmcp import FastMCP
 from fastmcp.server.auth import restrict_tag
 from mcp.types import ToolAnnotations
 
-from . import orchestrator
+from . import kev_catalogue, orchestrator
 from .artifact_store import download_artifact, storage_configured
 from .auth import ENV_AUDIENCE, ENV_ISSUER, ENV_JWKS_URI, build_auth
 from .config import ORGS_FILE_ENV, key_configured, load_config, load_org_configs, load_org_labels, redact_secret
@@ -251,6 +251,7 @@ def _orchestrator_context() -> orchestrator.OrchestratorContext:
         download_and_load=lambda *a, **kw: _download_and_load_files(*a, **kw),
         in_progress_retry_secs=_IN_PROGRESS_RETRY_SECS,
         config_for_org=lambda org_label: _config_for_org(org_label),
+        refresh_kev=lambda db_path, write_lock: kev_catalogue.refresh_catalogue(db_path, write_lock=write_lock),
     )
 
 

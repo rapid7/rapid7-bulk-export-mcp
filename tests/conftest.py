@@ -2,6 +2,8 @@ import logging
 
 import pytest
 
+from src import kev_catalogue
+
 
 @pytest.fixture(autouse=True)
 def _restore_refresh_logger():
@@ -27,3 +29,16 @@ def _restore_refresh_logger():
     logger.handlers[:] = handlers
     logger.setLevel(level)
     logger.propagate = propagate
+
+
+@pytest.fixture(autouse=True)
+def _no_kev_network(monkeypatch):
+    """No test may reach cisa.gov. A test that needs a catalogue passes its own session."""
+
+    def _blocked(session=None, etag=None, last_modified=None):
+        if session is None:
+            raise kev_catalogue.KevCatalogueError("network is off in tests.")
+        return _real_fetch(session, etag=etag, last_modified=last_modified)
+
+    _real_fetch = kev_catalogue.fetch_catalogue
+    monkeypatch.setattr(kev_catalogue, "fetch_catalogue", _blocked)

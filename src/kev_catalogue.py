@@ -13,9 +13,10 @@ import hashlib
 import json
 import os
 import re
+from contextlib import nullcontext
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from typing import Any, Dict, Optional, Tuple
+from typing import Any, ContextManager, Dict, Optional, Tuple
 from urllib.parse import urlparse
 
 import requests
@@ -177,8 +178,13 @@ def _header(response: Any, name: str) -> Optional[str]:
     return value
 
 
-def refresh_catalogue(db_path: str, session: Optional[requests.Session] = None) -> str:
+def refresh_catalogue(
+    db_path: str, session: Optional[requests.Session] = None, write_lock: Optional[ContextManager[Any]] = None
+) -> str:
     """Bring the stored catalogue up to date, and leave it alone when it already is.
+
+    The download runs outside write_lock, so a slow fetch never blocks queries. Only the
+    final write takes it.
 
     Returns:
         "unchanged" when CISA reports no change or sends the stored version again, else "updated".
@@ -195,7 +201,8 @@ def refresh_catalogue(db_path: str, session: Optional[requests.Session] = None) 
     )
     if download is None or (stored and stored.get("version") == download.catalogue.version):
         return "unchanged"
-    store_catalogue(db_path, download.catalogue, etag=download.etag, last_modified=download.last_modified)
+    with write_lock if write_lock is not None else nullcontext():
+        store_catalogue(db_path, download.catalogue, etag=download.etag, last_modified=download.last_modified)
     return "updated"
 
 

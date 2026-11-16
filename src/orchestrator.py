@@ -24,6 +24,7 @@ build into a database path of its choosing rather than mutating the live one.
 
 import datetime as _dt
 import json
+import logging
 import shutil
 import sys
 import tempfile
@@ -131,6 +132,9 @@ class OrchestratorContext:
         in_progress_retry_secs: Backoff between remediation create retries.
         config_for_org: Return the configuration for one labelled org. None means
             the caller has no org list, and a labelled export then fails closed.
+        refresh_kev: Bring the stored CISA KEV catalogue up to date, given the database
+            path and a write lock. Runs only after an org-scoped vulnerability load. None
+            turns it off.
     """
 
     data_dir: Path
@@ -147,6 +151,7 @@ class OrchestratorContext:
     download_and_load: Optional[Callable[..., tuple]] = None
     in_progress_retry_secs: float = _IN_PROGRESS_RETRY_SECS
     config_for_org: Optional[Callable[[str], dict]] = None
+    refresh_kev: Optional[Callable[..., str]] = None
 
     def tracker(self) -> ExportTracker:
         """Open a tracker handle on the standard tracking database."""
@@ -310,6 +315,7 @@ def run_download_and_load(ctx: OrchestratorContext, export_id: str, export_type:
             org_label=org_label,
         )
         row_info = f"Rows loaded: {row_count}\nPer-table row counts: {json.dumps(row_counts, default=str)}"
+        kev_note = _refresh_kev(ctx) if org_label is not None and export_type == "vulnerability" else ""
 
         warnings_section = ""
         if validation_warnings:
@@ -321,7 +327,7 @@ def run_download_and_load(ctx: OrchestratorContext, export_id: str, export_type:
             f"Export ID: {export_id}\n"
             f"Files processed: {len(parquet_urls)}\n"
             f"{row_info}\n"
-            f"{warnings_section}\n"
+            f"{warnings_section}{kev_note}\n"
             f"Statistics:\n"
             f"{json.dumps(stats, indent=2, default=str)}\n\n"
             f"Query the data with query_rapid7, get_rapid7_schema, or get_rapid7_stats."
@@ -353,6 +359,22 @@ def run_download_and_load(ctx: OrchestratorContext, export_id: str, export_type:
         tracker.set_phase(export_id, PHASE_FAILED, phase_detail=None, message=_redact_secret(message))
     finally:
         tracker.close()
+
+
+def _refresh_kev(ctx: OrchestratorContext) -> str:
+    """Refresh the CISA KEV catalogue after a multi-org load, never failing the load itself."""
+    db = ctx.get_db()
+    if ctx.refresh_kev is None or db is None:
+        return ""
+    try:
+        status = ctx.refresh_kev(db.db_path, write_lock=ctx.db_lock)
+    except Exception as e:
+        logging.getLogger(__name__).warning("CISA KEV catalogue refresh failed: %s", _redact_secret(str(e)))
+        return (
+            f"⚠️  CISA KEV catalogue not refreshed: {_redact_secret(str(e))} The report keeps its "
+            "stand-ins for KEV until a refresh succeeds.\n"
+        )
+    return "CISA KEV catalogue: " + ("updated.\n" if status == "updated" else "already up to date.\n")
 
 
 def create_remediation_chunk_waiting(ctx: OrchestratorContext, config: dict, chunk_start: str, chunk_end: str) -> str:
