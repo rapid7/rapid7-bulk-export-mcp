@@ -59,7 +59,8 @@ def test_portfolio_totals_show_as_tiles(cards):
     portfolio = next(c for c in cards if c["card"] == "portfolio_summary")["results"]["portfolio"][0]
     section = _section(_html(cards), "portfolio_summary")
 
-    assert f'<div class="k">Active critical</div><div class="v">{portfolio["critical"]:,}</div>' in section
+    assert f'<div class="k">Total critical findings</div><div class="v">{portfolio["critical"]:,}</div>' in section
+    assert "Stands in for findings in CISA KEV" in section
 
 
 def _shades(values):
@@ -95,19 +96,15 @@ def test_a_tile_falls_back_to_a_table_when_its_column_is_missing():
 def test_hostile_text_is_escaped_in_tiles_and_the_heat_table():
     hostile = '<b x="1">&'
     cards = [
-        _card({"portfolio": [{"active_total": 1, "critical": 1, "high": 1, "medium": 1}]}),
+        _card({"portfolio": [{"critical": 1, "high": 1, "with_exploits": 1}]}),
         _card({"by_band": [{"band": hostile, "critical": 3}]}, card="unresolved_age_severity"),
-        _card(
-            {"headline": [{"findings": 1, "assets": 1, "distinct_vulns": 1, "median_days_open": 1}]},
-            card="weaponised_critical",
-        ),
         _card({"by_org": [{"orgId": hostile, "n": 1}]}, per_org=["by_org"], card="org_comparison", orgs=[hostile]),
     ]
 
     html = _html(cards)
 
     assert "<b " not in html
-    assert '<td class="rl">&lt;b x=&quot;1&quot;&gt;&amp;</td>' in html
+    assert '<td class="rl">&lt;b x=&quot;1&quot;&gt;&amp; days</td>' in html
     assert "</span>&lt;b x=&quot;1&quot;&gt;&amp;</td>" in html
 
 
@@ -159,7 +156,6 @@ def _section(html, card):
 
 
 def test_incomplete_coverage_hides_combined_results_and_keeps_per_org_ones(cards):
-    complete = _html(cards)
     html = _html(cards, complete=False, message="ORG-C <missing>")
 
     assert "Coverage is incomplete." in html
@@ -167,23 +163,16 @@ def test_incomplete_coverage_hides_combined_results_and_keeps_per_org_ones(cards
     for card in cards:
         section = _section(html, card["card"])
         for name in card["results"]:
-            heading = f"<h3>{_label(name)}</h3>"
-            after = section.split(heading, 1)[1].split("<h3>", 1)[0]
             if name in card["per_org"]:
-                assert "<table" in after or "No rows." in after, f"{card['card']}.{name}"
-            else:
-                assert "Left out: this combines organisations" in after, f"{card['card']}.{name}"
-                assert "<table" not in after, f"{card['card']}.{name}"
-    portfolio = next(c for c in cards if c["card"] == "portfolio_summary")
-    total = f"{portfolio['results']['portfolio'][0]['active_total']:,}"
-    assert f'<div class="v">{total}</div>' in _section(complete, "portfolio_summary")
+                continue
+            what = "Median" if card["card"] == "org_risk_distribution" else _label(name)
+            assert f"<strong>{what}.</strong> Left out: this combines organisations" in section, (
+                f"{card['card']}.{name}"
+            )
+    assert 'class="tiles"' not in _section(html, "portfolio_summary")
+    assert '<table class="mx">' not in _section(html, "unresolved_age_severity")
+    assert ">median " not in _section(html, "org_risk_distribution")
     assert "ORG-A</td>" in html
-
-
-def test_the_cross_org_top_assets_ranking_is_hidden_when_coverage_is_incomplete(cards):
-    section = _section(_html(cards, complete=False), "weaponised_critical")
-
-    assert "Left out" in section.split("<h3>Top assets</h3>", 1)[1]
 
 
 def test_an_empty_combined_result_is_hidden_rather_than_shown_as_zero():
@@ -261,17 +250,35 @@ def test_tiles_come_before_the_per_org_table(cards):
     assert section.index('class="tiles"') < section.index("<table")
 
 
-def test_quarterly_results_show_as_line_charts_with_their_figures(cards):
-    section = _section(_html(cards), "vulnerability_activity")
+@pytest.mark.parametrize("card", ["new_vulnerabilities", "remediated_vulnerabilities"])
+def test_weekly_results_show_as_line_charts_with_their_figures(cards, card):
+    section = _section(_html(cards), card)
 
-    assert section.count("<polyline") >= 2
-    assert section.count("<summary>Show the figures</summary>") == 2
+    assert section.count("<polyline") == 2
+    assert section.count("<summary>Show the figures</summary>") == 1
 
 
-def test_incomplete_coverage_draws_no_chart_of_a_combined_result(cards):
-    after = _section(_html(cards, complete=False), "weaponised_critical").split("<h3>Solution types</h3>", 1)[1]
+def test_complete_coverage_draws_the_median_on_the_risk_chart(cards):
+    median = next(c for c in cards if c["card"] == "org_risk_distribution")["results"]["portfolio_median"][0]
 
-    assert "<svg" not in after.split("<h3>", 1)[0]
+    section = _section(_html(cards), "org_risk_distribution")
+
+    assert f">median {median['median_of_org_means']:,.0f}<" in section
+
+
+def test_the_report_carries_the_ux_titles_and_copy(cards):
+    html = _html(cards)
+
+    assert "<h1>Multi-Org Exposure Dashboard</h1>" in html
+    for card in cards:
+        section = _section(html, card["card"])
+        assert f'<p class="sec">{card["title"]}</p>' in section
+        assert f'<p class="hint">{card["description"]}</p>' in section
+    age = _section(html, "unresolved_age_severity")
+    assert '<div class="k">91+ days</div>' in age
+    assert 'Critical<span class="range">CVSS 9.0-10.0</span>' in age
+    assert "light amber (lowest) to dark red (highest)" in age
+    assert "Remediated Critical and High Vulnerabilities (reintroduced stands in)" in _section(html, "org_comparison")
 
 
 def test_more_than_three_orgs_each_get_their_own_colour():
@@ -284,6 +291,6 @@ def test_more_than_three_orgs_each_get_their_own_colour():
 
 
 def test_incomplete_coverage_still_draws_the_per_org_charts(cards):
-    section = _section(_html(cards, complete=False), "vulnerability_activity")
+    section = _section(_html(cards, complete=False), "new_vulnerabilities")
 
-    assert section.count("<polyline") >= 2
+    assert section.count("<polyline") == 2
