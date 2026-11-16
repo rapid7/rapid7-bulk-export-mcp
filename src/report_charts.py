@@ -20,7 +20,7 @@ _MEDIAN = "#82939c"
 _MAX_PERIODS = 1000
 _MAX_X_LABELS = 8
 _LEADS = 3
-_MARKED_PERIODS = 13
+_MARKED_PERIODS = 26
 _MUTED = "#9aa5aa"
 _MAX_VALUE = 1e300
 _SVG_OPEN = '<svg viewBox="0 0 {w} {h}" width="100%" role="img" xmlns="http://www.w3.org/2000/svg" font-family="{f}">'
@@ -145,6 +145,7 @@ def line_chart(
     fmt: Formatter,
     series: Sequence[str] = (),
     y_title: Optional[str] = None,
+    x_values: Sequence[str] = (),
 ) -> str:
     """One line per series over the sorted x values. A missing point counts as zero.
 
@@ -152,9 +153,15 @@ def line_chart(
         series: Names to draw even with no rows, so a zero series shows as a flat line
             rather than vanishing from the chart and the legend.
         y_title: The y axis title. Defaults to y_key in sentence case.
+        x_values: The x axis to draw, in order. Rows outside it are left off the chart.
+            Defaults to every period from the first row to the last.
     """
     rows = [r for r in rows if r.get(x_key) is not None]
-    xs = _periods(sorted({str(r.get(x_key)) for r in rows}))
+    if x_values:
+        xs = [str(x) for x in x_values]
+        rows = [r for r in rows if str(r.get(x_key)) in set(xs)]
+    else:
+        xs = _periods(sorted({str(r.get(x_key)) for r in rows}))
     names = sorted({str(r.get(series_key)) for r in rows} | {str(name) for name in series})
     if not xs:
         return ""
@@ -162,7 +169,7 @@ def line_chart(
     for r in rows:
         series = points[str(r.get(series_key))]
         series[str(r.get(x_key))] = series.get(str(r.get(x_key)), 0.0) + _value(r.get(y_key))
-    top = nice_max(max(v for series in points.values() for v in series.values()))
+    top = nice_max(max((v for series in points.values() for v in series.values()), default=0.0))
     left, right, y0, y1 = 90, 980, 20, 230
     step = (right - left) / max(1, len(xs) - 1)
 

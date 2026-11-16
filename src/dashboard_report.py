@@ -11,7 +11,7 @@ SIL Open Font License, which ships beside the font files in assets/.
 
 import base64
 import math
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 from functools import lru_cache
 from html import escape
@@ -423,12 +423,37 @@ def _with_figures(chart: str, rows: List[Dict[str, Any]], colours: Dict[str, str
     return f"{chart}<details><summary>Show the figures</summary>{_table(rows, colours)}</details>"
 
 
-def _weekly(y_key: str, y_title: str) -> Callable[[List[Dict[str, Any]], Dict[str, str]], str]:
-    def render(rows: List[Dict[str, Any]], colours: Dict[str, str]) -> str:
+CHART_WEEKS = 26
+"""Weeks each weekly chart plots, ending at the latest data date. Every week stays in the figures."""
+
+
+def _recent_weeks(card: Dict[str, Any], count: int = CHART_WEEKS) -> List[str]:
+    """The last count Monday weeks, ending at the week of the card's latest data date.
+
+    Returns no weeks when a data date cannot be read, so the chart plots every week instead.
+    """
+    dates = list(card.get("as_of_by_org", {}).values()) or [card["as_of"]]
+    try:
+        latest = max(datetime.fromisoformat(str(d)).replace(tzinfo=None) for d in dates).date()
+    except ValueError:
+        return []
+    monday = latest - timedelta(days=latest.weekday())
+    return [(monday - timedelta(weeks=n)).isoformat() for n in range(count - 1, -1, -1)]
+
+
+def _weekly(y_key: str, y_title: str) -> Callable[[List[Dict[str, Any]], Dict[str, str], List[str]], str]:
+    def render(rows: List[Dict[str, Any]], colours: Dict[str, str], weeks: List[str]) -> str:
         if not rows:
             return '<p class="hint">No rows.</p>'
-        chart = line_chart(rows, "week", y_key, "orgId", colours, _number_text, series=list(colours), y_title=y_title)
-        return _with_figures(f'<div class="chart">{chart}</div>', rows, colours)
+        chart = line_chart(
+            rows, "week", y_key, "orgId", colours, _number_text, series=list(colours), y_title=y_title, x_values=weeks
+        )
+        note = (
+            f'<p class="inlinenote">Last {len(weeks)} weeks to the data date. Every week is in the figures.</p>'
+            if weeks
+            else ""
+        )
+        return _with_figures(f'<div class="chart">{chart}</div>{note}', rows, colours)
 
     return render
 
@@ -447,6 +472,9 @@ _SUPPORTING = {("portfolio_summary", "by_org")}
 _FEATURED: Dict[Tuple[str, str], Callable[[List[Dict[str, Any]], Dict[str, str]], str]] = {
     ("portfolio_summary", "portfolio"): _portfolio_tiles,
     ("unresolved_age_severity", "by_band"): _heat_table,
+}
+
+_WEEKLY = {
     ("new_vulnerabilities", "by_week"): _weekly("new_critical_high", "New critical and high"),
     ("remediated_vulnerabilities", "by_week"): _weekly("reintroduced_critical_high", "Reintroduced critical and high"),
 }
@@ -488,7 +516,10 @@ def _card_body(card: Dict[str, Any], coverage_complete: bool, colours: Dict[str,
         elif key in _SUPPORTING:
             parts.append(_by_organisation(_table(rows, colours), open_=not coverage_complete))
         else:
-            parts.append(_FEATURED.get(key, _table)(rows, colours))
+            if key in _WEEKLY:
+                parts.append(_WEEKLY[key](rows, colours, _recent_weeks(card)))
+            else:
+                parts.append(_FEATURED.get(key, _table)(rows, colours))
     return parts
 
 

@@ -366,3 +366,33 @@ def test_incomplete_coverage_still_draws_the_per_org_charts(cards):
     section = _section(_html(cards, complete=False), "new_vulnerabilities")
 
     assert section.count("<polyline") == 2
+
+
+def _weekly_card(rows, as_of="2026-11-13T10:48:00+00:00"):
+    return _card({"by_week": rows}, per_org=["by_week"], card="new_vulnerabilities", as_of=as_of, as_of_by_org={})
+
+
+def test_weekly_charts_plot_the_last_26_weeks_and_keep_every_week_in_the_figures():
+    rows = [
+        {"week": "2023-06-12", "orgId": "ORG-A", "new_critical_high": 1400000},
+        {"week": "2026-11-02", "orgId": "ORG-A", "new_critical_high": 50},
+    ]
+
+    section = _section(_html([_weekly_card(rows)]), "new_vulnerabilities")
+    chart, figures = section.split("<summary>Show the figures</summary>", 1)
+
+    assert len(re.findall(r'class="pt"', chart)) == 26
+    assert 'data-heading="Week of 2026-11-09"' in chart, "the window ends at the week of the data date"
+    assert 'data-heading="Week of 2026-05-25"' in chart and "2023-06-12" not in chart
+    assert "2023-06-12" in figures and "1,400,000" in figures
+    assert "Last 26 weeks to the data date" in section
+    assert 'class="series lead"' in chart, "26 points leave room for the prototype's markers"
+
+
+def test_an_unreadable_data_date_plots_every_week():
+    rows = [{"week": "2026-08-31", "orgId": "ORG-A", "new_critical_high": 1}]
+
+    section = _section(_html([_weekly_card(rows, as_of="not a date")]), "new_vulnerabilities")
+
+    assert section.count('class="pt"') == 1
+    assert "Last 26 weeks" not in section
