@@ -5,7 +5,7 @@ from decimal import Decimal
 
 import pytest
 
-from src.report_charts import bar_chart, dot_plot, line_chart, nice_max
+from src.report_charts import dot_plot, line_chart, nice_max
 
 
 def _fmt(value):
@@ -48,34 +48,23 @@ def test_dot_plot_handles_one_org_and_draws_no_cross_org_marker():
     assert "median" not in svg and "highest" not in svg
 
 
-def test_bar_chart_draws_one_bar_per_row():
-    rows = [{"solution_type": "PATCH", "findings": 10}, {"solution_type": "ROLLUP", "findings": 0}]
-
-    svg = bar_chart(rows, "solution_type", "findings", _fmt)
-
-    assert svg.count("<rect") == 2
-    assert 'height="0.00"' in svg
-
-
-@pytest.mark.parametrize("chart", ["line", "dot", "bar"])
+@pytest.mark.parametrize("chart", ["line", "dot"])
 def test_every_chart_label_is_escaped(chart):
     rows = [{"quarter": HOSTILE, "orgId": HOSTILE, "n": 3, "mean_risk": 3, "solution_type": HOSTILE, "findings": 3}]
     svg = {
         "line": lambda: line_chart(rows, "quarter", "n", "orgId", {}, _fmt),
         "dot": lambda: dot_plot(rows, "mean_risk", "orgId", {}, _fmt),
-        "bar": lambda: bar_chart(rows, "solution_type", "findings", _fmt),
     }[chart]()
 
     assert "<b " not in svg
     assert SHOWN in svg
 
 
-@pytest.mark.parametrize("chart", ["line", "dot", "bar"])
+@pytest.mark.parametrize("chart", ["line", "dot"])
 def test_no_rows_draws_nothing(chart):
     svg = {
         "line": lambda: line_chart([], "quarter", "n", "orgId", COLOURS, _fmt),
         "dot": lambda: dot_plot([], "mean_risk", "orgId", COLOURS, _fmt),
-        "bar": lambda: bar_chart([], "solution_type", "findings", _fmt),
     }[chart]()
 
     assert svg == ""
@@ -120,18 +109,24 @@ def test_an_org_with_no_risk_score_is_left_off_the_dot_plot():
 
 
 def test_negative_and_huge_values_still_give_valid_charts():
-    bars = bar_chart([{"t": "a", "n": -5}, {"t": "b", "n": 1.7e308}], "t", "n", _fmt)
-    line = line_chart([{"quarter": "2026-01", "orgId": "ORG-A", "n": -3}], "quarter", "n", "orgId", COLOURS, _fmt)
+    rows = [
+        {"quarter": "2026-01", "orgId": "ORG-A", "n": -3},
+        {"quarter": "2026-04", "orgId": "ORG-A", "n": 1.7e308},
+    ]
 
-    assert 'height="-' not in bars
-    assert "inf" not in bars.lower() and "nan" not in bars.lower()
-    assert float(re.search(r'points="([^"]+)"', line).group(1).split(",")[1]) <= 180.0
+    svg = line_chart(rows, "quarter", "n", "orgId", COLOURS, _fmt)
+
+    assert "inf" not in svg.lower() and "nan" not in svg.lower()
+    assert float(re.search(r'points="([^"]+)"', svg).group(1).split()[0].split(",")[1]) <= 180.0
 
 
 def test_axis_title_and_ticks_are_escaped():
-    svg = bar_chart([{"t": "a", HOSTILE: 3}], "t", HOSTILE, _fmt)
+    svg = line_chart(
+        [{"quarter": "2026-01", "orgId": "ORG-A", "n": 3}], "quarter", "n", "orgId", {}, _fmt, y_title=HOSTILE
+    )
 
     assert "<b " not in svg
+    assert SHOWN in svg
 
 
 def test_an_org_with_no_rows_still_gets_a_flat_line_and_a_legend_entry():
@@ -150,3 +145,30 @@ def test_axis_ticks_carry_no_float_error():
     svg = dot_plot(rows, "mean_risk", "orgId", COLOURS, lambda v: repr(float(v)))
 
     assert ">378609.35<" in svg
+
+
+def test_weekly_gaps_keep_their_width():
+    rows = [
+        {"week": "2026-08-31", "orgId": "ORG-A", "n": 1},
+        {"week": "2026-09-21", "orgId": "ORG-A", "n": 2},
+    ]
+
+    svg = line_chart(rows, "week", "n", "orgId", COLOURS, _fmt)
+
+    assert len(re.search(r'<polyline points="([^"]+)"', svg).group(1).split()) == 4
+    assert "<title>ORG-A 2026-09-07: 0</title>" in svg and "<title>ORG-A 2026-09-14: 0</title>" in svg
+
+
+def test_dates_that_are_not_weekly_are_left_as_given():
+    rows = [{"week": "2026-08-31", "orgId": "ORG-A", "n": 1}, {"week": "2026-09-02", "orgId": "ORG-A", "n": 2}]
+
+    svg = line_chart(rows, "week", "n", "orgId", COLOURS, _fmt)
+
+    assert len(re.search(r'<polyline points="([^"]+)"', svg).group(1).split()) == 2
+
+
+def test_the_dot_plot_draws_a_median_only_when_given_one():
+    rows = [{"orgId": "ORG-A", "mean_risk": 100}, {"orgId": "ORG-B", "mean_risk": 300}]
+
+    assert "median" not in dot_plot(rows, "mean_risk", "orgId", COLOURS, _fmt)
+    assert ">median 200<" in dot_plot(rows, "mean_risk", "orgId", COLOURS, _fmt, median=200)

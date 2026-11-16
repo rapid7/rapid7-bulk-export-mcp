@@ -5,6 +5,7 @@ ever see a card's small result set, never the raw findings. Every label is HTML-
 """
 
 import math
+from datetime import date, timedelta
 from html import escape
 from typing import Any, Callable, Dict, List, Optional, Sequence
 
@@ -15,7 +16,9 @@ _AXIS = "rgba(248,250,250,0.3)"
 _GRID = "rgba(248,250,250,0.08)"
 _LABEL = "rgba(248,250,250,0.5)"
 _FALLBACK = "#9aa5ab"
-_BAR = "#78a3c6"
+_MEDIAN = "#82939c"
+_MAX_PERIODS = 1000
+_MAX_X_LABELS = 8
 _MAX_VALUE = 1e300
 _SVG_OPEN = '<svg viewBox="0 0 {w} {h}" width="100%" role="img" xmlns="http://www.w3.org/2000/svg" font-family="{f}">'
 
@@ -34,24 +37,41 @@ def _maybe_value(raw: Any) -> Optional[float]:
     return min(number, _MAX_VALUE) if math.isfinite(number) else None
 
 
-def _quarters(xs: List[str]) -> List[str]:
-    """Every quarter from the first to the last, so a gap keeps its width on the axis.
+def _periods(xs: List[str]) -> List[str]:
+    """Every period from the first to the last, so a gap keeps its width on the axis.
 
-    Quarters are "YYYY-MM" with MM the quarter's first month. Anything else is left as given.
+    Fills "YYYY-MM" quarters (MM the quarter's first month) and "YYYY-MM-DD" weeks that fall
+    on the same weekday. Anything else is left as given.
     """
-    if not xs:
-        return xs
+    return _fill_quarters(xs) or _fill_weeks(xs) or xs
+
+
+def _fill_quarters(xs: List[str]) -> Optional[List[str]]:
     try:
         months = [(int(x[:4]), int(x[5:7])) for x in xs if len(x) == 7 and x[4] == "-"]
     except ValueError:
-        return xs
-    if len(months) != len(xs) or any(m not in (1, 4, 7, 10) for _, m in months):
-        return xs
+        return None
+    if not xs or len(months) != len(xs) or any(m not in (1, 4, 7, 10) for _, m in months):
+        return None
     (year, month), last = min(months), max(months)
     filled = []
-    while (year, month) <= last and len(filled) < 400:
+    while (year, month) <= last and len(filled) < _MAX_PERIODS:
         filled.append(f"{year:04d}-{month:02d}")
         year, month = (year + 1, 1) if month == 10 else (year, month + 3)
+    return filled
+
+
+def _fill_weeks(xs: List[str]) -> Optional[List[str]]:
+    try:
+        days = [date.fromisoformat(x) for x in xs]
+    except ValueError:
+        return None
+    if not days or len({d.weekday() for d in days}) != 1:
+        return None
+    current, last, filled = min(days), max(days), []
+    while current <= last and len(filled) < _MAX_PERIODS:
+        filled.append(current.isoformat())
+        current += timedelta(days=7)
     return filled
 
 
@@ -108,15 +128,17 @@ def line_chart(
     colours: Dict[str, str],
     fmt: Formatter,
     series: Sequence[str] = (),
+    y_title: Optional[str] = None,
 ) -> str:
     """One line per series over the sorted x values. A missing point counts as zero.
 
     Args:
         series: Names to draw even with no rows, so a zero series shows as a flat line
             rather than vanishing from the chart and the legend.
+        y_title: The y axis title. Defaults to y_key in sentence case.
     """
     rows = [r for r in rows if r.get(x_key) is not None]
-    xs = _quarters(sorted({str(r.get(x_key)) for r in rows}))
+    xs = _periods(sorted({str(r.get(x_key)) for r in rows}))
     names = sorted({str(r.get(series_key)) for r in rows} | {str(name) for name in series})
     if not xs:
         return ""
@@ -125,15 +147,15 @@ def line_chart(
         series = points[str(r.get(series_key))]
         series[str(r.get(x_key))] = series.get(str(r.get(x_key)), 0.0) + _value(r.get(y_key))
     top = nice_max(max(v for series in points.values() for v in series.values()))
-    left, right, y0, y1 = 64, 680, 20, 180
+    left, right, y0, y1 = 84, 680, 20, 180
     step = (right - left) / max(1, len(xs) - 1)
 
     def x_at(i: int) -> float:
         return left + step * i if len(xs) > 1 else (left + right) / 2
 
     parts = [_SVG_OPEN.format(w=700, h=220, f=_FONT)]
-    parts += _y_axis(top, fmt, _label_text(y_key), left, right, y0, y1)
-    every = max(1, math.ceil(len(xs) / 12))
+    parts += _y_axis(top, fmt, y_title or _label_text(y_key), left, right, y0, y1)
+    every = max(1, math.ceil(len(xs) / _MAX_X_LABELS))
     for i, x in enumerate(xs):
         if i % every == 0:
             parts.append(
@@ -155,9 +177,19 @@ def line_chart(
 
 
 def dot_plot(
-    rows: List[Dict[str, Any]], value_key: str, label_key: str, colours: Dict[str, str], fmt: Formatter
+    rows: List[Dict[str, Any]],
+    value_key: str,
+    label_key: str,
+    colours: Dict[str, str],
+    fmt: Formatter,
+    median: Any = None,
 ) -> str:
-    """One dot per row on a single axis from the lowest to the highest value."""
+    """One dot per row on a single axis from the lowest to the highest value.
+
+    Args:
+        median: Drawn as a dashed marker when given. It combines organisations, so pass it
+            only when every organisation is present.
+    """
     measured = [(str(r.get(label_key)), _maybe_value(r.get(value_key))) for r in rows]
     values = [(label, v) for label, v in measured if v is not None]
     if not values:
@@ -176,6 +208,16 @@ def dot_plot(
             f'<circle cx="{x_at(v):.2f}" cy="{dot_y}" r="4" fill="{colours.get(label, _FALLBACK)}" opacity="0.85">'
             f"<title>{escape(label)}: {escape(fmt(v))}</title></circle>"
         )
+    median_value = _maybe_value(median)
+    if median_value is not None:
+        mx = x_at(min(max(median_value, low), high))
+        parts.append(
+            f'<line x1="{mx:.2f}" y1="40" x2="{mx:.2f}" y2="{axis_y}" stroke="{_MEDIAN}" stroke-width="1" '
+            'stroke-dasharray="3 3"/>'
+        )
+        parts.append(
+            f'<text x="{mx + 3:.2f}" y="37" font-size="6" fill="{_MEDIAN}">median {escape(fmt(median_value))}</text>'
+        )
     ticks = [low] if high == low else [low, _tick((low + high) / 2), high]
     for v in ticks:
         parts.append(
@@ -183,32 +225,6 @@ def dot_plot(
         )
     parts.append("</svg>")
     return "".join(parts) + _legend([label for label, _ in values], colours)
-
-
-def bar_chart(rows: List[Dict[str, Any]], label_key: str, value_key: str, fmt: Formatter) -> str:
-    """One vertical bar per row, in row order."""
-    bars = [(str(r.get(label_key)), _value(r.get(value_key))) for r in rows]
-    if not bars:
-        return ""
-    top = nice_max(max(v for _, v in bars))
-    left, right, y0, y1 = 64, 680, 20, 180
-    slot = (right - left) / len(bars)
-    width = min(60.0, slot * 0.6)
-    parts = [_SVG_OPEN.format(w=700, h=220, f=_FONT)]
-    parts += _y_axis(top, fmt, _label_text(value_key), left, right, y0, y1)
-    for i, (label, v) in enumerate(bars):
-        height = (y1 - y0) * v / top
-        x = left + slot * i + (slot - width) / 2
-        parts.append(
-            f'<rect x="{x:.2f}" y="{y1 - height:.2f}" width="{width:.2f}" height="{height:.2f}" rx="2" '
-            f'fill="{_BAR}"><title>{escape(label)}: {escape(fmt(v))}</title></rect>'
-        )
-        parts.append(
-            f'<text x="{x + width / 2:.2f}" y="{y1 + 16}" font-size="10" fill="{_LABEL}" '
-            f'text-anchor="middle">{escape(label)}</text>'
-        )
-    parts.append("</svg>")
-    return "".join(parts)
 
 
 def _label_text(key: str) -> str:

@@ -18,7 +18,7 @@ from html import escape
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
 
-from .report_charts import bar_chart, dot_plot, line_chart
+from .report_charts import dot_plot, line_chart
 
 _ASSETS = Path(__file__).parent / "assets"
 
@@ -92,6 +92,7 @@ table.mx th { font-weight: 500; color: var(--rds-text-secondary); font-size: var
   text-align: right; padding: 2px 8px; }
 table.mx th.rh { text-align: left; }
 table.mx td { text-align: right; padding: 5px 9px; border-radius: 4px; font-variant-numeric: tabular-nums; }
+table.mx th .range { display: block; font-weight: 400; color: var(--rds-text-tertiary); }
 table.mx td.rl { background: var(--rds-bg-subtle); text-align: left; font-size: var(--rds-fs-overline); }
 .legend { display: flex; flex-wrap: wrap; gap: 14px; margin: 6px 0 4px; }
 .legend span { font-size: var(--rds-fs-overline); color: var(--rds-text-secondary);
@@ -102,7 +103,7 @@ summary { font-size: var(--rds-fs-overline); color: var(--rds-text-secondary); c
 .swatch { display: inline-block; width: 8px; height: 8px; border-radius: 2px; margin-right: 6px; vertical-align: 1px; }
 """
 
-_LEFT_OUT = '<p class="inlinenote">Left out: this combines organisations, and coverage is incomplete.</p>'
+_LEFT_OUT_TEXT = "Left out: this combines organisations, and coverage is incomplete."
 
 
 @lru_cache(maxsize=1)
@@ -122,7 +123,13 @@ def _logo() -> str:
     return (_ASSETS / "rapid7-logo.svg").read_text(encoding="utf-8").strip()
 
 
-_LABELS = {"orgId": "Organisation", "by_org": "By organisation"}
+_LABELS = {
+    "orgId": "Organisation",
+    "by_org": "By organisation",
+    "portfolio": "Portfolio totals",
+    "by_band": "Days active by severity",
+    "reintroduced_critical_high": "Remediated Critical and High Vulnerabilities (reintroduced stands in)",
+}
 
 
 def _label(key: str) -> str:
@@ -241,32 +248,15 @@ def _note(prefix: str, value: Any, suffix: str = "") -> str:
 
 
 def _portfolio_tiles(rows: List[Dict[str, Any]], colours: Dict[str, str]) -> str:
-    row = rows[0] if rows else {}
     return _tiles_or_table(
         rows,
         colours,
         [
-            ("Active findings", "active_total"),
-            ("Active critical", "critical"),
-            ("Active high", "high"),
-            ("Active medium", "medium"),
+            ("Total critical findings", "critical"),
+            ("Total high findings", "high"),
+            ("Total findings with a known exploit", "with_exploits"),
         ],
-        {"active_total": _note("across", row.get("assets_with_findings"), " assets")},
-    )
-
-
-def _headline_tiles(rows: List[Dict[str, Any]], colours: Dict[str, str]) -> str:
-    row = rows[0] if rows else {}
-    return _tiles_or_table(
-        rows,
-        colours,
-        [
-            ("Weaponised critical findings", "findings"),
-            ("Assets affected", "assets"),
-            ("Distinct vulnerabilities", "distinct_vulns"),
-            ("Median days open", "median_days_open"),
-        ],
-        {"median_days_open": _note("mean", row.get("mean_days_open"))},
+        {"with_exploits": "Stands in for findings in CISA KEV, which the export does not carry"},
     )
 
 
@@ -278,6 +268,10 @@ def _heat_step(value: float, values: Sequence[float]) -> int:
     at_or_below = sum(1 for v in values if v <= value)
     mid_rank = (below + at_or_below) / 2
     return max(0, math.ceil(mid_rank * len(HEAT_RAMP) / len(values)) - 1)
+
+
+_SEVERITY_RANGES = {"critical": "9.0-10.0", "high": "7.0-8.9", "medium": "4.0-6.9", "low": "0.1-3.9"}
+"""CVSS v3 score range of each severity, as the UX prototype labels its columns."""
 
 
 def _heat_table(rows: List[Dict[str, Any]], colours: Dict[str, str]) -> str:
@@ -301,13 +295,25 @@ def _heat_table(rows: List[Dict[str, Any]], colours: Dict[str, str]) -> str:
         background, text = HEAT_RAMP[_heat_step(number, values)]
         return f'<td style="background:{background};color:{text}">{_text(value)}</td>'
 
-    head = "".join(f"<th>{escape(_label(c))}</th>" for c in severities)
+    oldest = next((r for r in rows if r.get("band") == "91+"), None)
+    headline = ""
+    if oldest is not None:
+        total = sum(int(v) for c in severities if _is_number(v := oldest.get(c)))
+        headline = _tiles([("91+ days", total, "")])
+    head = "".join(
+        f'<th>{escape(_label(c))}<span class="range">CVSS {_SEVERITY_RANGES.get(c, "")}</span></th>'
+        if c in _SEVERITY_RANGES
+        else f"<th>{escape(_label(c))}</th>"
+        for c in severities
+    )
     body = "".join(
-        f'<tr><td class="rl">{_text(r.get("band"))}</td>' + "".join(shade(r.get(c)) for c in severities) + "</tr>"
+        f'<tr><td class="rl">{_text(r.get("band"))} days</td>' + "".join(shade(r.get(c)) for c in severities) + "</tr>"
         for r in rows
     )
     return (
-        f'<table class="mx"><thead><tr><th class="rh">Days active</th>{head}</tr></thead><tbody>{body}</tbody></table>'
+        f'{headline}<table class="mx"><thead><tr><th class="rh">Days active</th>{head}</tr></thead>'
+        f"<tbody>{body}</tbody></table>"
+        '<p class="inlinenote">Cell shade encodes magnitude, light amber (lowest) to dark red (highest).</p>'
     )
 
 
@@ -316,63 +322,82 @@ def _with_figures(chart: str, rows: List[Dict[str, Any]], colours: Dict[str, str
     return f"{chart}<details><summary>Show the figures</summary>{_table(rows, colours)}</details>"
 
 
-def _quarterly(y_key: str) -> Callable[[List[Dict[str, Any]], Dict[str, str]], str]:
+def _weekly(y_key: str, y_title: str) -> Callable[[List[Dict[str, Any]], Dict[str, str]], str]:
     def render(rows: List[Dict[str, Any]], colours: Dict[str, str]) -> str:
         if not rows:
             return '<p class="hint">No rows.</p>'
-        return _with_figures(
-            line_chart(rows, "quarter", y_key, "orgId", colours, _number_text, series=list(colours)), rows, colours
-        )
+        chart = line_chart(rows, "week", y_key, "orgId", colours, _number_text, series=list(colours), y_title=y_title)
+        return _with_figures(chart, rows, colours)
 
     return render
 
 
-def _risk_dots(rows: List[Dict[str, Any]], colours: Dict[str, str]) -> str:
-    if not rows:
-        return '<p class="hint">No rows.</p>'
-    return dot_plot(rows, "mean_risk", "orgId", colours, _number_text) + _table(rows, colours)
+def _by_organisation(table: str, open_: bool) -> str:
+    """A supporting per-organisation table, collapsed unless it is all the card can show."""
+    return f"<details{' open' if open_ else ''}><summary>By organisation</summary>{table}</details>"
 
 
-def _solution_type_bars(rows: List[Dict[str, Any]], colours: Dict[str, str]) -> str:
-    if not rows:
-        return '<p class="hint">No rows.</p>'
-    return bar_chart(rows, "solution_type", "findings", _number_text) + _table(rows, colours)
+_LEAD = {("portfolio_summary", "portfolio")}
+"""Results shown first on their card, as the UX prototype leads with its tiles."""
 
-
-_LEAD = {("portfolio_summary", "portfolio"), ("weaponised_critical", "headline")}
-"""Results shown first on their card, as the example dashboard leads with its tiles."""
+_SUPPORTING = {("portfolio_summary", "by_org")}
+"""Per-organisation tables that back a card's main widget, shown collapsed under it."""
 
 _FEATURED: Dict[Tuple[str, str], Callable[[List[Dict[str, Any]], Dict[str, str]], str]] = {
     ("portfolio_summary", "portfolio"): _portfolio_tiles,
     ("unresolved_age_severity", "by_band"): _heat_table,
-    ("weaponised_critical", "headline"): _headline_tiles,
-    ("org_risk_distribution", "by_org"): _risk_dots,
-    ("vulnerability_activity", "new_by_quarter"): _quarterly("new_critical_high"),
-    ("vulnerability_activity", "reintroduced_by_quarter"): _quarterly("reintroduced_critical_high"),
-    ("weaponised_critical", "by_quarter"): _quarterly("weaponised_critical"),
-    ("weaponised_critical", "solution_types"): _solution_type_bars,
+    ("new_vulnerabilities", "by_week"): _weekly("new_critical_high", "New critical and high"),
+    ("remediated_vulnerabilities", "by_week"): _weekly("reintroduced_critical_high", "Reintroduced critical and high"),
 }
 
 
-def _card_section(card: Dict[str, Any], number: int, coverage_complete: bool, colours: Dict[str, str]) -> str:
+def _risk_distribution(card: Dict[str, Any], coverage_complete: bool, colours: Dict[str, str]) -> List[str]:
+    """Dots per organisation, with the portfolio median drawn on the chart only when it covers everyone."""
+    rows = card["results"].get("by_org", [])
+    if not rows:
+        return ['<p class="hint">No rows.</p>']
+    median_rows = card["results"].get("portfolio_median", [])
+    median = median_rows[0].get("median_of_org_means") if coverage_complete and median_rows else None
+    parts = [dot_plot(rows, "mean_risk", "orgId", colours, _number_text, median=median)]
+    if not coverage_complete:
+        parts.append(_left_out("Median"))
+    parts.append(_by_organisation(_table(rows, colours), open_=False))
+    return parts
+
+
+def _left_out(what: str) -> str:
+    return f'<p class="inlinenote"><strong>{escape(what)}.</strong> {_LEFT_OUT_TEXT}</p>'
+
+
+def _card_body(card: Dict[str, Any], coverage_complete: bool, colours: Dict[str, str]) -> List[str]:
+    if card["card"] == "org_risk_distribution":
+        return _risk_distribution(card, coverage_complete, colours)
+    per_org = set(card.get("per_org", ()))
+    parts = []
+    ordered = sorted(card["results"].items(), key=lambda item: (card["card"], item[0]) not in _LEAD)
+    for name, rows in ordered:
+        if not coverage_complete and name not in per_org:
+            parts.append(_left_out(_label(name)))
+            continue
+        if (card["card"], name) in _SUPPORTING:
+            parts.append(_by_organisation(_table(rows, colours), open_=not coverage_complete))
+            continue
+        parts.append(_FEATURED.get((card["card"], name), _table)(rows, colours))
+    return parts
+
+
+def _card_section(card: Dict[str, Any], coverage_complete: bool, colours: Dict[str, str]) -> str:
     dates = [_when(d) for d in sorted(set(card.get("as_of_by_org", {}).values())) or [card["as_of"]]]
     date_text = dates[0] if len(dates) == 1 else f"from {dates[0]} to {dates[-1]}, by organisation"
     orgs = ", ".join(map(str, card["orgs"]))
     parts = [
         f'<section class="card" id="{escape(card["card"])}">',
-        f'<p class="sec">{number} &middot; {escape(card["title"])}</p>',
-        f'<p class="hint">Data date: {escape(date_text)}. Organisations: {escape(orgs)}.</p>',
+        f'<p class="sec">{escape(card["title"])}</p>',
+        f'<p class="hint">{escape(card.get("description", ""))}</p>',
     ]
-    per_org = set(card.get("per_org", ()))
-    featured_first = sorted(card["results"].items(), key=lambda item: (card["card"], item[0]) not in _LEAD)
-    for name, rows in featured_first:
-        parts.append(f"<h3>{escape(_label(name))}</h3>")
-        if not coverage_complete and name not in per_org:
-            parts.append(_LEFT_OUT)
-        else:
-            render = _FEATURED.get((card["card"], name), _table)
-            parts.append(render(rows, colours))
+    parts += _card_body(card, coverage_complete, colours)
     parts.append(f'<p class="inlinenote">{escape(card["definition"])}</p>')
+    parts.append(f'<p class="inlinenote">Data date: {escape(date_text)}. Organisations: {escape(orgs)}.</p>')
     parts.append("</section>")
     return "\n".join(parts)
 
@@ -405,14 +430,14 @@ def render_report(
     header = [
         "<!doctype html>",
         '<html lang="en" data-rds-brand="callisto" data-rds-mode="dark"><head><meta charset="utf-8">',
-        "<title>Multi-Org Exposure Report</title>",
+        "<title>Multi-Org Exposure Dashboard</title>",
         f"<style>/* Inter, copyright The Inter Project Authors, SIL Open Font License 1.1 */\n"
         f'{_font_faces()}\n{_STYLE}</style></head><body><div class="wrap">',
         f'<div class="topbar">{_logo()}</div>',
-        "<h1>Multi-Org Exposure Report</h1>",
+        "<h1>Multi-Org Exposure Dashboard</h1>",
         f'<p class="sub">Generated {escape(_when(generated_at))} &middot; {len(orgs)} organisation(s) &middot; '
         "every figure comes from a fixed, tested query</p>",
         coverage,
     ]
-    body = [_card_section(card, i, coverage_complete, colours) for i, card in enumerate(cards, start=1)]
+    body = [_card_section(card, coverage_complete, colours) for card in cards]
     return "\n".join(header + body + ["</div></body></html>"])
