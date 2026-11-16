@@ -1171,6 +1171,9 @@ def get_rapid7_dashboard_card(card: str) -> str:
             - org_comparison: risk score, assets, critical findings, and averages per organization.
 
     Returns:
+        KEV columns (kev_findings, total_kev_findings, kev_per_assessed_asset) are null when no
+        CISA KEV catalogue can be used, which kev_unavailable explains. Null means unknown, not 0:
+        say so, and never report it as zero.
         JSON with the card title, its description and definition (state both on the card), each organization's
         data date (as_of_by_org), the oldest of them (as_of), the organizations included, and
         the result rows of each query. In a hosted deployment it also carries data_loaded,

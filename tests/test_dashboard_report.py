@@ -449,9 +449,20 @@ def test_no_catalogue_keeps_the_stand_ins_and_says_so():
 
 
 def test_hostile_catalogue_details_are_escaped():
-    hostile = dict(KEV, version='<b x="1">', sha256="<script>")
+    hostile = dict(KEV, version='<b x="1">', sha256="<script>x</script>")
 
     html = _html(_kev_cards(hostile))
 
     assert "<b x=" not in html and "<script>x" not in html
-    assert "&lt;script&gt;" in html
+    assert "&lt;script&gt;x&lt;/script&gt;" in html
+
+
+def test_a_stored_catalogue_with_no_cves_column_gives_the_right_reason():
+    cards = _kev_cards(None)
+    for card in cards:
+        card["kev_unavailable"] = "no_cves_column"
+
+    html = _html(cards)
+
+    assert "has no list of CVE IDs per finding" in html
+    assert "No CISA KEV catalogue is stored yet" not in html

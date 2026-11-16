@@ -437,9 +437,12 @@ def test_a_finding_with_any_of_its_cves_in_kev_counts_once(db):
 def test_no_catalogue_gives_no_kev_figures_rather_than_zero(db):
     result = run_card(db, "portfolio_summary", as_of=AS_OF)
 
-    assert result["kev_catalogue"] is None
+    compared = run_card(db, "org_comparison", as_of=AS_OF)
+
+    assert (result["kev_catalogue"], result["kev_unavailable"]) == (None, "no_catalogue")
     assert result["results"]["portfolio"][0]["kev_findings"] is None
-    assert all(row["kev_findings"] is None for row in result["results"]["by_org"] if "kev_findings" in row)
+    assert [row["total_kev_findings"] for row in compared["results"]["by_org"]] == [None, None]
+    assert [row["kev_per_assessed_asset"] for row in compared["results"]["by_org"]] == [None, None]
 
 
 def test_an_export_without_cves_still_builds_every_card_without_kev(tmp_path):
@@ -448,6 +451,6 @@ def test_an_export_without_cves_still_builds_every_card_without_kev(tmp_path):
         _store_kev(database, "CVE-2021-44228")
         for card in CARDS:
             result = run_card(database, card, as_of=AS_OF)
-            assert result["kev_catalogue"] is None, card
+            assert (result["kev_catalogue"], result["kev_unavailable"]) == (None, "no_cves_column"), card
     finally:
         database.close()

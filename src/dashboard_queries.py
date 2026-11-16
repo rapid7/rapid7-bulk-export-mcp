@@ -390,7 +390,9 @@ def run_card(db: VulnerabilityDatabase, card: str, as_of: Optional[datetime] = N
 
     exceptions_loaded = "vulnerability_exceptions" in schema
     kev = _kev_catalogue(db)
-    kev_usable = kev is not None and any(c["column_name"] == "cves" for c in schema["vulnerabilities"])
+    cves_listed = any(c["column_name"] == "cves" and c["data_type"].endswith("[]") for c in schema["vulnerabilities"])
+    kev_usable = kev is not None and cves_listed
+    kev_unavailable = None if kev_usable else ("no_catalogue" if kev is None else "no_cves_column")
     if not kev_usable:
         kev = None
     spec = CARDS[card]
@@ -416,6 +418,7 @@ def run_card(db: VulnerabilityDatabase, card: str, as_of: Optional[datetime] = N
         "orgs": orgs,
         "per_org": list(spec.per_org),
         "kev_catalogue": kev,
+        "kev_unavailable": kev_unavailable,
         "results": results,
     }
 

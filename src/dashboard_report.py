@@ -582,6 +582,11 @@ def render_report(
             f'<div class="strip">{escape(_kev_source(kev))}, {_text(kev.get("entries"))} entries, '
             f"SHA-256 <code>{escape(str(kev.get('sha256')))}</code>.</div>"
         )
+    elif any(card.get("kev_unavailable") == "no_cves_column" for card in cards):
+        kev_line = (
+            '<div class="strip">The loaded export has no list of CVE IDs per finding, so findings cannot be '
+            "matched to CISA KEV, and known exploits stand in for KEV.</div>"
+        )
     else:
         kev_line = '<div class="strip">No CISA KEV catalogue is stored yet, so known exploits stand in for KEV.</div>'
     if coverage_complete:
