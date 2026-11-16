@@ -1,8 +1,9 @@
-"""Prebaked queries behind the six multi-org dashboard cards.
+"""Prebaked queries behind the multi-org dashboard cards.
 
 Every card's numbers come from fixed, tested SQL here, never from SQL the AI writes,
-so the same data always gives the same answer. The definitions follow the reference
-dashboard the proof of concept produced, with two deliberate changes:
+so the same data always gives the same answer. The cards and their copy follow the UX
+phase 1 prototype. Where the export lacks a figure, the card says what stands in. Two rules
+apply throughout:
 
 * "Active" means a finding with no matching vulnerability exception, and that rule
   applies to every card, so the cards reconcile with each other.
@@ -22,26 +23,33 @@ class Card:
     """One dashboard card: what it shows and the named queries that produce it."""
 
     title: str
+    description: str
+    """The card's lead copy, worded as the UX reference has it wherever the data allows."""
     definition: str
     queries: Tuple[Tuple[str, str], ...]
 
 
-PORTFOLIO_SUMMARY = Card(
-    title="Portfolio summary",
-    definition=(
-        "Active findings by CVSS v3 severity, and assets with at least one active finding. "
-        "Active means no matching vulnerability exception on orgId, assetId, and vulnId. "
-        "Any other severity (Unknown, None, or missing) counts in the total and in unscored."
-    ),
-    queries=(
-        (
-            "by_org",
-            """
+_ACTIVE = """
             WITH active AS (
               SELECT v.* FROM vulnerabilities v
               WHERE NOT EXISTS (SELECT 1 FROM vulnerability_exceptions e
                 WHERE e."orgId" = v."orgId" AND e."assetId" = v."assetId" AND e."vulnId" = v."vulnId")
-            )
+            )"""
+
+PORTFOLIO_SUMMARY = Card(
+    title="Portfolio summary",
+    description="Totals across all selected organisations.",
+    definition=(
+        "Active findings by CVSS v3 severity, and assets with at least one active finding. "
+        "Active means no matching vulnerability exception on orgId, assetId, and vulnId. "
+        "Any other severity (Unknown, None, or missing) counts in the total and in unscored. "
+        "The export does not carry CISA KEV, so medium findings stand in for findings in CISA KEV."
+    ),
+    queries=(
+        (
+            "by_org",
+            _ACTIVE
+            + """
             SELECT "orgId",
               COUNT(*) AS active_total,
               COUNT(DISTINCT "assetId") AS assets_with_findings,
@@ -57,12 +65,8 @@ PORTFOLIO_SUMMARY = Card(
         ),
         (
             "portfolio",
-            """
-            WITH active AS (
-              SELECT v.* FROM vulnerabilities v
-              WHERE NOT EXISTS (SELECT 1 FROM vulnerability_exceptions e
-                WHERE e."orgId" = v."orgId" AND e."assetId" = v."assetId" AND e."vulnId" = v."vulnId")
-            )
+            _ACTIVE
+            + """
             SELECT COUNT(*) AS active_total,
               COUNT(DISTINCT ("orgId", "assetId")) AS assets_with_findings,
               COUNT(*) FILTER (WHERE "cvssV3Severity" = 'Critical') AS critical,
@@ -77,12 +81,16 @@ PORTFOLIO_SUMMARY = Card(
 
 ORG_RISK_DISTRIBUTION = Card(
     title="Organisation risk distribution",
+    description=(
+        "One mark per organisation on a shared scale, with the median highlighted. "
+        "Hover over a mark to see the organisation and its risk score."
+    ),
     definition=(
         "Mean, median, and maximum assets.riskScore over every asset in each organisation, whether "
-        "or not it has an active finding. The export has no "
-        "organisation-level risk score, and vulnerabilities.riskScore is content-level and "
-        "identical across organisations, so the asset score stands in. The portfolio median "
-        "is the median of the organisation means, unweighted, so each organisation counts once."
+        "or not it has an active finding. The export has no 0 to 1000 organisation risk score, and "
+        "vulnerabilities.riskScore is content-level and identical across organisations, so the mean "
+        "asset risk score stands in. The portfolio median is the median of the organisation means, "
+        "unweighted, so each organisation counts once."
     ),
     queries=(
         (
@@ -105,43 +113,52 @@ ORG_RISK_DISTRIBUTION = Card(
     ),
 )
 
-VULNERABILITY_ACTIVITY = Card(
-    title="Vulnerability activity by organisation",
+NEW_VULNERABILITIES = Card(
+    title="New critical and high vulnerabilities",
+    description=(
+        "Count of critical and high vulnerabilities first detected or reintroduced in each week. "
+        "One series per organisation. Most group together and outliers stand out. "
+        "Hover over a point to see the organisation and its value."
+    ),
     definition=(
-        "Active critical and high findings per calendar quarter, by the quarter each became "
-        "active: the later of firstFoundTimestamp and reintroducedTimestamp. So the first chart "
-        "counts findings that became active, new or reintroduced, and a reintroduced finding also "
-        "appears in the reintroduced chart for its quarter. Remediated counts "
-        "are not available per organisation, so reintroduced findings stand in for them. "
-        "One daily snapshot has no history, so quarters replace weekly buckets."
+        "Active critical and high findings by the week each became active: the later of "
+        "firstFoundTimestamp and reintroducedTimestamp. Weeks start on Monday. One daily snapshot "
+        "holds only findings that are still open, so a finding remediated since does not appear."
     ),
     queries=(
         (
-            "new_by_quarter",
-            """
-            WITH active AS (
-              SELECT v."orgId", v."cvssV3Severity",
-                GREATEST(v."firstFoundTimestamp",
-                         COALESCE(v."reintroducedTimestamp", v."firstFoundTimestamp")) AS became_active
-              FROM vulnerabilities v
-              WHERE NOT EXISTS (SELECT 1 FROM vulnerability_exceptions e
-                WHERE e."orgId" = v."orgId" AND e."assetId" = v."assetId" AND e."vulnId" = v."vulnId")
-            )
-            SELECT STRFTIME(DATE_TRUNC('quarter', became_active), '%Y-%m') AS quarter,
+            "by_week",
+            _ACTIVE
+            + """
+            SELECT STRFTIME(DATE_TRUNC('week',
+                GREATEST("firstFoundTimestamp", COALESCE("reintroducedTimestamp", "firstFoundTimestamp"))),
+                '%Y-%m-%d') AS week,
               "orgId", COUNT(*) AS new_critical_high
             FROM active WHERE "cvssV3Severity" IN ('Critical', 'High')
             GROUP BY 1, 2 ORDER BY 1, 2
             """,
         ),
+    ),
+)
+
+REMEDIATED_VULNERABILITIES = Card(
+    title="Remediated critical and high vulnerabilities",
+    description=(
+        "Remediated counts are not available per organisation, so this shows critical and high "
+        "vulnerabilities reintroduced in each week: each one was remediated and later came back. "
+        "One series per organisation. Hover over a point to see the organisation and its value."
+    ),
+    definition=(
+        "Active critical and high findings by the week of reintroducedTimestamp. Weeks start on "
+        "Monday. The remediation export cannot be scoped to one organisation, so reintroduced "
+        "findings stand in for remediated ones."
+    ),
+    queries=(
         (
-            "reintroduced_by_quarter",
-            """
-            WITH active AS (
-              SELECT v.* FROM vulnerabilities v
-              WHERE NOT EXISTS (SELECT 1 FROM vulnerability_exceptions e
-                WHERE e."orgId" = v."orgId" AND e."assetId" = v."assetId" AND e."vulnId" = v."vulnId")
-            )
-            SELECT STRFTIME(DATE_TRUNC('quarter', "reintroducedTimestamp"), '%Y-%m') AS quarter,
+            "by_week",
+            _ACTIVE
+            + """
+            SELECT STRFTIME(DATE_TRUNC('week', "reintroducedTimestamp"), '%Y-%m-%d') AS week,
               "orgId", COUNT(*) AS reintroduced_critical_high
             FROM active
             WHERE "reintroducedTimestamp" IS NOT NULL AND "cvssV3Severity" IN ('Critical', 'High')
@@ -153,10 +170,11 @@ VULNERABILITY_ACTIVITY = Card(
 
 UNRESOLVED_AGE_SEVERITY = Card(
     title="Unresolved findings by days active and severity",
+    description="All selected organisations. Days active measured from discovery date.",
     definition=(
-        "Active findings by severity in the PRD age bands 0 to 7, 8 to 30, 31 to 60, 61 to 90, "
-        "and 91+ days. Days run from when each finding became active to when its organisation's data was loaded. "
-        "A finding with no first-found or reintroduced date is counted in 91+, as the dashboard does. "
+        "Active findings by CVSS v3 severity in the bands 0 to 7, 8 to 30, 31 to 60, 61 to 90, "
+        "and 91+ days. Days run from firstFoundTimestamp, the discovery date, to when its "
+        "organisation's data was loaded. A finding with no discovery date is counted in 91+. "
         "Unknown and None severities are left out."
     ),
     queries=(
@@ -167,10 +185,7 @@ UNRESOLVED_AGE_SEVERITY = Card(
               SELECT UNNEST($org_ids) AS "orgId", UNNEST($org_as_of) AS as_of
             ), active AS (
               SELECT v."cvssV3Severity",
-                DATEDIFF('day',
-                  GREATEST(v."firstFoundTimestamp",
-                           COALESCE(v."reintroducedTimestamp", v."firstFoundTimestamp")),
-                  o.as_of) AS days_active
+                DATEDIFF('day', v."firstFoundTimestamp", o.as_of) AS days_active
               FROM vulnerabilities v JOIN org_as_of o ON o."orgId" IS NOT DISTINCT FROM v."orgId"
               WHERE v."cvssV3Severity" IN ('Critical', 'High', 'Medium', 'Low')
                 AND NOT EXISTS (SELECT 1 FROM vulnerability_exceptions e
@@ -202,181 +217,40 @@ UNRESOLVED_AGE_SEVERITY = Card(
 
 ORG_COMPARISON = Card(
     title="Organisation comparison",
+    description="Every selected organisation. Default sorted by risk score.",
     definition=(
-        "Per organisation: mean asset risk score and asset count over every asset, with or without an "
-        "active finding, and the active, exploitable, and "
-        "reintroduced findings. Exploitable means hasExploits; the export has no CISA KEV flag. "
-        "Reintroduced stands in for remediated, which is not available per organisation."
+        "Risk score is the mean asset risk score, because the export has no organisation risk score. "
+        "Total assessed assets counts the organisation's assets in the export. Total critical "
+        "vulnerabilities counts active critical findings. The two averages divide active findings, "
+        "and active findings with a known exploit, by total assessed assets. Remediated critical and "
+        "high vulnerabilities shows reintroduced ones, because remediated counts are not available "
+        "per organisation. The export does not carry CISA KEV or exploited in the wild, so those "
+        "columns are left out."
     ),
     queries=(
         (
             "by_org",
-            """
-            WITH active AS (
-              SELECT v.* FROM vulnerabilities v
-              WHERE NOT EXISTS (SELECT 1 FROM vulnerability_exceptions e
-                WHERE e."orgId" = v."orgId" AND e."assetId" = v."assetId" AND e."vulnId" = v."vulnId")
-            ), findings AS (
+            _ACTIVE
+            + """, findings AS (
               SELECT "orgId", COUNT(*) AS active_findings,
-                COUNT(*) FILTER (WHERE "hasExploits") AS exploitable,
-                COUNT(*) FILTER (WHERE "reintroducedTimestamp" IS NOT NULL) AS reintroduced
+                COUNT(*) FILTER (WHERE "cvssV3Severity" = 'Critical') AS critical_vulnerabilities,
+                COUNT(*) FILTER (WHERE "hasExploits") AS with_known_exploits,
+                COUNT(*) FILTER (WHERE "reintroducedTimestamp" IS NOT NULL
+                  AND "cvssV3Severity" IN ('Critical', 'High')) AS remediated_critical_high
               FROM active GROUP BY "orgId"
             ), risk AS (
-              SELECT "orgId", COUNT(*) AS assets, ROUND(AVG("riskScore"), 1) AS mean_risk
+              SELECT "orgId", COUNT(*) AS assets, ROUND(AVG("riskScore"), 1) AS risk_score
               FROM assets GROUP BY "orgId"
             )
             SELECT COALESCE(r."orgId", f."orgId") AS "orgId",
-              r.mean_risk, COALESCE(r.assets, 0) AS assets,
-              COALESCE(f.active_findings, 0) AS active_findings,
-              COALESCE(f.exploitable, 0) AS exploitable,
-              COALESCE(f.reintroduced, 0) AS reintroduced
+              r.risk_score,
+              COALESCE(r.assets, 0) AS total_assessed_assets,
+              COALESCE(f.critical_vulnerabilities, 0) AS total_critical_vulnerabilities,
+              ROUND(COALESCE(f.active_findings, 0) / NULLIF(r.assets, 0), 2) AS average_vulnerabilities_per_asset,
+              ROUND(COALESCE(f.with_known_exploits, 0) / NULLIF(r.assets, 0), 2) AS average_known_exploits_per_asset,
+              COALESCE(f.remediated_critical_high, 0) AS remediated_critical_high
             FROM risk r FULL OUTER JOIN findings f ON f."orgId" = r."orgId"
-            ORDER BY r.mean_risk DESC NULLS LAST, 1
-            """,
-        ),
-    ),
-)
-
-WEAPONISED_CRITICAL = Card(
-    title="Weaponised critical exposure",
-    definition=(
-        "Active findings that are critical, have a known exploit, are reachable over the "
-        "network, and have an EPSS score of 0.5 or more. Days open run from firstFoundTimestamp "
-        "to when its organisation's data was loaded, so unlike card 4 a reintroduced finding keeps "
-        "its first-found age. Per organisation, critical exploitable is any critical finding with "
-        "an exploit, exploitable EPSS 50 is any finding with an exploit and EPSS of 0.5 or more, "
-        "and EPSS 90 is any finding with EPSS of 0.9 or more, at any severity. Top vulnerabilities "
-        "is wider than the weaponised set: critical or high findings with an exploit and EPSS of "
-        "0.5 or more, at any attack vector."
-    ),
-    queries=(
-        (
-            "headline",
-            """
-            WITH org_as_of AS (
-              SELECT UNNEST($org_ids) AS "orgId", UNNEST($org_as_of) AS as_of
-            ), active AS (
-              SELECT v.*, o.as_of FROM vulnerabilities v JOIN org_as_of o ON o."orgId" IS NOT DISTINCT FROM v."orgId"
-              WHERE NOT EXISTS (SELECT 1 FROM vulnerability_exceptions e
-                WHERE e."orgId" = v."orgId" AND e."assetId" = v."assetId" AND e."vulnId" = v."vulnId")
-            )
-            SELECT COUNT(*) AS findings,
-              COUNT(DISTINCT ("orgId", "assetId")) AS assets,
-              COUNT(DISTINCT "vulnId") AS distinct_vulns,
-              ROUND(AVG(DATEDIFF('day', "firstFoundTimestamp", as_of)), 0) AS mean_days_open,
-              ROUND(MEDIAN(DATEDIFF('day', "firstFoundTimestamp", as_of)), 0) AS median_days_open
-            FROM active
-            WHERE "cvssV3Severity" = 'Critical' AND "hasExploits"
-              AND "cvssV3AttackVector" = 'Network' AND "epssscore" >= 0.5
-            """,
-        ),
-        (
-            "by_org",
-            """
-            WITH active AS (
-              SELECT v.* FROM vulnerabilities v
-              WHERE NOT EXISTS (SELECT 1 FROM vulnerability_exceptions e
-                WHERE e."orgId" = v."orgId" AND e."assetId" = v."assetId" AND e."vulnId" = v."vulnId")
-            )
-            SELECT "orgId",
-              COUNT(*) FILTER (WHERE "cvssV3Severity" = 'Critical' AND "hasExploits"
-                AND "cvssV3AttackVector" = 'Network' AND "epssscore" >= 0.5) AS weaponised_critical,
-              COUNT(*) FILTER (WHERE "cvssV3Severity" = 'Critical' AND "hasExploits") AS critical_exploitable,
-              COUNT(*) FILTER (WHERE "hasExploits" AND "epssscore" >= 0.5) AS exploitable_epss_50,
-              COUNT(*) FILTER (WHERE "epssscore" >= 0.9) AS epss_90
-            FROM active GROUP BY "orgId" ORDER BY "orgId"
-            """,
-        ),
-        (
-            "by_quarter",
-            """
-            WITH active AS (
-              SELECT v.* FROM vulnerabilities v
-              WHERE NOT EXISTS (SELECT 1 FROM vulnerability_exceptions e
-                WHERE e."orgId" = v."orgId" AND e."assetId" = v."assetId" AND e."vulnId" = v."vulnId")
-            )
-            SELECT STRFTIME(DATE_TRUNC('quarter',
-                GREATEST("firstFoundTimestamp", COALESCE("reintroducedTimestamp", "firstFoundTimestamp"))),
-                '%Y-%m') AS quarter,
-              "orgId", COUNT(*) AS weaponised_critical
-            FROM active
-            WHERE "cvssV3Severity" = 'Critical' AND "hasExploits"
-              AND "cvssV3AttackVector" = 'Network' AND "epssscore" >= 0.5
-            GROUP BY 1, 2 ORDER BY 1, 2
-            """,
-        ),
-        (
-            "top_solutions",
-            """
-            WITH active AS (
-              SELECT v.* FROM vulnerabilities v
-              WHERE NOT EXISTS (SELECT 1 FROM vulnerability_exceptions e
-                WHERE e."orgId" = v."orgId" AND e."assetId" = v."assetId" AND e."vulnId" = v."vulnId")
-            )
-            SELECT "bestSolutionSummary", "bestSolutionType",
-              COUNT(DISTINCT ("orgId", "assetId")) AS assets, COUNT(*) AS findings,
-              COUNT(DISTINCT "vulnId") AS distinct_vulns, COUNT(DISTINCT "orgId") AS orgs,
-              ROUND(MAX("epssscore"), 4) AS max_epss
-            FROM active
-            WHERE "cvssV3Severity" = 'Critical' AND "hasExploits"
-              AND "cvssV3AttackVector" = 'Network' AND "epssscore" >= 0.5
-              AND "bestSolutionSummary" IS NOT NULL
-            GROUP BY 1, 2 ORDER BY assets DESC, findings DESC, 1, 2 LIMIT 12
-            """,
-        ),
-        (
-            "solution_types",
-            """
-            WITH active AS (
-              SELECT v.* FROM vulnerabilities v
-              WHERE NOT EXISTS (SELECT 1 FROM vulnerability_exceptions e
-                WHERE e."orgId" = v."orgId" AND e."assetId" = v."assetId" AND e."vulnId" = v."vulnId")
-            )
-            SELECT COALESCE("bestSolutionType", '(none)') AS solution_type,
-              COUNT(*) AS findings, COUNT(DISTINCT ("orgId", "assetId")) AS assets
-            FROM active
-            WHERE "cvssV3Severity" = 'Critical' AND "hasExploits"
-              AND "cvssV3AttackVector" = 'Network' AND "epssscore" >= 0.5
-            GROUP BY 1 ORDER BY findings DESC, 1
-            """,
-        ),
-        (
-            "top_vulnerabilities",
-            """
-            WITH org_as_of AS (
-              SELECT UNNEST($org_ids) AS "orgId", UNNEST($org_as_of) AS as_of
-            ), active AS (
-              SELECT v.*, o.as_of FROM vulnerabilities v JOIN org_as_of o ON o."orgId" IS NOT DISTINCT FROM v."orgId"
-              WHERE NOT EXISTS (SELECT 1 FROM vulnerability_exceptions e
-                WHERE e."orgId" = v."orgId" AND e."assetId" = v."assetId" AND e."vulnId" = v."vulnId")
-            )
-            SELECT "vulnId", "title", "cvssV3Severity", ROUND(MAX("cvssV3Score"), 1) AS cvss,
-              ROUND(MAX("epssscore"), 4) AS epss, COUNT(DISTINCT "orgId") AS orgs,
-              COUNT(DISTINCT ("orgId", "assetId")) AS assets, COUNT(*) AS findings,
-              ROUND(AVG(DATEDIFF('day', "firstFoundTimestamp", as_of)), 0) AS mean_days_open
-            FROM active
-            WHERE "hasExploits" AND "cvssV3Severity" IN ('Critical', 'High') AND "epssscore" >= 0.5
-            GROUP BY 1, 2, 3 ORDER BY assets DESC, findings DESC, 1 LIMIT 20
-            """,
-        ),
-        (
-            "top_assets",
-            """
-            WITH active AS (
-              SELECT v.* FROM vulnerabilities v
-              WHERE NOT EXISTS (SELECT 1 FROM vulnerability_exceptions e
-                WHERE e."orgId" = v."orgId" AND e."assetId" = v."assetId" AND e."vulnId" = v."vulnId")
-            ), counted AS (
-              SELECT "orgId", "assetId", COUNT(*) AS weaponised_critical
-              FROM active
-              WHERE "cvssV3Severity" = 'Critical' AND "hasExploits"
-                AND "cvssV3AttackVector" = 'Network' AND "epssscore" >= 0.5
-              GROUP BY 1, 2
-            )
-            SELECT c."orgId", a."hostName", a."osProduct", ROUND(a."riskScore", 0) AS risk_score,
-              c.weaponised_critical
-            FROM counted c JOIN assets a ON a."assetId" = c."assetId" AND a."orgId" = c."orgId"
-            ORDER BY c.weaponised_critical DESC, c."orgId", c."assetId" LIMIT 12
+            ORDER BY r.risk_score DESC NULLS LAST, 1
             """,
         ),
     ),
@@ -385,10 +259,10 @@ WEAPONISED_CRITICAL = Card(
 CARDS: Dict[str, Card] = {
     "portfolio_summary": PORTFOLIO_SUMMARY,
     "org_risk_distribution": ORG_RISK_DISTRIBUTION,
-    "vulnerability_activity": VULNERABILITY_ACTIVITY,
+    "new_vulnerabilities": NEW_VULNERABILITIES,
+    "remediated_vulnerabilities": REMEDIATED_VULNERABILITIES,
     "unresolved_age_severity": UNRESOLVED_AGE_SEVERITY,
     "org_comparison": ORG_COMPARISON,
-    "weaponised_critical": WEAPONISED_CRITICAL,
 }
 
 # A portfolio where no organisation has an exception may export no exception rows, so
@@ -448,6 +322,7 @@ def run_card(db: VulnerabilityDatabase, card: str, as_of: Optional[datetime] = N
     return {
         "card": card,
         "title": spec.title,
+        "description": spec.description,
         "definition": spec.definition,
         "as_of": _utc_iso(min(as_of_by_org.values())),
         "as_of_by_org": {org: _utc_iso(when) for org, when in as_of_by_org.items()},

@@ -1159,15 +1159,16 @@ def get_rapid7_dashboard_card(card: str) -> str:
 
     Args:
         card: One of:
-            - portfolio_summary: active findings by severity, and assets affected.
+            - portfolio_summary: totals of active findings by severity.
             - org_risk_distribution: mean asset risk score per organization, with the median.
-            - vulnerability_activity: new and reintroduced critical and high findings per quarter.
-            - unresolved_age_severity: open findings by days active and severity.
-            - org_comparison: risk, assets, active, exploitable, and reintroduced per organization.
-            - weaponised_critical: critical, exploitable, network-reachable findings with EPSS 0.5+.
+            - new_vulnerabilities: critical and high findings that became active, per week.
+            - remediated_vulnerabilities: reintroduced critical and high findings per week,
+              standing in for remediated ones.
+            - unresolved_age_severity: open findings by days since discovery and severity.
+            - org_comparison: risk score, assets, critical findings, and averages per organization.
 
     Returns:
-        JSON with the card title, its definition (state it on the card), each organization's
+        JSON with the card title, its description and definition (state both on the card), each organization's
         data date (as_of_by_org), the oldest of them (as_of), the organizations included, and
         the result rows of each query. In a hosted deployment it also carries data_loaded,
         the age of as_of.

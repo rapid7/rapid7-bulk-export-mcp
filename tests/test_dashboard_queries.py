@@ -1,10 +1,9 @@
 """Tests for the prebaked dashboard card queries, against a hand-countable dataset.
 
 Two organisations. ORG-A has two excepted findings: V4 (medium) and V6 (critical,
-exploitable, network, EPSS 0.95, so it would reach every filter if the active rule were
-dropped). It also has one reintroduced finding (V3) and two weaponised critical findings
-(V1, V3). ORG-B has an Unknown severity finding
-(V5) and a critical finding whose EPSS score is too low to count as weaponised.
+exploitable and reintroduced, so it would reach every count if the active rule were
+dropped). It also has one reintroduced finding (V3). ORG-B has an Unknown severity
+finding (V5) and one critical finding with a known exploit.
 """
 
 from datetime import datetime, timedelta, timezone
@@ -120,54 +119,67 @@ def test_org_risk_distribution_median_counts_each_org_once(db):
     assert result["results"]["portfolio_median"] == [{"median_of_org_means": 125.0}]
 
 
-def test_vulnerability_activity_uses_the_quarter_a_finding_became_active(db):
-    result = run_card(db, "vulnerability_activity", as_of=AS_OF)
+def test_new_vulnerabilities_use_the_week_a_finding_became_active(db):
+    result = run_card(db, "new_vulnerabilities", as_of=AS_OF)
 
-    new = {(r["quarter"], r["orgId"]): r["new_critical_high"] for r in result["results"]["new_by_quarter"]}
-    assert new == {("2026-04", "ORG-A"): 1, ("2026-07", "ORG-A"): 2, ("2026-07", "ORG-B"): 1}
-    assert result["results"]["reintroduced_by_quarter"] == [
-        {"quarter": "2026-07", "orgId": "ORG-A", "reintroduced_critical_high": 1}
-    ]
+    new = {(r["week"], r["orgId"]): r["new_critical_high"] for r in result["results"]["by_week"]}
+    assert new == {
+        ("2026-06-01", "ORG-A"): 1,
+        ("2026-06-29", "ORG-B"): 1,
+        ("2026-08-31", "ORG-A"): 1,
+        ("2026-09-14", "ORG-A"): 1,
+    }
 
 
-def test_unresolved_age_severity_bands_ages_to_the_as_of_time(db):
+def test_remediated_vulnerabilities_count_reintroductions_by_week(db):
+    result = run_card(db, "remediated_vulnerabilities", as_of=AS_OF)
+
+    assert result["results"]["by_week"] == [{"week": "2026-08-31", "orgId": "ORG-A", "reintroduced_critical_high": 1}]
+
+
+def test_unresolved_age_severity_counts_days_from_discovery(db):
+    """V3 was reintroduced 22 days before AS_OF but discovered 256 days before, so it is 91+."""
     result = run_card(db, "unresolved_age_severity", as_of=AS_OF)
 
     bands = {row["band"]: row for row in result["results"]["by_band"]}
-    assert list(bands) == ["0-7", "8-30", "61-90", "91+"]
+    assert list(bands) == ["0-7", "61-90", "91+"]
     assert bands["0-7"]["critical"] == 1
-    assert bands["8-30"]["critical"] == 1
     assert bands["61-90"]["critical"] == 1
-    assert bands["91+"]["high"] == 1
+    assert (bands["91+"]["critical"], bands["91+"]["high"]) == (1, 1)
 
 
-def test_org_comparison_reconciles_with_the_other_cards(db):
+def test_org_comparison_gives_each_ux_column_per_org(db):
     result = run_card(db, "org_comparison", as_of=AS_OF)
 
     by_org = _by_org(result["results"]["by_org"])
     assert by_org["ORG-A"] == {
         "orgId": "ORG-A",
-        "mean_risk": 200.0,
-        "assets": 2,
-        "active_findings": 3,
-        "exploitable": 2,
-        "reintroduced": 1,
+        "risk_score": 200.0,
+        "total_assessed_assets": 2,
+        "total_critical_vulnerabilities": 2,
+        "average_vulnerabilities_per_asset": 1.5,
+        "average_known_exploits_per_asset": 1.0,
+        "remediated_critical_high": 1,
     }
-    assert by_org["ORG-B"]["active_findings"] == 2
+    assert by_org["ORG-B"]["average_vulnerabilities_per_asset"] == 2.0
     assert [row["orgId"] for row in result["results"]["by_org"]] == ["ORG-A", "ORG-B"]
 
 
-def test_weaponised_critical_needs_network_exploit_and_epss_of_half(db):
-    result = run_card(db, "weaponised_critical", as_of=AS_OF)
-
-    headline = result["results"]["headline"][0]
-    assert (headline["findings"], headline["assets"], headline["distinct_vulns"]) == (2, 2, 2)
-    assert headline["mean_days_open"] == 130
-    by_org = _by_org(result["results"]["by_org"])
-    assert by_org["ORG-A"]["weaponised_critical"] == 2
-    assert by_org["ORG-B"]["weaponised_critical"] == 0
-    assert by_org["ORG-B"]["critical_exploitable"] == 1
-    assert {r["orgId"] for r in result["results"]["top_assets"]} == {"ORG-A"}
+def test_the_cards_follow_the_ux_phase_1_prototype():
+    assert [card.title for card in CARDS.values()] == [
+        "Portfolio summary",
+        "Organisation risk distribution",
+        "New critical and high vulnerabilities",
+        "Remediated critical and high vulnerabilities",
+        "Unresolved findings by days active and severity",
+        "Organisation comparison",
+    ]
+    assert CARDS["portfolio_summary"].description == "Totals across all selected organisations."
+    assert CARDS["unresolved_age_severity"].description == (
+        "All selected organisations. Days active measured from discovery date."
+    )
+    assert CARDS["org_comparison"].description == "Every selected organisation. Default sorted by risk score."
+    assert "weaponised_critical" not in CARDS
 
 
 @pytest.mark.parametrize("card", list(CARDS))
@@ -176,7 +188,7 @@ def test_every_card_states_its_orgs_data_date_and_definition(db, card):
 
     assert result["orgs"] == ["ORG-A", "ORG-B"]
     assert result["as_of"] == _utc(AS_OF)
-    assert result["definition"]
+    assert result["definition"] and result["description"]
     assert set(result["results"]) == {name for name, _ in CARDS[card].queries}
 
 
@@ -274,20 +286,19 @@ def test_no_loaded_data_is_refused(tmp_path):
 @pytest.mark.parametrize(
     ("card", "phrases"),
     [
-        ("vulnerability_activity", ["new or reintroduced", "also appears in the reintroduced chart"]),
+        ("portfolio_summary", ["medium findings stand in for findings in CISA KEV"]),
+        ("org_risk_distribution", ["no 0 to 1000 organisation risk score"]),
         (
-            "weaponised_critical",
-            [
-                "unlike card 4 a reintroduced finding keeps its first-found age",
-                "critical exploitable is any critical finding with an exploit",
-                "EPSS 90 is any finding with EPSS of 0.9 or more, at any severity",
-                "Top vulnerabilities is wider than the weaponised set",
-                "at any attack vector",
-            ],
+            "new_vulnerabilities",
+            ["the later of firstFoundTimestamp and reintroducedTimestamp", "Weeks start on Monday"],
         ),
+        ("remediated_vulnerabilities", ["Remediated counts are not available per organisation"]),
+        ("unresolved_age_severity", ["from firstFoundTimestamp, the discovery date"]),
+        ("org_comparison", ["CISA KEV or exploited in the wild", "reintroduced ones"]),
     ],
 )
-def test_the_definition_states_every_scope_a_reader_could_misread(card, phrases):
-    """Each phrase pins a scope that differs from what the card title suggests."""
+def test_every_substitute_and_scope_is_stated(card, phrases):
+    """Each phrase pins a substitute or a scope that the card's UX title alone would not tell a reader."""
+    text = CARDS[card].description + " " + CARDS[card].definition
     for phrase in phrases:
-        assert phrase in CARDS[card].definition, phrase
+        assert phrase in text, phrase
