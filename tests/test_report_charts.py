@@ -13,6 +13,8 @@ def _fmt(value):
 
 
 COLOURS = {"ORG-A": "#77b8ec", "ORG-B": "#ff3d82"}
+BASELINE = 230.0
+"""The y of a zero value in a line chart."""
 HOSTILE = '<b x="1">&'
 SHOWN = "&lt;b x=&quot;1&quot;&gt;&amp;"
 
@@ -34,10 +36,15 @@ def test_a_line_chart_draws_one_line_per_org_and_counts_a_missing_quarter_as_zer
 
     svg = line_chart(rows, "quarter", "n", "orgId", COLOURS, _fmt)
 
-    lines = re.findall(r'<polyline points="([^"]+)" fill="none" stroke="(#[0-9a-f]{6})"', svg)
-    assert [colour for _, colour in lines] == ["#77b8ec", "#ff3d82"]
-    org_b_first_y = float(lines[1][0].split()[0].split(",")[1])
-    assert org_b_first_y == 180.0
+    lines = dict(
+        (series, (points, colour))
+        for series, points, colour in re.findall(
+            r'data-series="([^"]+)"[^>]*><polyline points="([^"]+)" fill="none" stroke="(#[0-9a-f]{6})"', svg
+        )
+    )
+    assert {series: colour for series, (_, colour) in lines.items()} == {"ORG-A": "#77b8ec", "ORG-B": "#ff3d82"}
+    org_b_first_y = float(lines["ORG-B"][0].split()[0].split(",")[1])
+    assert org_b_first_y == BASELINE
     assert "<title>ORG-B 2026-01: 0</title>" in svg
 
 
@@ -81,7 +88,7 @@ def test_a_non_finite_value_is_drawn_as_zero_rather_than_breaking_the_chart():
     assert "nan" not in svg.lower()
     assert "<title>ORG-A 2026-01: 0</title>" in svg
     first_y = float(re.search(r'<polyline points="([^"]+)"', svg).group(1).split()[0].split(",")[1])
-    assert first_y == 180.0
+    assert first_y == BASELINE
 
 
 def test_a_gap_between_quarters_keeps_its_width_and_a_missing_quarter_is_dropped():
@@ -117,7 +124,7 @@ def test_negative_and_huge_values_still_give_valid_charts():
     svg = line_chart(rows, "quarter", "n", "orgId", COLOURS, _fmt)
 
     assert "inf" not in svg.lower() and "nan" not in svg.lower()
-    assert float(re.search(r'points="([^"]+)"', svg).group(1).split()[0].split(",")[1]) <= 180.0
+    assert float(re.search(r'points="([^"]+)"', svg).group(1).split()[0].split(",")[1]) <= BASELINE
 
 
 def test_axis_title_and_ticks_are_escaped():
@@ -204,3 +211,18 @@ def test_each_hover_target_carries_its_tooltip_parts_escaped():
 
     assert 'class="pt" data-heading="Week of 2026-08-31"' in svg
     assert f'data-metric="{SHOWN}" data-value="3"' in svg
+
+
+def test_a_long_range_hides_markers_and_draws_the_largest_series_on_top():
+    rows = [{"week": "2026-01-05", "orgId": "BIG", "n": 9}, {"week": "2026-12-28", "orgId": "BIG", "n": 9}]
+
+    svg = line_chart(rows, "week", "n", "orgId", {"BIG": "#77b8ec"}, _fmt, series=["ZERO"])
+
+    assert 'class="series lead"' not in svg, "more than 13 weeks, so no series shows markers"
+    assert svg.index('data-series="ZERO"') < svg.index('data-series="BIG"')
+
+
+def test_a_short_range_marks_the_leading_series():
+    rows = [{"week": "2026-08-31", "orgId": "ORG-A", "n": 3}]
+
+    assert 'class="series lead"' in line_chart(rows, "week", "n", "orgId", COLOURS, _fmt)

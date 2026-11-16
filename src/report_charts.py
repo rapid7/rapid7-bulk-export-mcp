@@ -20,6 +20,7 @@ _MEDIAN = "#82939c"
 _MAX_PERIODS = 1000
 _MAX_X_LABELS = 8
 _LEADS = 3
+_MARKED_PERIODS = 13
 _MUTED = "#9aa5aa"
 _MAX_VALUE = 1e300
 _SVG_OPEN = '<svg viewBox="0 0 {w} {h}" width="100%" role="img" xmlns="http://www.w3.org/2000/svg" font-family="{f}">'
@@ -122,14 +123,14 @@ def _y_axis(top: float, fmt: Formatter, title: str, left: int, right: int, y0: i
                 f'<line x1="{left}" y1="{y:.2f}" x2="{right}" y2="{y:.2f}" stroke="{_GRID}" stroke-width="1"/>'
             )
         parts.append(
-            f'<text x="{left - 6}" y="{y + 3:.2f}" font-size="10" fill="{_LABEL}" text-anchor="end">'
+            f'<text x="{left - 6}" y="{y + 3:.2f}" font-size="11" fill="{_LABEL}" text-anchor="end">'
             f"{escape(fmt(_tick(top * i / 4)))}</text>"
         )
     parts.append(f'<line x1="{left}" y1="{y0}" x2="{left}" y2="{y1}" stroke="{_AXIS}" stroke-width="1"/>')
     parts.append(f'<line x1="{left}" y1="{y1}" x2="{right}" y2="{y1}" stroke="{_AXIS}" stroke-width="1"/>')
     mid = (y0 + y1) / 2
     parts.append(
-        f'<text x="12" y="{mid:.2f}" font-size="10" fill="{_LABEL}" text-anchor="middle" '
+        f'<text x="12" y="{mid:.2f}" font-size="11" fill="{_LABEL}" text-anchor="middle" '
         f'transform="rotate(-90 12 {mid:.2f})">{escape(title)}</text>'
     )
     return parts
@@ -162,30 +163,31 @@ def line_chart(
         series = points[str(r.get(series_key))]
         series[str(r.get(x_key))] = series.get(str(r.get(x_key)), 0.0) + _value(r.get(y_key))
     top = nice_max(max(v for series in points.values() for v in series.values()))
-    left, right, y0, y1 = 84, 680, 20, 180
+    left, right, y0, y1 = 90, 980, 20, 230
     step = (right - left) / max(1, len(xs) - 1)
 
     def x_at(i: int) -> float:
         return left + step * i if len(xs) > 1 else (left + right) / 2
 
-    parts = [_SVG_OPEN.format(w=700, h=220, f=_FONT)]
+    parts = [_SVG_OPEN.format(w=1000, h=270, f=_FONT)]
     parts += _y_axis(top, fmt, y_title or _label_text(y_key), left, right, y0, y1)
     every = max(1, math.ceil(len(xs) / _MAX_X_LABELS))
     for i, x in enumerate(xs):
         if i % every == 0:
             parts.append(
-                f'<text x="{x_at(i):.2f}" y="{y1 + 16}" font-size="10" fill="{_LABEL}" '
+                f'<text x="{x_at(i):.2f}" y="{y1 + 18}" font-size="11" fill="{_LABEL}" '
                 f'text-anchor="middle">{escape(x)}</text>'
             )
     metric = y_title or _label_text(y_key)
     leads = _largest(points, _LEADS)
-    for name in names:
+    marked = len(xs) <= _MARKED_PERIODS
+    for name in sorted(names, key=lambda n: (sum(points[n].values()), n)):
         coords = [(x_at(i), y1 - (y1 - y0) * points[name].get(x, 0.0) / top) for i, x in enumerate(xs)]
         colour = colours.get(name, _FALLBACK)
         lead = name in leads
         joined = " ".join(f"{cx:.2f},{cy:.2f}" for cx, cy in coords)
         parts.append(
-            f'<g class="series{" lead" if lead else ""}" data-series="{escape(name)}" '
+            f'<g class="series{" lead" if lead and marked else ""}" data-series="{escape(name)}" '
             f'data-colour="{colour if lead else _MUTED}">'
         )
         parts.append(
