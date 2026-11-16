@@ -29,13 +29,6 @@ class Card:
     queries: Tuple[Tuple[str, str], ...]
 
 
-_ACTIVE = """
-            WITH active AS (
-              SELECT v.* FROM vulnerabilities v
-              WHERE NOT EXISTS (SELECT 1 FROM vulnerability_exceptions e
-                WHERE e."orgId" = v."orgId" AND e."assetId" = v."assetId" AND e."vulnId" = v."vulnId")
-            )"""
-
 PORTFOLIO_SUMMARY = Card(
     title="Portfolio summary",
     description="Totals across all selected organisations.",
@@ -49,8 +42,12 @@ PORTFOLIO_SUMMARY = Card(
     queries=(
         (
             "by_org",
-            _ACTIVE
-            + """
+            """
+            WITH active AS (
+              SELECT v.* FROM vulnerabilities v
+              WHERE NOT EXISTS (SELECT 1 FROM vulnerability_exceptions e
+                WHERE e."orgId" = v."orgId" AND e."assetId" = v."assetId" AND e."vulnId" = v."vulnId")
+            )
             SELECT "orgId",
               COUNT(*) AS active_total,
               COUNT(DISTINCT "assetId") AS assets_with_findings,
@@ -66,8 +63,12 @@ PORTFOLIO_SUMMARY = Card(
         ),
         (
             "portfolio",
-            _ACTIVE
-            + """
+            """
+            WITH active AS (
+              SELECT v.* FROM vulnerabilities v
+              WHERE NOT EXISTS (SELECT 1 FROM vulnerability_exceptions e
+                WHERE e."orgId" = v."orgId" AND e."assetId" = v."assetId" AND e."vulnId" = v."vulnId")
+            )
             SELECT COUNT(*) AS active_total,
               COUNT(DISTINCT ("orgId", "assetId")) AS assets_with_findings,
               COUNT(*) FILTER (WHERE "cvssV3Severity" = 'Critical') AS critical,
@@ -130,8 +131,12 @@ NEW_VULNERABILITIES = Card(
     queries=(
         (
             "by_week",
-            _ACTIVE
-            + """
+            """
+            WITH active AS (
+              SELECT v.* FROM vulnerabilities v
+              WHERE NOT EXISTS (SELECT 1 FROM vulnerability_exceptions e
+                WHERE e."orgId" = v."orgId" AND e."assetId" = v."assetId" AND e."vulnId" = v."vulnId")
+            )
             SELECT STRFTIME(DATE_TRUNC('week',
                 GREATEST("firstFoundTimestamp", COALESCE("reintroducedTimestamp", "firstFoundTimestamp"))),
                 '%Y-%m-%d') AS week,
@@ -158,8 +163,12 @@ REMEDIATED_VULNERABILITIES = Card(
     queries=(
         (
             "by_week",
-            _ACTIVE
-            + """
+            """
+            WITH active AS (
+              SELECT v.* FROM vulnerabilities v
+              WHERE NOT EXISTS (SELECT 1 FROM vulnerability_exceptions e
+                WHERE e."orgId" = v."orgId" AND e."assetId" = v."assetId" AND e."vulnId" = v."vulnId")
+            )
             SELECT STRFTIME(DATE_TRUNC('week', "reintroducedTimestamp"), '%Y-%m-%d') AS week,
               "orgId", COUNT(*) AS reintroduced_critical_high
             FROM active
@@ -235,8 +244,12 @@ ORG_COMPARISON = Card(
     queries=(
         (
             "by_org",
-            _ACTIVE
-            + """, findings AS (
+            """
+            WITH active AS (
+              SELECT v.* FROM vulnerabilities v
+              WHERE NOT EXISTS (SELECT 1 FROM vulnerability_exceptions e
+                WHERE e."orgId" = v."orgId" AND e."assetId" = v."assetId" AND e."vulnId" = v."vulnId")
+            ), findings AS (
               SELECT "orgId", COUNT(*) AS active_findings,
                 COUNT(*) FILTER (WHERE "cvssV3Severity" = 'Critical') AS critical_vulnerabilities,
                 COUNT(*) FILTER (WHERE "hasExploits") AS with_known_exploits,
