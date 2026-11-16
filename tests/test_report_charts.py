@@ -184,3 +184,23 @@ def test_a_stray_old_date_never_cuts_off_the_latest_period(x_key, first, last):
     svg = line_chart(rows, x_key, "n", "orgId", COLOURS, _fmt)
 
     assert f"<title>ORG-A {last}: 500</title>" in svg
+
+
+def test_only_the_three_largest_series_lead_as_the_prototype_draws_them():
+    rows = [{"week": "2026-08-31", "orgId": f"ORG-{n}", "n": n} for n in range(1, 6)]
+    colours = {f"ORG-{n}": "#77b8ec" for n in range(1, 6)}
+
+    svg = line_chart(rows, "week", "n", "orgId", colours, _fmt)
+
+    leads = re.findall(r'<g class="series lead" data-series="([^"]+)"', svg)
+    assert sorted(leads) == ["ORG-3", "ORG-4", "ORG-5"]
+    assert svg.count('data-colour="#9aa5aa"') == 2
+
+
+def test_each_hover_target_carries_its_tooltip_parts_escaped():
+    rows = [{"week": "2026-08-31", "orgId": "ORG-A", "n": 3}]
+
+    svg = line_chart(rows, "week", "n", "orgId", COLOURS, _fmt, y_title=HOSTILE)
+
+    assert 'class="pt" data-heading="Week of 2026-08-31"' in svg
+    assert f'data-metric="{SHOWN}" data-value="3"' in svg

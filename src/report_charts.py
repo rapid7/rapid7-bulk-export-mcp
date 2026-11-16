@@ -7,7 +7,7 @@ ever see a card's small result set, never the raw findings. Every label is HTML-
 import math
 from datetime import date, timedelta
 from html import escape
-from typing import Any, Callable, Dict, List, Optional, Sequence
+from typing import Any, Callable, Dict, List, Optional, Sequence, Set
 
 Formatter = Callable[[Any], str]
 
@@ -19,6 +19,8 @@ _FALLBACK = "#9aa5ab"
 _MEDIAN = "#82939c"
 _MAX_PERIODS = 1000
 _MAX_X_LABELS = 8
+_LEADS = 3
+_MUTED = "#9aa5aa"
 _MAX_VALUE = 1e300
 _SVG_OPEN = '<svg viewBox="0 0 {w} {h}" width="100%" role="img" xmlns="http://www.w3.org/2000/svg" font-family="{f}">'
 
@@ -83,6 +85,12 @@ def _fill_weeks(xs: List[str]) -> Optional[List[str]]:
 def _tick(value: float) -> float:
     """An axis value rounded to two decimals, so float error such as 0.35000000003 never shows."""
     return round(value, 2)
+
+
+def _largest(points: Dict[str, Dict[str, float]], count: int) -> Set[str]:
+    """The series with the largest totals, which the UX prototype draws heavier and marks."""
+    ranked = sorted(points, key=lambda name: (-sum(points[name].values()), name))
+    return set(ranked[:count])
 
 
 def nice_max(value: float) -> float:
@@ -169,19 +177,31 @@ def line_chart(
                 f'<text x="{x_at(i):.2f}" y="{y1 + 16}" font-size="10" fill="{_LABEL}" '
                 f'text-anchor="middle">{escape(x)}</text>'
             )
+    metric = y_title or _label_text(y_key)
+    leads = _largest(points, _LEADS)
     for name in names:
         coords = [(x_at(i), y1 - (y1 - y0) * points[name].get(x, 0.0) / top) for i, x in enumerate(xs)]
         colour = colours.get(name, _FALLBACK)
+        lead = name in leads
         joined = " ".join(f"{cx:.2f},{cy:.2f}" for cx, cy in coords)
         parts.append(
-            f'<polyline points="{joined}" fill="none" stroke="{colour}" stroke-width="2" data-series="{escape(name)}"/>'
+            f'<g class="series{" lead" if lead else ""}" data-series="{escape(name)}" '
+            f'data-colour="{colour if lead else _MUTED}">'
+        )
+        parts.append(
+            f'<polyline points="{joined}" fill="none" stroke="{colour}" stroke-width="{2.4 if lead else 1.6}" '
+            'class="ln"/>'
         )
         for (cx, cy), x in zip(coords, xs):
-            tip = f"{name} {x}: {fmt(points[name].get(x, 0.0))}"
+            value = fmt(points[name].get(x, 0.0))
+            heading = f"Week of {x}" if x_key == "week" else x
+            parts.append(f'<circle cx="{cx:.2f}" cy="{cy:.2f}" r="4" fill="{colour}" class="mk"/>')
             parts.append(
-                f'<circle cx="{cx:.2f}" cy="{cy:.2f}" r="2.5" fill="{colour}" data-series="{escape(name)}">'
-                f"<title>{escape(tip)}</title></circle>"
+                f'<circle cx="{cx:.2f}" cy="{cy:.2f}" r="10" fill="transparent" class="pt" '
+                f'data-heading="{escape(heading)}" data-metric="{escape(metric)}" data-value="{escape(value)}">'
+                f"<title>{escape(f'{name} {x}: {value}')}</title></circle>"
             )
+        parts.append("</g>")
     parts.append("</svg>")
     return "".join(parts) + _legend(names, colours)
 
@@ -215,9 +235,11 @@ def dot_plot(
     parts.append(f'<line x1="{left}" y1="{axis_y}" x2="{right}" y2="{axis_y}" stroke="{_AXIS}" stroke-width="0.7"/>')
     for label, v in values:
         parts.append(
+            f'<g class="series lead" data-series="{escape(label)}" data-colour="{colours.get(label, _FALLBACK)}">'
             f'<circle cx="{x_at(v):.2f}" cy="{dot_y}" r="4" fill="{colours.get(label, _FALLBACK)}" opacity="0.85" '
-            f'data-series="{escape(label)}">'
-            f"<title>{escape(label)}: {escape(fmt(v))}</title></circle>"
+            f'class="pt" data-heading="Organisation risk distribution" data-metric="Risk score" '
+            f'data-value="{escape(fmt(v))}">'
+            f"<title>{escape(label)}: {escape(fmt(v))}</title></circle></g>"
         )
     median_value = _maybe_value(median)
     if median_value is not None:
