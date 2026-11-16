@@ -98,7 +98,9 @@ def nice_max(value: float) -> float:
 
 def _legend(names: Sequence[str], colours: Dict[str, str]) -> str:
     items = "".join(
-        f'<span><i style="background:{colours.get(name, _FALLBACK)}"></i>{escape(name)}</span>' for name in names
+        f'<span data-series="{escape(name)}"><i style="background:{colours.get(name, _FALLBACK)}"></i>'
+        f"{escape(name)}</span>"
+        for name in names
     )
     return f'<div class="legend">{items}</div>'
 
@@ -171,11 +173,14 @@ def line_chart(
         coords = [(x_at(i), y1 - (y1 - y0) * points[name].get(x, 0.0) / top) for i, x in enumerate(xs)]
         colour = colours.get(name, _FALLBACK)
         joined = " ".join(f"{cx:.2f},{cy:.2f}" for cx, cy in coords)
-        parts.append(f'<polyline points="{joined}" fill="none" stroke="{colour}" stroke-width="2"/>')
+        parts.append(
+            f'<polyline points="{joined}" fill="none" stroke="{colour}" stroke-width="2" data-series="{escape(name)}"/>'
+        )
         for (cx, cy), x in zip(coords, xs):
             tip = f"{name} {x}: {fmt(points[name].get(x, 0.0))}"
             parts.append(
-                f'<circle cx="{cx:.2f}" cy="{cy:.2f}" r="2.5" fill="{colour}"><title>{escape(tip)}</title></circle>'
+                f'<circle cx="{cx:.2f}" cy="{cy:.2f}" r="2.5" fill="{colour}" data-series="{escape(name)}">'
+                f"<title>{escape(tip)}</title></circle>"
             )
     parts.append("</svg>")
     return "".join(parts) + _legend(names, colours)
@@ -210,7 +215,8 @@ def dot_plot(
     parts.append(f'<line x1="{left}" y1="{axis_y}" x2="{right}" y2="{axis_y}" stroke="{_AXIS}" stroke-width="0.7"/>')
     for label, v in values:
         parts.append(
-            f'<circle cx="{x_at(v):.2f}" cy="{dot_y}" r="4" fill="{colours.get(label, _FALLBACK)}" opacity="0.85">'
+            f'<circle cx="{x_at(v):.2f}" cy="{dot_y}" r="4" fill="{colours.get(label, _FALLBACK)}" opacity="0.85" '
+            f'data-series="{escape(label)}">'
             f"<title>{escape(label)}: {escape(fmt(v))}</title></circle>"
         )
     median_value = _maybe_value(median)

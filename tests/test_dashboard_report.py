@@ -38,13 +38,55 @@ def test_every_card_appears_with_its_definition_and_data_date(cards):
 
 def test_the_document_is_self_contained(cards):
     html = _html(cards)
-    without_fonts = re.sub(r"url\(data:font/woff2;base64,[A-Za-z0-9+/=]+\)", "", html)
+    scripts = re.findall(r"<script[^>]*>(.*?)</script>", html, re.S)
+    rest = re.sub(r"<script>.*?</script>", "", html, flags=re.S)
+    without_fonts = re.sub(r"url\(data:font/woff2;base64,[A-Za-z0-9+/=]+\)", "", rest)
     without_svg_namespace = without_fonts.replace('xmlns="http://www.w3.org/2000/svg"', "")
 
     assert html.count("url(data:font/woff2;base64,") == 2
+    assert len(scripts) == 1 and html.count("<script>") == 1, "one inline script, with no src"
     for marker in ("<script", "<link", "<iframe", "<img", "<object", "<embed", "@import", "http", "//"):
         assert marker not in without_svg_namespace.lower(), marker
     assert set(re.findall(r"url\(([^)]*)\)", without_svg_namespace)) <= {"#r7logo"}
+
+
+def test_the_hover_script_reaches_nothing_outside_the_page_and_never_parses_html(cards):
+    [script] = re.findall(r"<script>(.*?)</script>", _html(cards), re.S)
+
+    for forbidden in (
+        "fetch",
+        "XMLHttpRequest",
+        "WebSocket",
+        "sendBeacon",
+        "import",
+        "eval",
+        "Function(",
+        "innerHTML",
+        "outerHTML",
+        "insertAdjacentHTML",
+        "document.write",
+        "http",
+        "//",
+        "src",
+        "href",
+        "localStorage",
+        "cookie",
+        "postMessage",
+        'setTimeout("',
+        "location",
+    ):
+        assert forbidden not in script, forbidden
+    assert "textContent" in script
+
+
+def test_hostile_text_in_a_tooltip_stays_text(cards):
+    hostile = '<img src=x onerror="1">'
+    rows = [{"week": "2026-08-31", "orgId": hostile, "new_critical_high": 1}]
+    html = _html([_card({"by_week": rows}, per_org=["by_week"], card="new_vulnerabilities", orgs=[hostile])])
+
+    assert "<img" not in html.split("<script>", 1)[0]
+    assert "<title>&lt;img src=x onerror=&quot;1&quot;&gt; 2026-08-31: 1</title>" in html
+    assert 'data-series="&lt;img src=x onerror=&quot;1&quot;&gt;"' in html
 
 
 def test_the_report_uses_the_callisto_dark_theme_and_the_logo(cards):

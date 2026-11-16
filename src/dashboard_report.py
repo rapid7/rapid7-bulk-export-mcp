@@ -100,8 +100,86 @@ table.mx td.rl { background: var(--rds-bg-subtle); text-align: left; font-size: 
 .legend i { width: 14px; height: 2.5px; border-radius: 2px; display: inline-block; }
 details { margin-top: 6px; }
 summary { font-size: var(--rds-fs-overline); color: var(--rds-text-secondary); cursor: pointer; }
+.chart circle { stroke: transparent; stroke-width: 10px; cursor: pointer; }
+.chart.focusing polyline:not(.focus), .chart.focusing circle:not(.focus) { opacity: 0.15; }
+.chart polyline.focus { stroke-width: 3; }
+.chart .legend span { cursor: pointer; }
+.chart.focusing .legend span:not(.focus) { opacity: 0.4; }
+#tip { position: fixed; display: none; pointer-events: none; z-index: 10; white-space: nowrap;
+  background: var(--rds-bg-paper); border: 1px solid var(--rds-divider); border-radius: 6px;
+  padding: 4px 8px; font-size: var(--rds-fs-overline); color: var(--rds-text-primary); }
 .swatch { display: inline-block; width: 8px; height: 8px; border-radius: 2px; margin-right: 6px; vertical-align: 1px; }
 """
+
+_SCRIPT = """
+(function () {
+  var tip = document.createElement("div");
+  tip.id = "tip";
+  tip.setAttribute("role", "tooltip");
+  document.body.appendChild(tip);
+  var pinned = null;
+  function chartOf(el) { return el.closest(".chart"); }
+  function focus(chart, series) {
+    if (!chart) { return; }
+    chart.classList.toggle("focusing", series !== null);
+    chart.querySelectorAll("[data-series]").forEach(function (el) {
+      el.classList.toggle("focus", el.getAttribute("data-series") === series);
+    });
+  }
+  function show(dot, event) {
+    tip.textContent = dot.getAttribute("data-tip");
+    tip.style.display = "block";
+    var box = dot.getBoundingClientRect();
+    var x = event && event.clientX ? event.clientX : box.right;
+    var y = event && event.clientY ? event.clientY : box.top;
+    tip.style.left = Math.max(8, Math.min(x + 12, window.innerWidth - tip.offsetWidth - 8)) + "px";
+    tip.style.top = Math.max(8, y - tip.offsetHeight - 10) + "px";
+  }
+  function release() {
+    if (!pinned) { return; }
+    var chart = chartOf(pinned);
+    pinned = null;
+    tip.style.display = "none";
+    focus(chart, null);
+  }
+  document.querySelectorAll(".chart circle").forEach(function (dot) {
+    var title = dot.querySelector("title");
+    if (!title) { return; }
+    dot.setAttribute("data-tip", title.textContent);
+    dot.setAttribute("tabindex", "0");
+    title.remove();
+    dot.addEventListener("mouseenter", function (event) {
+      if (pinned) { return; }
+      show(dot, event);
+      focus(chartOf(dot), dot.getAttribute("data-series"));
+    });
+    dot.addEventListener("mouseleave", function () {
+      if (pinned) { return; }
+      tip.style.display = "none";
+      focus(chartOf(dot), null);
+    });
+    dot.addEventListener("click", function (event) {
+      event.stopPropagation();
+      var again = pinned === dot;
+      release();
+      if (again) { return; }
+      pinned = dot;
+      show(dot, event);
+      focus(chartOf(dot), dot.getAttribute("data-series"));
+    });
+  });
+  document.querySelectorAll(".chart polyline, .chart .legend span").forEach(function (el) {
+    el.addEventListener("mouseenter", function () {
+      if (!pinned) { focus(chartOf(el), el.getAttribute("data-series")); }
+    });
+    el.addEventListener("mouseleave", function () { if (!pinned) { focus(chartOf(el), null); } });
+  });
+  document.addEventListener("click", release);
+  document.addEventListener("keydown", function (event) { if (event.key === "Escape") { release(); } });
+})();
+"""
+"""Hover tooltips and line focus, as the UX prototype has. Fixed code: it reads each chart
+point's own <title> and writes only textContent, so no data is ever parsed as HTML."""
 
 _LEFT_OUT_TEXT = "Left out: this combines organisations, and coverage is incomplete."
 
@@ -328,7 +406,7 @@ def _weekly(y_key: str, y_title: str) -> Callable[[List[Dict[str, Any]], Dict[st
         if not rows:
             return '<p class="hint">No rows.</p>'
         chart = line_chart(rows, "week", y_key, "orgId", colours, _number_text, series=list(colours), y_title=y_title)
-        return _with_figures(chart, rows, colours)
+        return _with_figures(f'<div class="chart">{chart}</div>', rows, colours)
 
     return render
 
@@ -356,7 +434,7 @@ def _risk_distribution(rows: List[Dict[str, Any]], median: Any, colours: Dict[st
     """Dots per organisation, with the median on the chart when it covers every organisation."""
     if not rows:
         return ['<p class="hint">No rows.</p>']
-    chart = dot_plot(rows, "mean_risk", "orgId", colours, _number_text, median=median)
+    chart = f'<div class="chart">{dot_plot(rows, "mean_risk", "orgId", colours, _number_text, median=median)}</div>'
     return [chart, _by_organisation(_table(rows, colours), open_=False)]
 
 
@@ -446,4 +524,4 @@ def render_report(
         coverage,
     ]
     body = [_card_section(card, coverage_complete, colours) for card in cards]
-    return "\n".join(header + body + ["</div></body></html>"])
+    return "\n".join(header + body + [f"</div><script>{_SCRIPT}</script></body></html>"])
