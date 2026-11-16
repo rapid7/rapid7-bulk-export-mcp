@@ -172,3 +172,15 @@ def test_the_dot_plot_draws_a_median_only_when_given_one():
 
     assert "median" not in dot_plot(rows, "mean_risk", "orgId", COLOURS, _fmt)
     assert ">median 200<" in dot_plot(rows, "mean_risk", "orgId", COLOURS, _fmt, median=200)
+
+
+@pytest.mark.parametrize(
+    ("x_key", "first", "last"),
+    [("week", "1969-12-29", "2026-11-09"), ("quarter", "1970-01", "2026-10")],
+)
+def test_a_stray_old_date_never_cuts_off_the_latest_period(x_key, first, last):
+    rows = [{x_key: first, "orgId": "ORG-A", "n": 1}, {x_key: last, "orgId": "ORG-A", "n": 500}]
+
+    svg = line_chart(rows, x_key, "n", "orgId", COLOURS, _fmt)
+
+    assert f"<title>ORG-A {last}: 500</title>" in svg

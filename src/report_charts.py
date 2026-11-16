@@ -41,7 +41,8 @@ def _periods(xs: List[str]) -> List[str]:
     """Every period from the first to the last, so a gap keeps its width on the axis.
 
     Fills "YYYY-MM" quarters (MM the quarter's first month) and "YYYY-MM-DD" weeks that fall
-    on the same weekday. Anything else is left as given.
+    on the same weekday. A range longer than _MAX_PERIODS, such as one stray epoch date, is left
+    as given, so no period with data is ever cut off. Anything else is left as given too.
     """
     return _fill_quarters(xs) or _fill_weeks(xs) or xs
 
@@ -54,8 +55,10 @@ def _fill_quarters(xs: List[str]) -> Optional[List[str]]:
     if not xs or len(months) != len(xs) or any(m not in (1, 4, 7, 10) for _, m in months):
         return None
     (year, month), last = min(months), max(months)
+    if (last[0] - year) * 4 + (last[1] - month) // 3 >= _MAX_PERIODS:
+        return None
     filled = []
-    while (year, month) <= last and len(filled) < _MAX_PERIODS:
+    while (year, month) <= last:
         filled.append(f"{year:04d}-{month:02d}")
         year, month = (year + 1, 1) if month == 10 else (year, month + 3)
     return filled
@@ -69,7 +72,9 @@ def _fill_weeks(xs: List[str]) -> Optional[List[str]]:
     if not days or len({d.weekday() for d in days}) != 1:
         return None
     current, last, filled = min(days), max(days), []
-    while current <= last and len(filled) < _MAX_PERIODS:
+    if (last - current).days // 7 >= _MAX_PERIODS:
+        return None
+    while current <= last:
         filled.append(current.isoformat())
         current += timedelta(days=7)
     return filled
