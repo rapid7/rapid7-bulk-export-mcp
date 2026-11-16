@@ -1218,7 +1218,7 @@ def multi_org_report() -> str:
         "not loaded today, say so at the top of the report and leave out every portfolio total.\n"
         "2. Call get_rapid7_dashboard_card(card) once for each of these cards, in this order:\n"
         f"{cards}\n"
-        "3. For each card, show its title, its definition, its data date (as_of) and the "
+        "3. For each card, show its title, its description, its definition, its data date (as_of) and the "
         "organizations it covers, then its figures. Use only the numbers the card returns. "
         "Do not call query_rapid7 and do not write SQL for any figure in this report.\n"
         "4. Label anything you work out yourself from those numbers, such as a ratio or a "

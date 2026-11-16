@@ -43,7 +43,8 @@ PORTFOLIO_SUMMARY = Card(
         "Active findings by CVSS v3 severity, and assets with at least one active finding. "
         "Active means no matching vulnerability exception on orgId, assetId, and vulnId. "
         "Any other severity (Unknown, None, or missing) counts in the total and in unscored. "
-        "The export does not carry CISA KEV, so medium findings stand in for findings in CISA KEV."
+        "The export does not carry CISA KEV, so active findings with a known exploit (hasExploits) "
+        "stand in for findings in CISA KEV. A known exploit is not the same as known exploitation."
     ),
     queries=(
         (
@@ -72,7 +73,8 @@ PORTFOLIO_SUMMARY = Card(
               COUNT(*) FILTER (WHERE "cvssV3Severity" = 'Critical') AS critical,
               COUNT(*) FILTER (WHERE "cvssV3Severity" = 'High') AS high,
               COUNT(*) FILTER (WHERE "cvssV3Severity" = 'Medium') AS medium,
-              COUNT(*) FILTER (WHERE "cvssV3Severity" = 'Low') AS low
+              COUNT(*) FILTER (WHERE "cvssV3Severity" = 'Low') AS low,
+              COUNT(*) FILTER (WHERE "hasExploits") AS with_exploits
             FROM active
             """,
         ),
@@ -224,8 +226,9 @@ ORG_COMPARISON = Card(
         "vulnerabilities counts active critical findings. The two averages divide active findings, "
         "and active findings with a known exploit, by total assessed assets. Remediated critical and "
         "high vulnerabilities shows reintroduced ones, because remediated counts are not available "
-        "per organisation. The export does not carry CISA KEV or exploited in the wild, so those "
-        "columns are left out."
+        "per organisation, so an organisation with no reintroduced findings shows 0, not a clean "
+        "record. The export does not carry CISA KEV or exploited in the wild, so those columns "
+        "are left out."
     ),
     queries=(
         (
@@ -236,7 +239,7 @@ ORG_COMPARISON = Card(
                 COUNT(*) FILTER (WHERE "cvssV3Severity" = 'Critical') AS critical_vulnerabilities,
                 COUNT(*) FILTER (WHERE "hasExploits") AS with_known_exploits,
                 COUNT(*) FILTER (WHERE "reintroducedTimestamp" IS NOT NULL
-                  AND "cvssV3Severity" IN ('Critical', 'High')) AS remediated_critical_high
+                  AND "cvssV3Severity" IN ('Critical', 'High')) AS reintroduced_critical_high
               FROM active GROUP BY "orgId"
             ), risk AS (
               SELECT "orgId", COUNT(*) AS assets, ROUND(AVG("riskScore"), 1) AS risk_score
@@ -248,8 +251,8 @@ ORG_COMPARISON = Card(
               COALESCE(f.critical_vulnerabilities, 0) AS total_critical_vulnerabilities,
               ROUND(COALESCE(f.active_findings, 0) / NULLIF(r.assets, 0), 2) AS average_vulnerabilities_per_asset,
               ROUND(COALESCE(f.with_known_exploits, 0) / NULLIF(r.assets, 0), 2) AS average_known_exploits_per_asset,
-              COALESCE(f.remediated_critical_high, 0) AS remediated_critical_high
-            FROM risk r FULL OUTER JOIN findings f ON f."orgId" = r."orgId"
+              COALESCE(f.reintroduced_critical_high, 0) AS reintroduced_critical_high
+            FROM risk r FULL OUTER JOIN findings f ON f."orgId" IS NOT DISTINCT FROM r."orgId"
             ORDER BY r.risk_score DESC NULLS LAST, 1
             """,
         ),

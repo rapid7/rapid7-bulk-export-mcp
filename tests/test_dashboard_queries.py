@@ -41,7 +41,7 @@ def _write(path, columns):
     return str(path)
 
 
-def _load(tmp_path, with_exceptions=True, rows=VULNS):
+def _load(tmp_path, with_exceptions=True, rows=VULNS, assets=ASSETS):
     vulns = _write(
         tmp_path / "vulns.parquet",
         {
@@ -63,11 +63,11 @@ def _load(tmp_path, with_exceptions=True, rows=VULNS):
     assets = _write(
         tmp_path / "assets.parquet",
         {
-            "orgId": [a[0] for a in ASSETS],
-            "assetId": [a[1] for a in ASSETS],
-            "riskScore": [a[2] for a in ASSETS],
-            "hostName": [f"host-{a[1]}" for a in ASSETS],
-            "osProduct": ["Linux"] * len(ASSETS),
+            "orgId": [a[0] for a in assets],
+            "assetId": [a[1] for a in assets],
+            "riskScore": [a[2] for a in assets],
+            "hostName": [f"host-{a[1]}" for a in assets],
+            "osProduct": ["Linux"] * len(assets),
         },
     )
     prefixes = {"asset_vulnerability": [vulns], "asset": [assets]}
@@ -106,7 +106,15 @@ def test_portfolio_summary_excludes_the_excepted_finding(db):
     assert by_org["ORG-A"]["medium"] == 0
     assert by_org["ORG-B"]["unscored"] == 1
     assert result["results"]["portfolio"] == [
-        {"active_total": 5, "assets_with_findings": 3, "critical": 3, "high": 1, "medium": 0, "low": 0}
+        {
+            "active_total": 5,
+            "assets_with_findings": 3,
+            "critical": 3,
+            "high": 1,
+            "medium": 0,
+            "low": 0,
+            "with_exploits": 3,
+        }
     ]
 
 
@@ -159,7 +167,7 @@ def test_org_comparison_gives_each_ux_column_per_org(db):
         "total_critical_vulnerabilities": 2,
         "average_vulnerabilities_per_asset": 1.5,
         "average_known_exploits_per_asset": 1.0,
-        "remediated_critical_high": 1,
+        "reintroduced_critical_high": 1,
     }
     assert by_org["ORG-B"]["average_vulnerabilities_per_asset"] == 2.0
     assert [row["orgId"] for row in result["results"]["by_org"]] == ["ORG-A", "ORG-B"]
@@ -286,7 +294,7 @@ def test_no_loaded_data_is_refused(tmp_path):
 @pytest.mark.parametrize(
     ("card", "phrases"),
     [
-        ("portfolio_summary", ["medium findings stand in for findings in CISA KEV"]),
+        ("portfolio_summary", ["with a known exploit (hasExploits) stand in for findings in CISA KEV"]),
         ("org_risk_distribution", ["no 0 to 1000 organisation risk score"]),
         (
             "new_vulnerabilities",
@@ -294,7 +302,7 @@ def test_no_loaded_data_is_refused(tmp_path):
         ),
         ("remediated_vulnerabilities", ["Remediated counts are not available per organisation"]),
         ("unresolved_age_severity", ["from firstFoundTimestamp, the discovery date"]),
-        ("org_comparison", ["CISA KEV or exploited in the wild", "reintroduced ones"]),
+        ("org_comparison", ["CISA KEV or exploited in the wild", "reintroduced ones", "not a clean record"]),
     ],
 )
 def test_every_substitute_and_scope_is_stated(card, phrases):
@@ -302,3 +310,47 @@ def test_every_substitute_and_scope_is_stated(card, phrases):
     text = CARDS[card].description + " " + CARDS[card].definition
     for phrase in phrases:
         assert phrase in text, phrase
+
+
+def test_org_comparison_sorts_by_risk_score_not_by_org(tmp_path):
+    database = _load(tmp_path, assets=[("ORG-A", "A1", 10.0), ("ORG-A", "A2", 20.0), ("ORG-B", "B1", 900.0)])
+    try:
+        rows = run_card(database, "org_comparison", as_of=AS_OF)["results"]["by_org"]
+    finally:
+        database.close()
+
+    assert [row["orgId"] for row in rows] == ["ORG-B", "ORG-A"]
+
+
+def test_an_org_with_findings_but_no_assets_has_no_averages(tmp_path):
+    database = _load(tmp_path, assets=[("ORG-A", "A1", 100.0), ("ORG-A", "A2", 300.0)])
+    try:
+        org_b = _by_org(run_card(database, "org_comparison", as_of=AS_OF)["results"]["by_org"])["ORG-B"]
+    finally:
+        database.close()
+
+    assert org_b["total_assessed_assets"] == 0
+    assert org_b["total_critical_vulnerabilities"] == 1
+    assert org_b["average_vulnerabilities_per_asset"] is None
+    assert org_b["average_known_exploits_per_asset"] is None
+
+
+def test_findings_with_no_org_stay_on_one_comparison_row(tmp_path):
+    rows = [(None, "N1", "V1", "Critical", True, datetime(2026, 9, 1), None, "Network", 0.9)]
+    database = _load(tmp_path, with_exceptions=False, rows=rows, assets=[(None, "N1", 15.0)])
+    try:
+        compared = run_card(database, "org_comparison", as_of=AS_OF)["results"]["by_org"]
+    finally:
+        database.close()
+
+    assert compared == [
+        {
+            "orgId": None,
+            "risk_score": 15.0,
+            "total_assessed_assets": 1,
+            "total_critical_vulnerabilities": 1,
+            "average_vulnerabilities_per_asset": 1.0,
+            "average_known_exploits_per_asset": 1.0,
+            "reintroduced_critical_high": 0,
+        }
+    ]
