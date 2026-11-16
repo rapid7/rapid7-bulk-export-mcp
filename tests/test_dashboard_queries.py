@@ -165,6 +165,7 @@ def test_org_comparison_gives_each_ux_column_per_org(db):
         "risk_score": 200.0,
         "total_assessed_assets": 2,
         "total_critical_vulnerabilities": 2,
+        "total_known_exploit_findings": 2,
         "average_vulnerabilities_per_asset": 1.5,
         "average_known_exploits_per_asset": 1.0,
         "reintroduced_critical_high": 1,
@@ -302,7 +303,10 @@ def test_no_loaded_data_is_refused(tmp_path):
         ),
         ("remediated_vulnerabilities", ["Remediated counts are not available per organisation"]),
         ("unresolved_age_severity", ["from firstFoundTimestamp, the discovery date"]),
-        ("org_comparison", ["CISA KEV or exploited in the wild", "reintroduced ones", "not a clean record"]),
+        (
+            "org_comparison",
+            ["stand in for total CISA KEV findings", "exploited in the wild have no stand-in", "not a clean record"],
+        ),
     ],
 )
 def test_every_substitute_and_scope_is_stated(card, phrases):
@@ -349,6 +353,7 @@ def test_findings_with_no_org_stay_on_one_comparison_row(tmp_path):
             "risk_score": 15.0,
             "total_assessed_assets": 1,
             "total_critical_vulnerabilities": 1,
+            "total_known_exploit_findings": 1,
             "average_vulnerabilities_per_asset": 1.0,
             "average_known_exploits_per_asset": 1.0,
             "reintroduced_critical_high": 0,

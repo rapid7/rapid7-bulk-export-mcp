@@ -224,11 +224,13 @@ ORG_COMPARISON = Card(
         "Risk score is the mean asset risk score, because the export has no organisation risk score. "
         "Total assessed assets counts the organisation's assets in the export. Total critical "
         "vulnerabilities counts active critical findings. The two averages divide active findings, "
-        "and active findings with a known exploit, by total assessed assets. Remediated critical and "
+        "and active findings with a known exploit, by total assessed assets. The export does not carry "
+        "CISA KEV, so total findings with a known exploit (hasExploits) stand in for total CISA KEV "
+        "findings, as on the portfolio summary. Remediated critical and "
         "high vulnerabilities shows reintroduced ones, because remediated counts are not available "
         "per organisation, so an organisation with no reintroduced findings shows 0, not a clean "
-        "record. The export does not carry CISA KEV or exploited in the wild, so those columns "
-        "are left out."
+        "record. CISA KEV per assessed asset and exploited in the wild have no stand-in, so those "
+        "columns are left out."
     ),
     queries=(
         (
@@ -249,6 +251,7 @@ ORG_COMPARISON = Card(
               r.risk_score,
               COALESCE(r.assets, 0) AS total_assessed_assets,
               COALESCE(f.critical_vulnerabilities, 0) AS total_critical_vulnerabilities,
+              COALESCE(f.with_known_exploits, 0) AS total_known_exploit_findings,
               ROUND(COALESCE(f.active_findings, 0) / NULLIF(r.assets, 0), 2) AS average_vulnerabilities_per_asset,
               ROUND(COALESCE(f.with_known_exploits, 0) / NULLIF(r.assets, 0), 2) AS average_known_exploits_per_asset,
               COALESCE(f.reintroduced_critical_high, 0) AS reintroduced_critical_high
