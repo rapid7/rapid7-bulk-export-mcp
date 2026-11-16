@@ -968,6 +968,11 @@ def download_rapid7_export(export_id: str, export_type: str = "vulnerability") -
 def query_rapid7(sql: str) -> str:
     """Execute a SQL query against the Rapid7 database.
 
+    Warn first when a question needs a figure the export does not supply: CISA KEV,
+    a 0 to 1000 organization risk score, trends or deltas between snapshots, or, in
+    multi-org mode, remediated counts or MTTR per organization. Say what is missing
+    before answering, never approximate it in silence, and name any stand-in as a stand-in.
+
     The database contains the following tables loaded from Rapid7 InsightVM
     Bulk Export API Parquet files:
 
@@ -1201,6 +1206,15 @@ def get_rapid7_dashboard_card(card: str) -> str:
         _db_lock.release()
 
 
+UNSUPPORTED_AGGREGATIONS_WARNING = (
+    "If the user asks for a figure the export does not supply, warn them before you answer: "
+    "CISA KEV, a 0 to 1000 organization risk score, trends or deltas between snapshots, and "
+    "remediated counts or MTTR per organization in multi-org mode. Say what is missing and "
+    "why, never approximate it in silence, and name any stand-in as a stand-in."
+)
+"""The same list as the skill's "Figures the export cannot supply" section."""
+
+
 @mcp.prompt(
     name="multi_org_report",
     title="Multi-Org Exposure Report",
@@ -1221,7 +1235,8 @@ def multi_org_report() -> str:
         "organizations it covers, then its figures. Use only the numbers the card returns. "
         "Do not call query_rapid7 and do not write SQL for any figure in this report.\n"
         "4. Label anything you work out yourself from those numbers, such as a ratio or a "
-        "share, as your own interpretation, so it is not read as a card figure."
+        "share, as your own interpretation, so it is not read as a card figure.\n"
+        f"5. {UNSUPPORTED_AGGREGATIONS_WARNING}"
     )
 
 

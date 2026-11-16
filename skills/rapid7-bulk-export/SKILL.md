@@ -103,7 +103,8 @@ Coverage needs no keys, so a server that holds none can still check and report.
      only and leave out every portfolio total.
 
 6. For other questions, analyse with query_rapid7(), grouping or filtering by "orgId",
-   and label those answers as ad hoc rather than as dashboard figures.
+   and label those answers as ad hoc rather than as dashboard figures. If a question
+   needs a figure from "Figures the export cannot supply" below, warn first.
 ```
 
 Rules that matter for correctness:
@@ -122,11 +123,33 @@ Rules that matter for correctness:
 - **If one organization fails to load**, name it. Retry just that one with
   `download_rapid7_export(export_id=...)`.
 
-Known gaps to state plainly if asked, rather than approximating in silence: there is no
-per-organization risk score in the export (the risk score present is vulnerability
-content level and identical for every organization), no CISA KEV column, and no
-assessment-coverage data without the assessed-asset dataset, which this tool does not
-expose yet.
+The export also lacks some figures a multi-org report would want. See the next section.
+
+## Figures the export cannot supply
+
+Some aggregations a user may ask for are not in the Rapid7 export. When a request needs
+one, warn the user **before** you answer, even if they did not ask whether it exists. Say
+which figure is missing and why. Never approximate it in silence. If you offer a stand-in,
+name it as a stand-in, every time you show it.
+
+Never in the export, in any mode:
+
+- **CISA KEV** (known exploited vulnerabilities). No export carries a KEV flag.
+  `hasExploits` means a known exploit exists, which is not the same thing.
+- **A 0 to 1000 organization risk score.** `assets.riskScore` is per asset, on a
+  different scale, and `vulnerabilities.riskScore` is content level and the same for
+  every organization.
+- **Trends, deltas and history.** Each export is one snapshot of what is open now, so
+  there is no earlier value to compare with, and a finding remediated before the export
+  has no row at all.
+- **Assessment coverage**, without the assessed-asset dataset, which this tool does not
+  expose yet.
+
+Not available per organization in multi-org mode:
+
+- **Remediated counts, MTTR (mean time to remediate) and close rates.** The remediation
+  export cannot be scoped to one organization. In a single-organization setup the
+  `vulnerability_remediation` table does supply these, so answer from it as usual.
 
 ## Workflow - INTELLIGENT DATA LOADING
 
