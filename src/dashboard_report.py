@@ -230,6 +230,8 @@ _LABELS = {
     "by_band": "Days active by severity",
     "reintroduced_critical_high": "Remediated Critical and High Vulnerabilities (reintroduced stands in)",
     "total_known_exploit_findings": "Total CISA KEV findings (known exploits stand in)",
+    "total_kev_findings": "Total CISA KEV findings",
+    "kev_per_assessed_asset": "CISA KEV per assessed asset",
 }
 
 
@@ -348,17 +350,29 @@ def _note(prefix: str, value: Any, suffix: str = "") -> str:
     return f"{prefix} {_number_text(value)}{suffix}" if _is_number(value) else ""
 
 
-def _portfolio_tiles(rows: List[Dict[str, Any]], colours: Dict[str, str]) -> str:
+def _kev_source(kev: Optional[Dict[str, Any]]) -> str:
+    return f"CISA KEV catalogue {kev.get('version')}, released {_when(str(kev.get('released')))}" if kev else ""
+
+
+def _portfolio_tiles(rows: List[Dict[str, Any]], colours: Dict[str, str], kev: Optional[Dict[str, Any]] = None) -> str:
+    if kev:
+        third, notes = ("Total findings in CISA KEV", "kev_findings"), {"kev_findings": _kev_source(kev)}
+    else:
+        third = ("Total findings with a known exploit", "with_exploits")
+        notes = {"with_exploits": "Stands in for findings in CISA KEV: no KEV catalogue is stored yet"}
     return _tiles_or_table(
-        rows,
-        colours,
-        [
-            ("Total critical findings", "critical"),
-            ("Total high findings", "high"),
-            ("Total findings with a known exploit", "with_exploits"),
-        ],
-        {"with_exploits": "Stands in for findings in CISA KEV, which the export does not carry"},
+        rows, colours, [("Total critical findings", "critical"), ("Total high findings", "high"), third], notes
     )
+
+
+_KEV_ONLY = ("total_kev_findings", "kev_per_assessed_asset")
+_STAND_IN_ONLY = ("total_known_exploit_findings",)
+
+
+def _comparison_rows(rows: List[Dict[str, Any]], kev: Optional[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """Organisation comparison with the KEV columns when a catalogue is stored, else the stand-in."""
+    drop = _STAND_IN_ONLY if kev else _KEV_ONLY
+    return [{k: v for k, v in row.items() if k not in drop} for row in rows]
 
 
 def _heat_step(value: float, values: Sequence[float]) -> int:
@@ -519,7 +533,13 @@ def _card_body(card: Dict[str, Any], coverage_complete: bool, colours: Dict[str,
             if key in _WEEKLY:
                 parts.append(_WEEKLY[key](rows, colours, _recent_weeks(card)))
             else:
-                parts.append(_FEATURED.get(key, _table)(rows, colours))
+                kev = card.get("kev_catalogue")
+                if key == ("portfolio_summary", "portfolio"):
+                    parts.append(_portfolio_tiles(rows, colours, kev))
+                elif key == ("org_comparison", "by_org"):
+                    parts.append(_table(_comparison_rows(rows, kev), colours))
+                else:
+                    parts.append(_FEATURED.get(key, _table)(rows, colours))
     return parts
 
 
@@ -556,6 +576,14 @@ def render_report(
     """
     orgs = sorted({str(org) for card in cards for org in card["orgs"]})
     colours = {org: SERIES_COLOURS[i % len(SERIES_COLOURS)] for i, org in enumerate(orgs)}
+    kev = next((card["kev_catalogue"] for card in cards if card.get("kev_catalogue")), None)
+    if kev:
+        kev_line = (
+            f'<div class="strip">{escape(_kev_source(kev))}, {_text(kev.get("entries"))} entries, '
+            f"SHA-256 <code>{escape(str(kev.get('sha256')))}</code>.</div>"
+        )
+    else:
+        kev_line = '<div class="strip">No CISA KEV catalogue is stored yet, so known exploits stand in for KEV.</div>'
     if coverage_complete:
         coverage = '<div class="strip">Organisation coverage check: complete.</div>'
     else:
@@ -575,6 +603,7 @@ def render_report(
         f'<p class="sub">Generated {escape(_when(generated_at))} &middot; {len(orgs)} organisation(s) &middot; '
         "every figure comes from a fixed, tested query</p>",
         coverage,
+        kev_line,
     ]
     body = [_card_section(card, coverage_complete, colours) for card in cards]
     return "\n".join(header + body + [f"</div><script>{_SCRIPT}</script></body></html>"])

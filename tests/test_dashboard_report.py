@@ -396,3 +396,62 @@ def test_an_unreadable_data_date_plots_every_week():
 
     assert section.count('class="pt"') == 1
     assert "Last 26 weeks" not in section
+
+
+KEV = {"version": "2026.11.13", "released": "2026-11-13T20:24:18Z", "sha256": "4028ec03" + "0" * 56, "entries": 1781}
+
+
+def _kev_cards(kev):
+    portfolio = _card(
+        {"portfolio": [{"critical": 5, "high": 7, "with_exploits": 9, "kev_findings": 3 if kev else None}]},
+        kev_catalogue=kev,
+    )
+    comparison = _card(
+        {
+            "by_org": [
+                {
+                    "orgId": "ORG-A",
+                    "risk_score": 10.0,
+                    "total_known_exploit_findings": 9,
+                    "total_kev_findings": 3 if kev else None,
+                    "kev_per_assessed_asset": 1.5 if kev else None,
+                }
+            ]
+        },
+        per_org=["by_org"],
+        card="org_comparison",
+        kev_catalogue=kev,
+    )
+    return [portfolio, comparison]
+
+
+def test_a_stored_catalogue_gives_real_kev_figures_and_names_its_source():
+    html = _html(_kev_cards(KEV))
+
+    portfolio = _section(html, "portfolio_summary")
+    comparison = _section(html, "org_comparison")
+    assert '<div class="k">Total findings in CISA KEV</div><div class="v">3</div>' in portfolio
+    assert "CISA KEV catalogue 2026.11.13, released 2026-11-13 20:24 UTC" in portfolio
+    assert "Total CISA KEV findings</th>" in comparison and "CISA KEV per assessed asset</th>" in comparison
+    assert "known exploits stand in" not in comparison
+    assert "1,781 entries" in html
+    assert KEV["sha256"] in html
+
+
+def test_no_catalogue_keeps_the_stand_ins_and_says_so():
+    html = _html(_kev_cards(None))
+
+    assert '<div class="k">Total findings with a known exploit</div><div class="v">9</div>' in html
+    assert "No CISA KEV catalogue is stored yet" in html
+    comparison = _section(html, "org_comparison")
+    assert "Total CISA KEV findings (known exploits stand in)" in comparison
+    assert "CISA KEV per assessed asset" not in comparison
+
+
+def test_hostile_catalogue_details_are_escaped():
+    hostile = dict(KEV, version='<b x="1">', sha256="<script>")
+
+    html = _html(_kev_cards(hostile))
+
+    assert "<b x=" not in html and "<script>x" not in html
+    assert "&lt;script&gt;" in html
