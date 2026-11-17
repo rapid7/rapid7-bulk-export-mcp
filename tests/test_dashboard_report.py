@@ -483,3 +483,20 @@ def test_the_highest_risk_label_appears_only_with_complete_coverage(cards, compl
     section = _section(_html(cards, complete=complete), "org_risk_distribution")
 
     assert (">highest " in section) is marked
+
+
+def test_organisations_and_data_dates_appear_once_in_the_header(cards):
+    html = _html(cards)
+
+    assert html.count("Data date:") == 1
+    assert "Organisations: ORG-A, ORG-B. Data date: 2026-09-23 00:00 UTC." in html
+
+
+def test_each_definition_sits_in_a_collapsed_about_this_card(cards):
+    html = _html(cards)
+
+    for card in cards:
+        section = _section(html, card["card"])
+        about = section.split('<details class="about"><summary>About this card</summary>', 1)[1]
+        assert card["definition"].split(".")[0] in about, card["card"]
+    assert '<details class="about" open' not in html

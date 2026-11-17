@@ -103,6 +103,7 @@ table.mx td.rl { background: none; text-align: right; color: var(--rds-text-seco
   display: inline-flex; align-items: center; gap: 5px; }
 .legend i { width: 14px; height: 2.5px; border-radius: 2px; display: inline-block; }
 details { margin-top: 6px; }
+details.about { margin-top: 10px; }
 summary { font-size: var(--rds-fs-overline); color: var(--rds-text-secondary); cursor: pointer; }
 .chart { position: relative; }
 .chart .pt { cursor: pointer; }
@@ -558,18 +559,31 @@ def _card_body(card: Dict[str, Any], coverage_complete: bool, colours: Dict[str,
     return parts
 
 
+def _data_dates(cards: List[Dict[str, Any]]) -> str:
+    """Every organisation's data date, once for the whole report."""
+    by_org: Dict[str, str] = {}
+    for card in cards:
+        for org, when in card.get("as_of_by_org", {}).items():
+            by_org.setdefault(str(org), when)
+    if not by_org:
+        return ", ".join(sorted({_when(card["as_of"]) for card in cards}))
+    dates = sorted({_when(when) for when in by_org.values()})
+    if len(dates) == 1:
+        return dates[0]
+    return f"from {dates[0]} to {dates[-1]}, by organisation"
+
+
 def _card_section(card: Dict[str, Any], coverage_complete: bool, colours: Dict[str, str]) -> str:
-    dates = [_when(d) for d in sorted(set(card.get("as_of_by_org", {}).values())) or [card["as_of"]]]
-    date_text = dates[0] if len(dates) == 1 else f"from {dates[0]} to {dates[-1]}, by organisation"
-    orgs = ", ".join(map(str, card["orgs"]))
     parts = [
         f'<section class="card" id="{escape(card["card"])}">',
         f'<p class="sec">{escape(card["title"])}</p>',
         f'<p class="hint">{escape(card.get("description", ""))}</p>',
     ]
     parts += _card_body(card, coverage_complete, colours)
-    parts.append(f'<p class="inlinenote">{escape(card["definition"])}</p>')
-    parts.append(f'<p class="inlinenote">Data date: {escape(date_text)}. Organisations: {escape(orgs)}.</p>')
+    parts.append(
+        '<details class="about"><summary>About this card</summary>'
+        f'<p class="inlinenote">{escape(card["definition"])}</p></details>'
+    )
     parts.append("</section>")
     return "\n".join(parts)
 
@@ -663,6 +677,7 @@ def render_report(
         "<h1>Multi-Org Exposure Dashboard</h1>",
         f'<p class="sub">Generated {escape(_when(generated_at))} &middot; {len(orgs)} organisation(s) &middot; '
         "every figure comes from a fixed, tested query</p>",
+        f'<p class="sub">Organisations: {escape(", ".join(orgs))}. Data date: {escape(_data_dates(cards))}.</p>',
         coverage,
         kev_line,
     ]
