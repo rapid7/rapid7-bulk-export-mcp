@@ -94,11 +94,11 @@ Coverage needs no keys, so a server that holds none can still check and report.
      a missing organization reads as a fall in the numbers, not as an error.
 
 5. For the multi-org dashboard, call get_rapid7_dashboard_card(card) once per card:
-   portfolio_summary, org_risk_distribution, vulnerability_activity,
-   unresolved_age_severity, org_comparison, weaponised_critical.
+   portfolio_summary, org_risk_distribution, new_vulnerabilities,
+   remediated_vulnerabilities, unresolved_age_severity, org_comparison.
    → Use only these numbers on the dashboard. Do NOT write your own SQL for them:
      the cards are fixed, tested queries, and ad hoc SQL can apply different rules.
-     State each card's definition, data date (as_of), and organizations on the card.
+     State each card's description, definition, data date (as_of), and organizations on the card.
    → If step 4 warned that an organization is missing, show per-organization figures
      only and leave out every portfolio total.
 
