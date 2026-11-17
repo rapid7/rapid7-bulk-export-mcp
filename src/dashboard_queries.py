@@ -39,8 +39,11 @@ PORTFOLIO_SUMMARY = Card(
         "Active findings by CVSS v3 severity, and assets with at least one active finding. "
         "Active means no matching vulnerability exception on orgId, assetId, and vulnId. "
         "Any other severity (Unknown, None, or missing) counts in the total and in unscored. "
-        "The export does not carry CISA KEV, so active findings with a known exploit (hasExploits) "
-        "stand in for findings in CISA KEV. A known exploit is not the same as known exploitation."
+        "Findings in CISA KEV are active findings with at least one CVE in CISA's Known Exploited "
+        "Vulnerabilities catalogue, which the server fetches after each multi-org load. The report "
+        "states the catalogue's version and date. When no catalogue is stored, active findings with "
+        "a known exploit (hasExploits) stand in, and a known exploit is not the same as known "
+        "exploitation."
     ),
     per_org=("by_org",),
     queries=(
@@ -68,7 +71,11 @@ PORTFOLIO_SUMMARY = Card(
         (
             "portfolio",
             """
-            WITH active AS (
+            WITH kev AS (
+              SELECT DISTINCT p."vulnId"
+              FROM (SELECT DISTINCT "vulnId", cves FROM vulnerabilities) p, UNNEST(p.cves) AS u(cve)
+              JOIN cisa_kev k ON k."cveID" = u.cve
+            ), active AS (
               SELECT v.* FROM vulnerabilities v
               WHERE NOT EXISTS (SELECT 1 FROM vulnerability_exceptions e
                 WHERE e."orgId" = v."orgId" AND e."assetId" = v."assetId" AND e."vulnId" = v."vulnId")
@@ -79,8 +86,10 @@ PORTFOLIO_SUMMARY = Card(
               COUNT(*) FILTER (WHERE "cvssV3Severity" = 'High') AS high,
               COUNT(*) FILTER (WHERE "cvssV3Severity" = 'Medium') AS medium,
               COUNT(*) FILTER (WHERE "cvssV3Severity" = 'Low') AS low,
-              COUNT(*) FILTER (WHERE "hasExploits") AS with_exploits
+              COUNT(*) FILTER (WHERE "hasExploits") AS with_exploits,
+              COUNT(*) FILTER (WHERE kev."vulnId" IS NOT NULL) AS kev_findings
             FROM active
+            LEFT JOIN kev ON kev."vulnId" = active."vulnId"
             """,
         ),
     ),
@@ -240,30 +249,36 @@ ORG_COMPARISON = Card(
         "Risk score is the mean asset risk score, because the export has no organisation risk score. "
         "Total assessed assets counts the organisation's assets in the export. Total critical "
         "vulnerabilities counts active critical findings. The two averages divide active findings, "
-        "and active findings with a known exploit, by total assessed assets. The export does not carry "
-        "CISA KEV, so total findings with a known exploit (hasExploits) stand in for total CISA KEV "
-        "findings, as on the portfolio summary. Remediated critical and "
+        "and active findings with a known exploit, by total assessed assets. Total CISA KEV findings and "
+        "CISA KEV per assessed asset match each finding's CVEs to CISA's KEV catalogue, as on the "
+        "portfolio summary. When no catalogue is stored, total findings with a known exploit stand "
+        "in for total CISA KEV findings. Remediated critical and "
         "high vulnerabilities shows reintroduced ones, because remediated counts are not available "
         "per organisation, so an organisation with no reintroduced findings shows 0, not a clean "
-        "record. CISA KEV per assessed asset and exploited in the wild have no stand-in, so those "
-        "columns are left out."
+        "record. Exploited in the wild has no source or stand-in, so that column is left out."
     ),
     per_org=("by_org",),
     queries=(
         (
             "by_org",
             """
-            WITH active AS (
+            WITH kev AS (
+              SELECT DISTINCT p."vulnId"
+              FROM (SELECT DISTINCT "vulnId", cves FROM vulnerabilities) p, UNNEST(p.cves) AS u(cve)
+              JOIN cisa_kev k ON k."cveID" = u.cve
+            ), active AS (
               SELECT v.* FROM vulnerabilities v
               WHERE NOT EXISTS (SELECT 1 FROM vulnerability_exceptions e
                 WHERE e."orgId" = v."orgId" AND e."assetId" = v."assetId" AND e."vulnId" = v."vulnId")
             ), findings AS (
-              SELECT "orgId", COUNT(*) AS active_findings,
+              SELECT active."orgId", COUNT(*) AS active_findings,
+                COUNT(*) FILTER (WHERE kev."vulnId" IS NOT NULL) AS kev_findings,
                 COUNT(*) FILTER (WHERE "cvssV3Severity" = 'Critical') AS critical_vulnerabilities,
                 COUNT(*) FILTER (WHERE "hasExploits") AS with_known_exploits,
                 COUNT(*) FILTER (WHERE "reintroducedTimestamp" IS NOT NULL
                   AND "cvssV3Severity" IN ('Critical', 'High')) AS reintroduced_critical_high
-              FROM active GROUP BY "orgId"
+              FROM active LEFT JOIN kev ON kev."vulnId" = active."vulnId"
+              GROUP BY active."orgId"
             ), risk AS (
               SELECT "orgId", COUNT(*) AS assets, ROUND(AVG("riskScore"), 1) AS risk_score
               FROM assets GROUP BY "orgId"
@@ -273,6 +288,8 @@ ORG_COMPARISON = Card(
               COALESCE(r.assets, 0) AS total_assessed_assets,
               COALESCE(f.critical_vulnerabilities, 0) AS total_critical_vulnerabilities,
               COALESCE(f.with_known_exploits, 0) AS total_known_exploit_findings,
+              COALESCE(f.kev_findings, 0) AS total_kev_findings,
+              ROUND(COALESCE(f.kev_findings, 0) / NULLIF(r.assets, 0), 3) AS kev_per_assessed_asset,
               ROUND(COALESCE(f.active_findings, 0) / NULLIF(r.assets, 0), 2) AS average_vulnerabilities_per_asset,
               ROUND(COALESCE(f.with_known_exploits, 0) / NULLIF(r.assets, 0), 2) AS average_known_exploits_per_asset,
               COALESCE(f.reintroduced_critical_high, 0) AS reintroduced_critical_high
@@ -300,12 +317,46 @@ _EMPTY_EXCEPTIONS = (
 )
 
 
-def _with_empty_exceptions(sql: str) -> str:
-    """Prepend the empty exceptions stand-in to a query that starts with a WITH clause."""
+KEV_MATCH = """kev AS (
+              SELECT DISTINCT p."vulnId"
+              FROM (SELECT DISTINCT "vulnId", cves FROM vulnerabilities) p, UNNEST(p.cves) AS u(cve)
+              JOIN cisa_kev k ON k."cveID" = u.cve
+            ), """
+"""The KEV match as it appears in each query. A finding's CVEs come from its vulnerability's
+content, so matching on vulnId is exact, and each distinct vulnerability is checked once."""
+
+_NO_KEV_MATCH = 'kev AS (SELECT CAST(NULL AS VARCHAR) AS "vulnId" WHERE FALSE), '
+"""Takes the KEV match's place when no catalogue is stored or the export has no cves column."""
+
+KEV_COLUMNS = ("kev_findings", "total_kev_findings", "kev_per_assessed_asset")
+"""Card columns that come from the KEV catalogue. They are None while no catalogue is stored."""
+
+
+def _with_stand_in(sql: str, stand_in: str) -> str:
+    """Prepend an empty stand-in table to a query that starts with a WITH clause."""
     head, body = sql.strip().split(None, 1)
     if head.upper() != "WITH":
         return sql
-    return f"WITH {_EMPTY_EXCEPTIONS}, {body}"
+    return f"WITH {stand_in}, {body}"
+
+
+def _with_empty_exceptions(sql: str) -> str:
+    return _with_stand_in(sql, _EMPTY_EXCEPTIONS)
+
+
+def _kev_catalogue(db: VulnerabilityDatabase) -> Optional[Dict[str, Any]]:
+    """The stored KEV catalogue's version, release date and hash, or None when none is stored."""
+    present = db.query(
+        "SELECT COUNT(*) AS n FROM information_schema.tables "
+        "WHERE table_name IN ('cisa_kev', '_kev_catalogue_metadata')"
+    )
+    if not present or present[0]["n"] != 2:
+        return None
+    rows = db.query(
+        "SELECT catalog_version AS version, date_released AS released, sha256, source, entries "
+        "FROM _kev_catalogue_metadata"
+    )
+    return rows[0] if rows else None
 
 
 def run_card(db: VulnerabilityDatabase, card: str, as_of: Optional[datetime] = None) -> Dict[str, Any]:
@@ -338,13 +389,24 @@ def run_card(db: VulnerabilityDatabase, card: str, as_of: Optional[datetime] = N
     as_of_by_org = _org_data_dates(db, orgs, as_of)
 
     exceptions_loaded = "vulnerability_exceptions" in schema
+    kev = _kev_catalogue(db)
+    cves_listed = any(c["column_name"] == "cves" and c["data_type"].endswith("[]") for c in schema["vulnerabilities"])
+    kev_usable = kev is not None and cves_listed
+    kev_unavailable = None if kev_usable else ("no_catalogue" if kev is None else "no_cves_column")
+    if not kev_usable:
+        kev = None
     spec = CARDS[card]
     age_params = {"org_ids": list(as_of_by_org), "org_as_of": list(as_of_by_org.values())}
     results: Dict[str, List[Dict[str, Any]]] = {}
     for name, sql in spec.queries:
         if not exceptions_loaded and "vulnerability_exceptions" in sql:
             sql = _with_empty_exceptions(sql)
-        results[name] = db.query(sql, age_params if "$org_ids" in sql else None)
+        if not kev_usable and KEV_MATCH in sql:
+            sql = sql.replace(KEV_MATCH, _NO_KEV_MATCH)
+        rows = db.query(sql, age_params if "$org_ids" in sql else None)
+        if kev is None:
+            rows = [{k: (None if k in KEV_COLUMNS else v) for k, v in row.items()} for row in rows]
+        results[name] = rows
 
     return {
         "card": card,
@@ -355,6 +417,8 @@ def run_card(db: VulnerabilityDatabase, card: str, as_of: Optional[datetime] = N
         "as_of_by_org": {org: _utc_iso(when) for org, when in as_of_by_org.items()},
         "orgs": orgs,
         "per_org": list(spec.per_org),
+        "kev_catalogue": kev,
+        "kev_unavailable": kev_unavailable,
         "results": results,
     }
 

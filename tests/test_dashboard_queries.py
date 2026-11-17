@@ -41,10 +41,18 @@ def _write(path, columns):
     return str(path)
 
 
-def _load(tmp_path, with_exceptions=True, rows=VULNS, assets=ASSETS):
+CVES = {"V1": ["CVE-2021-44228"], "V3": ["CVE-2023-4966", "CVE-2020-0001"]}
+"""Each vulnerability's CVE IDs, as the export carries them in the cves column."""
+
+
+def _load(tmp_path, with_exceptions=True, rows=VULNS, assets=ASSETS, with_cves=True):
+    columns = {}
+    if with_cves:
+        columns["cves"] = pa.array([CVES.get(v[2], []) for v in rows], pa.list_(pa.string()))
     vulns = _write(
         tmp_path / "vulns.parquet",
-        {
+        columns
+        | {
             "orgId": [v[0] for v in rows],
             "assetId": [v[1] for v in rows],
             "vulnId": [v[2] for v in rows],
@@ -114,6 +122,7 @@ def test_portfolio_summary_excludes_the_excepted_finding(db):
             "medium": 0,
             "low": 0,
             "with_exploits": 3,
+            "kev_findings": None,
         }
     ]
 
@@ -166,6 +175,8 @@ def test_org_comparison_gives_each_ux_column_per_org(db):
         "total_assessed_assets": 2,
         "total_critical_vulnerabilities": 2,
         "total_known_exploit_findings": 2,
+        "total_kev_findings": None,
+        "kev_per_assessed_asset": None,
         "average_vulnerabilities_per_asset": 1.5,
         "average_known_exploits_per_asset": 1.0,
         "reintroduced_critical_high": 1,
@@ -305,7 +316,13 @@ def test_no_loaded_data_is_refused(tmp_path):
 @pytest.mark.parametrize(
     ("card", "phrases"),
     [
-        ("portfolio_summary", ["with a known exploit (hasExploits) stand in for findings in CISA KEV"]),
+        (
+            "portfolio_summary",
+            [
+                "at least one CVE in CISA's Known Exploited Vulnerabilities catalogue",
+                "a known exploit (hasExploits) stand in",
+            ],
+        ),
         ("org_risk_distribution", ["no 0 to 1000 organisation risk score"]),
         (
             "new_vulnerabilities",
@@ -315,7 +332,11 @@ def test_no_loaded_data_is_refused(tmp_path):
         ("unresolved_age_severity", ["from firstFoundTimestamp, the discovery date"]),
         (
             "org_comparison",
-            ["stand in for total CISA KEV findings", "exploited in the wild have no stand-in", "not a clean record"],
+            [
+                "match each finding's CVEs to CISA's KEV catalogue",
+                "Exploited in the wild has no source",
+                "not a clean record",
+            ],
         ),
     ],
 )
@@ -364,8 +385,72 @@ def test_findings_with_no_org_stay_on_one_comparison_row(tmp_path):
             "total_assessed_assets": 1,
             "total_critical_vulnerabilities": 1,
             "total_known_exploit_findings": 1,
+            "total_kev_findings": None,
+            "kev_per_assessed_asset": None,
             "average_vulnerabilities_per_asset": 1.0,
             "average_known_exploits_per_asset": 1.0,
             "reintroduced_critical_high": 0,
         }
     ]
+
+
+def _store_kev(db, *cve_ids):
+    from src import kev_catalogue
+
+    kev_catalogue.store_catalogue(
+        db.db_path,
+        kev_catalogue.KevCatalogue(
+            version="2026.11.16",
+            released="2026-11-16T15:00:00Z",
+            sha256="a" * 64,
+            source=kev_catalogue.KEV_FEED_URL,
+            entries=tuple(kev_catalogue.KevEntry(c, "2021-12-10", "Known") for c in cve_ids),
+        ),
+    )
+
+
+def test_findings_in_cisa_kev_are_matched_through_their_own_cves(db):
+    """V1 carries CVE-2021-44228, active on ORG-A and ORG-B. V6 also has an exploit but is excepted."""
+    _store_kev(db, "CVE-2021-44228")
+
+    portfolio = run_card(db, "portfolio_summary", as_of=AS_OF)
+    compared = _by_org(run_card(db, "org_comparison", as_of=AS_OF)["results"]["by_org"])
+
+    assert portfolio["results"]["portfolio"][0]["kev_findings"] == 2
+    assert portfolio["kev_catalogue"] == {
+        "version": "2026.11.16",
+        "released": "2026-11-16T15:00:00Z",
+        "sha256": "a" * 64,
+        "source": "https://www.cisa.gov/sites/default/files/feeds/known_exploited_vulnerabilities.json",
+        "entries": 1,
+    }
+    assert (compared["ORG-A"]["total_kev_findings"], compared["ORG-A"]["kev_per_assessed_asset"]) == (1, 0.5)
+    assert (compared["ORG-B"]["total_kev_findings"], compared["ORG-B"]["kev_per_assessed_asset"]) == (1, 1.0)
+
+
+def test_a_finding_with_any_of_its_cves_in_kev_counts_once(db):
+    _store_kev(db, "CVE-2023-4966", "CVE-2020-0001")
+
+    assert run_card(db, "portfolio_summary", as_of=AS_OF)["results"]["portfolio"][0]["kev_findings"] == 1
+
+
+def test_no_catalogue_gives_no_kev_figures_rather_than_zero(db):
+    result = run_card(db, "portfolio_summary", as_of=AS_OF)
+
+    compared = run_card(db, "org_comparison", as_of=AS_OF)
+
+    assert (result["kev_catalogue"], result["kev_unavailable"]) == (None, "no_catalogue")
+    assert result["results"]["portfolio"][0]["kev_findings"] is None
+    assert [row["total_kev_findings"] for row in compared["results"]["by_org"]] == [None, None]
+    assert [row["kev_per_assessed_asset"] for row in compared["results"]["by_org"]] == [None, None]
+
+
+def test_an_export_without_cves_still_builds_every_card_without_kev(tmp_path):
+    database = _load(tmp_path, with_cves=False)
+    try:
+        _store_kev(database, "CVE-2021-44228")
+        for card in CARDS:
+            result = run_card(database, card, as_of=AS_OF)
+            assert (result["kev_catalogue"], result["kev_unavailable"]) == (None, "no_cves_column"), card
+    finally:
+        database.close()

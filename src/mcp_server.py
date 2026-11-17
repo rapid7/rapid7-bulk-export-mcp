@@ -23,7 +23,7 @@ from fastmcp import FastMCP
 from fastmcp.server.auth import restrict_tag
 from mcp.types import ToolAnnotations
 
-from . import orchestrator
+from . import kev_catalogue, orchestrator
 from .artifact_store import download_artifact, storage_configured
 from .auth import ENV_AUDIENCE, ENV_ISSUER, ENV_JWKS_URI, build_auth
 from .config import ORGS_FILE_ENV, key_configured, load_config, load_org_configs, load_org_labels, redact_secret
@@ -251,6 +251,7 @@ def _orchestrator_context() -> orchestrator.OrchestratorContext:
         download_and_load=lambda *a, **kw: _download_and_load_files(*a, **kw),
         in_progress_retry_secs=_IN_PROGRESS_RETRY_SECS,
         config_for_org=lambda org_label: _config_for_org(org_label),
+        refresh_kev=lambda db_path, write_lock: kev_catalogue.refresh_catalogue(db_path, write_lock=write_lock),
     )
 
 
@@ -1177,6 +1178,9 @@ def get_rapid7_dashboard_card(card: str) -> str:
             - org_comparison: risk score, assets, critical findings, and averages per organization.
 
     Returns:
+        KEV columns (kev_findings, total_kev_findings, kev_per_assessed_asset) are null when no
+        CISA KEV catalogue can be used, which kev_unavailable explains. Null means unknown, not 0:
+        say so, and never report it as zero.
         JSON with the card title, its description and definition (state both on the card), each organization's
         data date (as_of_by_org), the oldest of them (as_of), the organizations included, and
         the result rows of each query. In a hosted deployment it also carries data_loaded,
