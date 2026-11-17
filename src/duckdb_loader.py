@@ -502,7 +502,9 @@ class VulnerabilityDatabase:
                         loaded_at = utc_now()
                         self._record_load_metadata(conn, tables_touched, loaded_at)
                         self._record_org_load_metadata(conn, org_ids_by_table, loaded_at, replace=False)
-                        if org_label:
+                        if org_label and found_orgs:
+                            # An empty export names no org and keeps the org's previous rows,
+                            # so it keeps their label too.
                             self._record_org_label(conn, found_orgs, org_label, loaded_at)
                 except Exception:
                     conn.rollback()

@@ -11,6 +11,7 @@ SIL Open Font License, which ships beside the font files in assets/.
 
 import base64
 import math
+from collections import Counter
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 from functools import lru_cache
@@ -573,13 +574,31 @@ def _card_section(card: Dict[str, Any], coverage_complete: bool, colours: Dict[s
     return "\n".join(parts)
 
 
-def _with_labels(card: Dict[str, Any], labels: Dict[str, str]) -> Dict[str, Any]:
-    """The card with each org ID shown as its configured label, where one is stored."""
-    if not labels:
-        return card
+def _org_ids(cards: List[Dict[str, Any]]) -> List[str]:
+    """Every org ID the cards mention, in a stable order."""
+    ids = {str(org) for card in cards for org in card["orgs"]}
+    ids |= {
+        str(row["orgId"])
+        for card in cards
+        for rows in card["results"].values()
+        for row in rows
+        if row.get("orgId") is not None
+    }
+    return sorted(ids)
+
+
+def _display_names(ids: List[str], labels: Dict[str, str]) -> Dict[str, str]:
+    """A unique display name for each org ID: its label, with its ID added if two names would clash."""
+    wanted = {org: labels.get(org, org) for org in ids}
+    counts = Counter(wanted.values())
+    return {org: (f"{name} ({org})" if counts[name] > 1 else name) for org, name in wanted.items()}
+
+
+def _with_labels(card: Dict[str, Any], names: Dict[str, str]) -> Dict[str, Any]:
+    """The card with each org ID shown by its display name."""
 
     def name(org: Any) -> Any:
-        return labels.get(str(org), org)
+        return names.get(str(org), org) if org is not None else org
 
     shown = dict(card)
     shown["orgs"] = [name(org) for org in card["orgs"]]
@@ -607,9 +626,12 @@ def render_report(
         coverage_message: Shown at the top when coverage is incomplete.
     """
     labels = {org: label for card in cards for org, label in (card.get("org_labels") or {}).items()}
-    cards = [_with_labels(card, labels) for card in cards]
+    ids = _org_ids(cards)
+    names = _display_names(ids, labels)
+    # Keyed by org ID, so a renamed label never moves another org's colour.
+    colours = {names[org]: SERIES_COLOURS[i % len(SERIES_COLOURS)] for i, org in enumerate(ids)}
+    cards = [_with_labels(card, names) for card in cards]
     orgs = sorted({str(org) for card in cards for org in card["orgs"]})
-    colours = {org: SERIES_COLOURS[i % len(SERIES_COLOURS)] for i, org in enumerate(orgs)}
     kev = next((card["kev_catalogue"] for card in cards if card.get("kev_catalogue")), None)
     if kev:
         kev_line = (

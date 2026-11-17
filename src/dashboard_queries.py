@@ -417,7 +417,7 @@ def run_card(db: VulnerabilityDatabase, card: str, as_of: Optional[datetime] = N
         "as_of_by_org": {org: _utc_iso(when) for org, when in as_of_by_org.items()},
         "orgs": orgs,
         "per_org": list(spec.per_org),
-        "org_labels": {str(org): label for org, label in db.get_org_labels().items() if org in set(map(str, orgs))},
+        "org_labels": {str(org): label for org, label in db.get_org_labels().items()},
         "kev_catalogue": kev,
         "kev_unavailable": kev_unavailable,
         "results": results,

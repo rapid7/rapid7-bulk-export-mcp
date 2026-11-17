@@ -84,3 +84,68 @@ def test_a_hostile_label_is_escaped(db, tmp_path):
 
     assert "<b x=" not in html
     assert "&lt;b x=&quot;1&quot;&gt;</td>" in html
+
+
+def test_an_empty_export_keeps_the_label_with_the_orgs_rows(db, tmp_path):
+    _load(db, tmp_path, "ORG-A", "fogcutter")
+    empty = Path(tmp_path) / "empty.parquet"
+    pq.write_table(pq.read_table(_org_file(tmp_path, "ORG-A", FOUND)).slice(0, 0), empty)
+
+    db.load_parquet_files_by_prefix({"asset_vulnerability": [str(empty)]}, org_scoped=True, org_label="fogcutter")
+
+    assert db.get_org_labels() == {"ORG-A": "fogcutter"}
+
+
+def test_a_failed_load_does_not_change_the_label(db, tmp_path, monkeypatch):
+    _load(db, tmp_path, "ORG-A", "first")
+
+    def _fail(*args, **kwargs):
+        raise RuntimeError("metadata write failed")
+
+    monkeypatch.setattr(VulnerabilityDatabase, "_record_org_load_metadata", _fail)
+    with pytest.raises(RuntimeError):
+        _load(db, tmp_path, "ORG-A", "second")
+
+    assert db.get_org_labels() == {"ORG-A": "first"}
+
+
+def test_a_label_that_matches_another_orgs_id_does_not_merge_the_two(db, tmp_path):
+    _load(db, tmp_path, "ORG-A", "ORG-B")
+    _load(db, tmp_path, "ORG-B")
+    cards = [run_card(db, name) for name in ("portfolio_summary", "org_comparison")]
+
+    html = render_report(cards, "2026-11-17T17:00:00+00:00", coverage_complete=True)
+
+    assert "2 organisation(s)" in html
+    assert "ORG-B (ORG-A)</td>" in html and "ORG-B (ORG-B)</td>" in html
+
+
+def test_an_org_with_assets_but_no_findings_shows_its_label(db, tmp_path):
+    _load(db, tmp_path, "ORG-A", "fogcutter")
+    db.load_parquet_files_by_prefix({"asset": [_assets(tmp_path, "ORG-C")]}, org_scoped=True, org_label="charlie")
+
+    html = render_report([run_card(db, "org_comparison")], "2026-11-17T17:00:00+00:00", coverage_complete=True)
+
+    assert "charlie</td>" in html and "ORG-C" not in html
+
+
+def test_colours_follow_the_org_not_its_label(db, tmp_path):
+    _load(db, tmp_path, "ORG-A", "zulu")
+    _load(db, tmp_path, "ORG-B", "alpha")
+
+    html = render_report([run_card(db, "org_comparison")], "2026-11-17T17:00:00+00:00", coverage_complete=True)
+
+    assert '<span class="swatch" style="background:#77b8ec"></span>zulu' in html, (
+        "ORG-A sorts first, so it keeps the first colour"
+    )
+
+
+def test_a_hostile_label_is_escaped_on_every_chart_path(db, tmp_path):
+    _load(db, tmp_path, "ORG-A", '<b x="1">')
+    cards = [run_card(db, name) for name in ("org_risk_distribution", "new_vulnerabilities")]
+
+    html = render_report(cards, "2026-11-17T17:00:00+00:00", coverage_complete=True)
+    shown = "&lt;b x=&quot;1&quot;&gt;"
+
+    assert "<b x=" not in html
+    assert f'data-series="{shown}"' in html and f"</i>{shown}</span>" in html and f"<title>{shown}" in html
