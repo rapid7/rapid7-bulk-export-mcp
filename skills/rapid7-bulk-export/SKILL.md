@@ -134,8 +134,12 @@ name it as a stand-in, every time you show it.
 
 Never in the export, in any mode:
 
-- **CISA KEV** (known exploited vulnerabilities). No export carries a KEV flag.
-  `hasExploits` means a known exploit exists, which is not the same thing.
+- **CISA KEV** (known exploited vulnerabilities). No export carries a KEV flag, and
+  `hasExploits` means a known exploit exists, which is not the same thing. In multi-org
+  mode the dashboard cards match findings to CISA's KEV catalogue when one is stored, and
+  name the catalogue's version: use those card figures. When a card's KEV figures are
+  null, or for any question outside the cards, warn that KEV is not available, and never
+  derive it from `hasExploits`.
 - **A 0 to 1000 organization risk score.** `assets.riskScore` is per asset, on a
   different scale, and `vulnerabilities.riskScore` is content level and the same for
   every organization.

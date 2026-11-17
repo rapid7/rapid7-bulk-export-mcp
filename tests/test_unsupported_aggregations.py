@@ -46,3 +46,18 @@ def test_the_skill_keeps_remediation_open_for_a_single_org_setup():
 
     assert "Not available per organization in multi-org mode" in section
     assert "In a single-organization setup the\n  `vulnerability_remediation` table does supply these" in section
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        pytest.param(mcp_server.UNSUPPORTED_AGGREGATIONS_WARNING, id="report command"),
+        pytest.param(_served("tool", "query_rapid7").description, id="query_rapid7 description"),
+        pytest.param(SKILL.read_text(encoding="utf-8"), id="skill"),
+    ],
+)
+def test_kev_comes_only_from_the_cards_never_from_has_exploits(text):
+    """The cards can supply KEV from CISA's catalogue. Anywhere else, KEV must not be guessed."""
+    flat = " ".join(text.split())
+    assert "KEV figures when they are not null" in flat or "use those card figures" in flat
+    assert "never derive KEV from hasExploits" in flat or "never derive it from `hasExploits`" in flat

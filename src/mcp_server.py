@@ -972,6 +972,8 @@ def query_rapid7(sql: str) -> str:
     a 0 to 1000 organization risk score, trends or deltas between snapshots, or, in
     multi-org mode, remediated counts or MTTR per organization. Say what is missing
     before answering, never approximate it in silence, and name any stand-in as a stand-in.
+    For CISA KEV, use the dashboard cards' KEV figures when they are not null, and never
+    derive KEV from hasExploits.
 
     The database contains the following tables loaded from Rapid7 InsightVM
     Bulk Export API Parquet files:
@@ -1210,7 +1212,8 @@ UNSUPPORTED_AGGREGATIONS_WARNING = (
     "If the user asks for a figure the export does not supply, warn them before you answer: "
     "CISA KEV, a 0 to 1000 organization risk score, trends or deltas between snapshots, and "
     "remediated counts or MTTR per organization in multi-org mode. Say what is missing and "
-    "why, never approximate it in silence, and name any stand-in as a stand-in."
+    "why, never approximate it in silence, and name any stand-in as a stand-in. For CISA KEV, "
+    "use the cards' KEV figures when they are not null, and never derive KEV from hasExploits."
 )
 """The same list as the skill's "Figures the export cannot supply" section."""
 
