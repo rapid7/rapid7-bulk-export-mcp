@@ -88,15 +88,17 @@ table.cmp { width: 100%; border-collapse: collapse; font-size: var(--rds-fs-body
 table.cmp th, table.cmp td { padding: 6px 8px; border-bottom: 1px solid var(--rds-divider); text-align: left; }
 table.cmp thead th { font-weight: 500; color: var(--rds-text-secondary); font-size: var(--rds-fs-overline); }
 table.cmp .n { text-align: right; font-variant-numeric: tabular-nums; }
-table.mx { border-spacing: 2px; border-collapse: separate; font-size: var(--rds-fs-body2); }
+table.mx { width: 100%; max-width: 660px; table-layout: fixed; border-spacing: 2px; border-collapse: separate;
+  font-size: var(--rds-fs-body2); font-variant-numeric: tabular-nums; }
 table.mx th { font-weight: 500; color: var(--rds-text-secondary); font-size: var(--rds-fs-overline);
-  text-align: right; padding: 2px 8px; }
-table.mx th.rh { text-align: left; }
-table.mx td { text-align: right; padding: 5px 9px; border-radius: 4px; font-variant-numeric: tabular-nums; }
-table.mx th .range { display: block; font-weight: 400; color: var(--rds-text-tertiary); }
-.headline { margin: 0 0 10px; font-size: var(--rds-fs-subtitle1); }
-.headline strong { font-size: var(--rds-fs-h4); font-weight: 500; margin-left: 4px; }
-table.mx td.rl { background: none; text-align: right; color: var(--rds-text-secondary);
+  text-align: center; padding: 2px; }
+table.mx th.rh { width: 24%; }
+table.mx td { text-align: center; padding: 8px 2px; border-radius: 4px; }
+table.mx th .range { display: block; font-weight: 400; font-size: 10px; color: var(--rds-text-tertiary); }
+.headline { margin: 0 0 10px; font-size: 13px; }
+.headline .lab { color: var(--rds-text-secondary); font-size: 13px; font-weight: 400; margin: 0; }
+.headline strong { font-weight: 500; margin-left: 6px; }
+table.mx td.rl { background: none; text-align: right; padding-right: 8px; color: var(--rds-text-secondary);
   font-size: var(--rds-fs-overline); }
 .legend { display: flex; flex-wrap: wrap; gap: 14px; margin: 6px 0 4px; }
 .legend span { font-size: var(--rds-fs-overline); color: var(--rds-text-secondary);
@@ -373,7 +375,7 @@ def _kev_source(kev: Optional[Dict[str, Any]]) -> str:
 
 def _portfolio_tiles(rows: List[Dict[str, Any]], colours: Dict[str, str], kev: Optional[Dict[str, Any]] = None) -> str:
     if kev:
-        third, notes = ("Total findings in CISA KEV", "kev_findings"), {"kev_findings": _kev_source(kev)}
+        third, notes = ("Total findings in CISA KEV", "kev_findings"), {}
     else:
         third = ("Total findings with a known exploit", "with_exploits")
         notes = {"with_exploits": "Stands in for findings in CISA KEV: no KEV catalogue is stored yet"}

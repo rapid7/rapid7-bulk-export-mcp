@@ -432,7 +432,8 @@ def test_a_stored_catalogue_gives_real_kev_figures_and_names_its_source():
     portfolio = _section(html, "portfolio_summary")
     comparison = _section(html, "org_comparison")
     assert '<div class="k">Total findings in CISA KEV</div><div class="v">3</div>' in portfolio
-    assert "CISA KEV catalogue 2026.11.13, released 2026-11-13 20:24 UTC" in portfolio
+    assert "CISA KEV catalogue 2026.11.13" not in portfolio, "the header strip names the catalogue once"
+    assert "CISA KEV catalogue 2026.11.13, released 2026-11-13 20:24 UTC" in html
     assert "Total CISA KEV findings</th>" in comparison and "CISA KEV per assessed asset</th>" in comparison
     assert "known exploits stand in" not in comparison
     assert "1,781 entries" in html
@@ -525,3 +526,12 @@ def test_findings_with_no_org_are_named_in_the_header():
     card = _card({"by_org": [{"orgId": None, "n": 1}]}, per_org=["by_org"], orgs=[None])
 
     assert "Organisations: (no organisation)." in _html([card])
+
+
+def test_the_age_grid_is_sized_like_the_prototype(cards):
+    html = _html(cards)
+
+    assert "table.mx { width: 100%; max-width: 660px; table-layout: fixed;" in html
+    assert "table.mx th.rh { width: 24%; }" in html
+    assert "table.mx td { text-align: center; padding: 8px 2px;" in html
+    assert ".headline { margin: 0 0 10px; font-size: 13px; }" in html
