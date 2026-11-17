@@ -199,7 +199,7 @@ def test_only_the_three_largest_series_lead_as_the_prototype_draws_them():
 
     svg = line_chart(rows, "week", "n", "orgId", colours, _fmt)
 
-    leads = re.findall(r'<g class="series lead" data-series="([^"]+)"', svg)
+    leads = re.findall(r'<g class="series lead[^"]*" data-series="([^"]+)"', svg)
     assert sorted(leads) == ["ORG-3", "ORG-4", "ORG-5"]
     assert svg.count('data-colour="#9aa5aa"') == 2
 
@@ -218,11 +218,38 @@ def test_a_long_range_hides_markers_and_draws_the_largest_series_on_top():
 
     svg = line_chart(rows, "week", "n", "orgId", {"BIG": "#77b8ec"}, _fmt, series=["ZERO"])
 
-    assert 'class="series lead"' not in svg, "more than 13 weeks, so no series shows markers"
+    assert "marked" not in svg, "more than 26 weeks, so no series shows markers"
     assert svg.index('data-series="ZERO"') < svg.index('data-series="BIG"')
 
 
 def test_a_short_range_marks_the_leading_series():
     rows = [{"week": "2026-08-31", "orgId": "ORG-A", "n": 3}]
 
-    assert 'class="series lead"' in line_chart(rows, "week", "n", "orgId", COLOURS, _fmt)
+    assert 'class="series lead marked"' in line_chart(rows, "week", "n", "orgId", COLOURS, _fmt)
+
+
+def test_only_the_largest_series_keep_their_colour_and_the_rest_draw_grey():
+    rows = [{"week": "2026-08-31", "orgId": f"ORG-{n}", "n": n} for n in range(1, 6)]
+    colours = {f"ORG-{n}": "#77b8ec" for n in range(1, 6)}
+
+    svg = line_chart(rows, "week", "n", "orgId", colours, _fmt)
+
+    assert svg.count('stroke="#5b676c" stroke-width="1.6"') == 2
+    assert svg.count('stroke="#77b8ec" stroke-width="2.4"') == 3
+    assert svg.count('<i style="background:#5b676c"></i>') == 2, "the legend matches the drawn colour"
+
+
+def test_line_charts_have_no_y_axis_title():
+    svg = line_chart(
+        [{"week": "2026-08-31", "orgId": "ORG-A", "n": 1}], "week", "n", "orgId", COLOURS, _fmt, y_title="Count"
+    )
+
+    assert "rotate(-90" not in svg
+    assert 'data-metric="Count"' in svg, "the tooltip still names the metric"
+
+
+def test_the_dot_plot_labels_the_highest_only_when_asked():
+    rows = [{"orgId": "ORG-A", "mean_risk": 100}, {"orgId": "ORG-B", "mean_risk": 300}]
+
+    assert "highest" not in dot_plot(rows, "mean_risk", "orgId", COLOURS, _fmt)
+    assert ">highest 300<" in dot_plot(rows, "mean_risk", "orgId", COLOURS, _fmt, mark_highest=True)

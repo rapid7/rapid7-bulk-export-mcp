@@ -337,7 +337,8 @@ def test_the_report_carries_the_ux_titles_and_copy(cards):
         if description:
             assert description in section, card
     age = _section(html, "unresolved_age_severity")
-    assert '<div class="k">91+ days</div>' in age
+    assert '<p class="headline"><span class="lab">91+ days</span> <strong>' in age
+    assert '<th class="rh"></th>' in age, "no Days active header, as in the prototype"
     assert 'Critical<span class="range">CVSS 9.0-10.0</span>' in age
     assert "light amber (lowest) to dark red (highest)" in age
     comparison = _section(html, "org_comparison")
@@ -386,7 +387,7 @@ def test_weekly_charts_plot_the_last_26_weeks_and_keep_every_week_in_the_figures
     assert 'data-heading="Week of 2026-05-25"' in chart and "2023-06-12" not in chart
     assert "2023-06-12" in figures and "1,400,000" in figures
     assert "Last 26 weeks to the data date" in section
-    assert 'class="series lead"' in chart, "26 points leave room for the prototype's markers"
+    assert 'class="series lead marked"' in chart, "26 points leave room for the prototype's markers"
 
 
 def test_an_unreadable_data_date_plots_every_week():
@@ -466,3 +467,19 @@ def test_a_stored_catalogue_with_no_cves_column_gives_the_right_reason():
 
     assert "has no list of CVE IDs per finding" in html
     assert "No CISA KEV catalogue is stored yet" not in html
+
+
+def test_risk_scores_show_as_whole_numbers():
+    rows = [{"orgId": "ORG-A", "risk_score": 645050.8, "total_assessed_assets": 2650}]
+
+    html = _html([_card({"by_org": rows}, per_org=["by_org"], card="org_comparison")])
+
+    assert '<td class="n">645,051</td>' in html
+    assert "645,050.8" not in html
+
+
+@pytest.mark.parametrize(("complete", "marked"), [(True, True), (False, False)])
+def test_the_highest_risk_label_appears_only_with_complete_coverage(cards, complete, marked):
+    section = _section(_html(cards, complete=complete), "org_risk_distribution")
+
+    assert (">highest " in section) is marked

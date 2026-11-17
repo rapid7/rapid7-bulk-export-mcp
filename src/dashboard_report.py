@@ -93,7 +93,10 @@ table.mx th { font-weight: 500; color: var(--rds-text-secondary); font-size: var
 table.mx th.rh { text-align: left; }
 table.mx td { text-align: right; padding: 5px 9px; border-radius: 4px; font-variant-numeric: tabular-nums; }
 table.mx th .range { display: block; font-weight: 400; color: var(--rds-text-tertiary); }
-table.mx td.rl { background: var(--rds-bg-subtle); text-align: left; font-size: var(--rds-fs-overline); }
+.headline { margin: 0 0 10px; font-size: var(--rds-fs-subtitle1); }
+.headline strong { font-size: var(--rds-fs-h4); font-weight: 500; margin-left: 4px; }
+table.mx td.rl { background: none; text-align: right; color: var(--rds-text-secondary);
+  font-size: var(--rds-fs-overline); }
 .legend { display: flex; flex-wrap: wrap; gap: 14px; margin: 6px 0 4px; }
 .legend span { font-size: var(--rds-fs-overline); color: var(--rds-text-secondary);
   display: inline-flex; align-items: center; gap: 5px; }
@@ -102,12 +105,12 @@ details { margin-top: 6px; }
 summary { font-size: var(--rds-fs-overline); color: var(--rds-text-secondary); cursor: pointer; }
 .chart { position: relative; }
 .chart .pt { cursor: pointer; }
-.chart .series:not(.lead) .mk { opacity: 0; }
+.chart .series:not(.marked) .mk { opacity: 0; }
 .chart .series:not(.lead) .ln { opacity: 0.9; }
 .chart.focusing .ln { opacity: 0.15; }
 .chart.focusing .mk { opacity: 0; }
 .chart.focusing .series.focus .ln { opacity: 1; stroke-width: 3.2; }
-.chart.focusing .series.focus.lead .mk { opacity: 1; }
+.chart.focusing .series.focus.marked .mk { opacity: 1; }
 .chart .mk.on { opacity: 1; }
 .chart .legend span { cursor: pointer; }
 .chart.focusing .legend span:not(.focus) { opacity: 0.4; }
@@ -264,6 +267,14 @@ def _decimal_text(value: Any) -> str:
     return text.rstrip("0").rstrip(".") if "." in text else text
 
 
+_WHOLE_NUMBERS = {"risk_score", "mean_risk", "median_risk", "max_risk", "median_of_org_means"}
+"""Risk scores shown as whole numbers, as the prototype shows them."""
+
+
+def _whole(value: Any) -> Any:
+    return int(Decimal(str(value)).to_integral_value()) if _is_number(value) and math.isfinite(float(value)) else value
+
+
 def _text(value: Any) -> str:
     if value is None:
         return ""
@@ -315,7 +326,8 @@ def _table(rows: List[Dict[str, Any]], colours: Dict[str, str]) -> str:
             if c == "orgId":
                 cells.append(_org_cell(row.get(c), colours))
             elif c in numeric:
-                cells.append(f'<td class="n">{_text(row.get(c))}</td>')
+                value = _whole(row.get(c)) if c in _WHOLE_NUMBERS else row.get(c)
+                cells.append(f'<td class="n">{_text(value)}</td>')
             else:
                 cells.append(f"<td>{_text(row.get(c))}</td>")
         body.append("<tr>" + "".join(cells) + "</tr>")
@@ -414,7 +426,7 @@ def _heat_table(rows: List[Dict[str, Any]], colours: Dict[str, str]) -> str:
     headline = ""
     if oldest is not None:
         total = sum(int(v) for c in severities if _is_number(v := oldest.get(c)))
-        headline = _tiles([("91+ days", total, "")])
+        headline = f'<p class="headline"><span class="lab">91+ days</span> <strong>{_text(total)}</strong></p>'
     head = "".join(
         f'<th>{escape(_label(c))}<span class="range">CVSS {_SEVERITY_RANGES.get(c, "")}</span></th>'
         if c in _SEVERITY_RANGES
@@ -426,7 +438,7 @@ def _heat_table(rows: List[Dict[str, Any]], colours: Dict[str, str]) -> str:
         for r in rows
     )
     return (
-        f'{headline}<table class="mx"><thead><tr><th class="rh">Days active</th>{head}</tr></thead>'
+        f'{headline}<table class="mx"><thead><tr><th class="rh"></th>{head}</tr></thead>'
         f"<tbody>{body}</tbody></table>"
         '<p class="inlinenote">Cell shade encodes magnitude, light amber (lowest) to dark red (highest).</p>'
     )
@@ -498,7 +510,9 @@ def _risk_distribution(rows: List[Dict[str, Any]], median: Any, colours: Dict[st
     """Dots per organisation, with the median on the chart when it covers every organisation."""
     if not rows:
         return ['<p class="hint">No rows.</p>']
-    chart = f'<div class="chart">{dot_plot(rows, "mean_risk", "orgId", colours, _number_text, median=median)}</div>'
+    whole = lambda v: _number_text(_whole(v))  # noqa: E731
+    plot = dot_plot(rows, "mean_risk", "orgId", colours, whole, median=median, mark_highest=median is not None)
+    chart = f'<div class="chart">{plot}</div>'
     return [chart, _by_organisation(_table(rows, colours), open_=False)]
 
 

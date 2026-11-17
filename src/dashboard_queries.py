@@ -99,7 +99,7 @@ ORG_RISK_DISTRIBUTION = Card(
     title="Organisation risk distribution",
     description=(
         "One mark per organisation on a shared scale, with the median highlighted. "
-        "Hover over a mark to see the organisation and its risk score."
+        "Hover or click an organisation to see its name and risk score."
     ),
     definition=(
         "Mean, median, and maximum assets.riskScore over every asset in each organisation, whether "
@@ -135,7 +135,7 @@ NEW_VULNERABILITIES = Card(
     description=(
         "Count of critical and high vulnerabilities first detected or reintroduced in each week. "
         "One series per organisation. Most group together and outliers stand out. "
-        "Hover over a point to see the organisation and its value."
+        "Hover or click a point to see the organisation and its value."
     ),
     definition=(
         "Active critical and high findings by the week each became active: the later of "
@@ -168,7 +168,7 @@ REMEDIATED_VULNERABILITIES = Card(
     description=(
         "Remediated counts are not available per organisation, so this shows critical and high "
         "vulnerabilities reintroduced in each week: each one was remediated and later came back. "
-        "One series per organisation. Hover over a point to see the organisation and its value."
+        "One series per organisation. Hover or click a point to see the organisation and its value."
     ),
     definition=(
         "Active critical and high findings by the week of reintroducedTimestamp. Weeks start on "

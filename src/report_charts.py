@@ -22,6 +22,9 @@ _MAX_X_LABELS = 8
 _LEADS = 3
 _MARKED_PERIODS = 26
 _MUTED = "#9aa5aa"
+_MUTED_LINE = "#5b676c"
+"""The prototype draws every series but the three largest as thin grey lines."""
+_HIGHEST = "#ff903d"
 _MAX_VALUE = 1e300
 _SVG_OPEN = '<svg viewBox="0 0 {w} {h}" width="100%" role="img" xmlns="http://www.w3.org/2000/svg" font-family="{f}">'
 
@@ -105,9 +108,10 @@ def nice_max(value: float) -> float:
     return 10 * power
 
 
-def _legend(names: Sequence[str], colours: Dict[str, str]) -> str:
+def _legend(names: Sequence[str], colours: Dict[str, str], muted: Sequence[str] = ()) -> str:
     items = "".join(
-        f'<span data-series="{escape(name)}"><i style="background:{colours.get(name, _FALLBACK)}"></i>'
+        f'<span data-series="{escape(name)}">'
+        f'<i style="background:{_MUTED_LINE if name in muted else colours.get(name, _FALLBACK)}"></i>'
         f"{escape(name)}</span>"
         for name in names
     )
@@ -128,11 +132,12 @@ def _y_axis(top: float, fmt: Formatter, title: str, left: int, right: int, y0: i
         )
     parts.append(f'<line x1="{left}" y1="{y0}" x2="{left}" y2="{y1}" stroke="{_AXIS}" stroke-width="1"/>')
     parts.append(f'<line x1="{left}" y1="{y1}" x2="{right}" y2="{y1}" stroke="{_AXIS}" stroke-width="1"/>')
-    mid = (y0 + y1) / 2
-    parts.append(
-        f'<text x="12" y="{mid:.2f}" font-size="11" fill="{_LABEL}" text-anchor="middle" '
-        f'transform="rotate(-90 12 {mid:.2f})">{escape(title)}</text>'
-    )
+    if title:
+        mid = (y0 + y1) / 2
+        parts.append(
+            f'<text x="12" y="{mid:.2f}" font-size="11" fill="{_LABEL}" text-anchor="middle" '
+            f'transform="rotate(-90 12 {mid:.2f})">{escape(title)}</text>'
+        )
     return parts
 
 
@@ -177,7 +182,7 @@ def line_chart(
         return left + step * i if len(xs) > 1 else (left + right) / 2
 
     parts = [_SVG_OPEN.format(w=1000, h=270, f=_FONT)]
-    parts += _y_axis(top, fmt, y_title or _label_text(y_key), left, right, y0, y1)
+    parts += _y_axis(top, fmt, "", left, right, y0, y1)
     every = max(1, math.ceil(len(xs) / _MAX_X_LABELS))
     for i, x in enumerate(xs):
         if i % every == 0:
@@ -194,11 +199,13 @@ def line_chart(
         lead = name in leads
         joined = " ".join(f"{cx:.2f},{cy:.2f}" for cx, cy in coords)
         parts.append(
-            f'<g class="series{" lead" if lead and marked else ""}" data-series="{escape(name)}" '
+            f'<g class="series{" lead" if lead else ""}{" marked" if lead and marked else ""}" '
+            f'data-series="{escape(name)}" '
             f'data-colour="{colour if lead else _MUTED}">'
         )
         parts.append(
-            f'<polyline points="{joined}" fill="none" stroke="{colour}" stroke-width="{2.4 if lead else 1.6}" '
+            f'<polyline points="{joined}" fill="none" stroke="{colour if lead else _MUTED_LINE}" '
+            f'stroke-width="{2.4 if lead else 1.6}" '
             'class="ln"/>'
         )
         for (cx, cy), x in zip(coords, xs):
@@ -212,7 +219,7 @@ def line_chart(
             )
         parts.append("</g>")
     parts.append("</svg>")
-    return "".join(parts) + _legend(names, colours)
+    return "".join(parts) + _legend(names, colours, muted=[n for n in names if n not in leads])
 
 
 def dot_plot(
@@ -222,12 +229,15 @@ def dot_plot(
     colours: Dict[str, str],
     fmt: Formatter,
     median: Any = None,
+    mark_highest: bool = False,
 ) -> str:
     """One dot per row on a single axis from the lowest to the highest value.
 
     Args:
         median: Drawn as a dashed marker when given. It combines organisations, so pass it
             only when every organisation is present.
+        mark_highest: Label the highest dot, as the prototype does. It compares organisations,
+            so pass it only when every organisation is present.
     """
     measured = [(str(r.get(label_key)), _maybe_value(r.get(value_key))) for r in rows]
     values = [(label, v) for label, v in measured if v is not None]
@@ -242,10 +252,13 @@ def dot_plot(
 
     parts = [_SVG_OPEN.format(w=300, h=96, f=_FONT).replace('width="100%"', 'width="100%" style="max-width:660px"')]
     parts.append(f'<line x1="{left}" y1="{axis_y}" x2="{right}" y2="{axis_y}" stroke="{_AXIS}" stroke-width="0.7"/>')
+    leads = _largest({label: {"v": v} for label, v in values}, _LEADS)
     for label, v in values:
+        colour = colours.get(label, _FALLBACK) if label in leads else _MUTED
         parts.append(
-            f'<g class="series lead" data-series="{escape(label)}" data-colour="{colours.get(label, _FALLBACK)}">'
-            f'<circle cx="{x_at(v):.2f}" cy="{dot_y}" r="4" fill="{colours.get(label, _FALLBACK)}" opacity="0.85" '
+            f'<g class="series{" lead" if label in leads else ""}" data-series="{escape(label)}" '
+            f'data-colour="{colour}">'
+            f'<circle cx="{x_at(v):.2f}" cy="{dot_y}" r="4" fill="{colour}" opacity="0.85" '
             f'class="pt" data-heading="Organisation risk distribution" data-metric="Risk score" '
             f'data-value="{escape(fmt(v))}">'
             f"<title>{escape(label)}: {escape(fmt(v))}</title></circle></g>"
@@ -260,13 +273,20 @@ def dot_plot(
         parts.append(
             f'<text x="{mx + 3:.2f}" y="37" font-size="6" fill="{_MEDIAN}">median {escape(fmt(median_value))}</text>'
         )
+    if mark_highest and len(values) > 1:
+        top_label, top_value = max(values, key=lambda item: item[1])
+        parts.append(
+            f'<text x="{x_at(top_value):.2f}" y="52" font-size="6" fill="{_HIGHEST}" text-anchor="end">'
+            f"highest {escape(fmt(top_value))}</text>"
+        )
     ticks = [low] if high == low else [low, _tick((low + high) / 2), high]
     for v in ticks:
         parts.append(
             f'<text x="{x_at(v):.2f}" y="88" font-size="6" fill="{_LABEL}" text-anchor="middle">{escape(fmt(v))}</text>'
         )
     parts.append("</svg>")
-    return "".join(parts) + _legend([label for label, _ in values], colours)
+    names = [label for label, _ in values]
+    return "".join(parts) + _legend(names, colours, muted=[name for name in names if name not in leads])
 
 
 def _label_text(key: str) -> str:
