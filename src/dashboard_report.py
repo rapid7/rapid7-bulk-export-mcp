@@ -559,6 +559,24 @@ def _card_section(card: Dict[str, Any], coverage_complete: bool, colours: Dict[s
     return "\n".join(parts)
 
 
+def _with_labels(card: Dict[str, Any], labels: Dict[str, str]) -> Dict[str, Any]:
+    """The card with each org ID shown as its configured label, where one is stored."""
+    if not labels:
+        return card
+
+    def name(org: Any) -> Any:
+        return labels.get(str(org), org)
+
+    shown = dict(card)
+    shown["orgs"] = [name(org) for org in card["orgs"]]
+    shown["as_of_by_org"] = {str(name(org)): when for org, when in card.get("as_of_by_org", {}).items()}
+    shown["results"] = {
+        query: [{k: (name(v) if k == "orgId" else v) for k, v in row.items()} for row in rows]
+        for query, rows in card["results"].items()
+    }
+    return shown
+
+
 def render_report(
     cards: List[Dict[str, Any]],
     generated_at: str,
@@ -574,6 +592,8 @@ def render_report(
             out every result that combines organisations.
         coverage_message: Shown at the top when coverage is incomplete.
     """
+    labels = {org: label for card in cards for org, label in (card.get("org_labels") or {}).items()}
+    cards = [_with_labels(card, labels) for card in cards]
     orgs = sorted({str(org) for card in cards for org in card["orgs"]})
     colours = {org: SERIES_COLOURS[i % len(SERIES_COLOURS)] for i, org in enumerate(orgs)}
     kev = next((card["kev_catalogue"] for card in cards if card.get("kev_catalogue")), None)

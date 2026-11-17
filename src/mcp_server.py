@@ -1178,6 +1178,8 @@ def get_rapid7_dashboard_card(card: str) -> str:
             - org_comparison: risk score, assets, critical findings, and averages per organization.
 
     Returns:
+        org_labels maps each orgId to the label from the org list, where a multi-org load stored
+        one. Name organizations by those labels.
         KEV columns (kev_findings, total_kev_findings, kev_per_assessed_asset) are null when no
         CISA KEV catalogue can be used, which kev_unavailable explains. Null means unknown, not 0:
         say so, and never report it as zero.
