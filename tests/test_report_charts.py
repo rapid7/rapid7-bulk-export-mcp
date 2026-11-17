@@ -201,7 +201,7 @@ def test_only_the_three_largest_series_lead_as_the_prototype_draws_them():
 
     leads = re.findall(r'<g class="series lead[^"]*" data-series="([^"]+)"', svg)
     assert sorted(leads) == ["ORG-3", "ORG-4", "ORG-5"]
-    assert svg.count('data-colour="#9aa5aa"') == 2
+    assert svg.count('data-colour="#5b676c"') == 2, "the tooltip dot matches the grey line"
 
 
 def test_each_hover_target_carries_its_tooltip_parts_escaped():
@@ -253,3 +253,22 @@ def test_the_dot_plot_labels_the_highest_only_when_asked():
 
     assert "highest" not in dot_plot(rows, "mean_risk", "orgId", COLOURS, _fmt)
     assert ">highest 300<" in dot_plot(rows, "mean_risk", "orgId", COLOURS, _fmt, mark_highest=True)
+
+
+def test_muted_dots_draw_tooltip_and_legend_in_one_grey():
+    rows = [{"orgId": f"ORG-{n}", "mean_risk": n} for n in range(1, 6)]
+    colours = {f"ORG-{n}": "#77b8ec" for n in range(1, 6)}
+
+    svg = dot_plot(rows, "mean_risk", "orgId", colours, _fmt)
+
+    assert svg.count('fill="#5b676c"') == 2
+    assert svg.count('data-colour="#5b676c"') == 2
+    assert svg.count('<i style="background:#5b676c"></i>') == 2
+
+
+def test_the_dot_plot_fills_the_card_width():
+    svg = dot_plot(
+        [{"orgId": "ORG-A", "mean_risk": 1}, {"orgId": "ORG-B", "mean_risk": 9}], "mean_risk", "orgId", COLOURS, _fmt
+    )
+
+    assert 'viewBox="0 0 1000 140"' in svg and "max-width" not in svg

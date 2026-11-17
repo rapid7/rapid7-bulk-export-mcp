@@ -149,3 +149,11 @@ def test_a_hostile_label_is_escaped_on_every_chart_path(db, tmp_path):
 
     assert "<b x=" not in html
     assert f'data-series="{shown}"' in html and f"</i>{shown}</span>" in html and f"<title>{shown}" in html
+
+
+def test_display_names_stay_unique_when_a_label_copies_an_added_suffix():
+    from src.dashboard_report import _display_names
+
+    names = _display_names(["o1", "o2", "o3"], {"o1": "X", "o3": "X", "o2": "X (o3)"})
+
+    assert len(set(names.values())) == 3

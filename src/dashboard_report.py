@@ -13,7 +13,7 @@ import base64
 import math
 from collections import Counter
 from datetime import datetime, timedelta, timezone
-from decimal import Decimal
+from decimal import ROUND_HALF_UP, Decimal
 from functools import lru_cache
 from html import escape
 from pathlib import Path
@@ -274,7 +274,10 @@ _WHOLE_NUMBERS = {"risk_score", "mean_risk", "median_risk", "max_risk", "median_
 
 
 def _whole(value: Any) -> Any:
-    return int(Decimal(str(value)).to_integral_value()) if _is_number(value) and math.isfinite(float(value)) else value
+    """Round half up, as readers expect. Scores arrive rounded to one decimal, so an exact .x5 can be off by one."""
+    if not _is_number(value) or not math.isfinite(float(value)):
+        return value
+    return int(Decimal(str(value)).quantize(Decimal(1), rounding=ROUND_HALF_UP))
 
 
 def _text(value: Any) -> str:
@@ -508,12 +511,14 @@ _WEEKLY = {
 }
 
 
-def _risk_distribution(rows: List[Dict[str, Any]], median: Any, colours: Dict[str, str]) -> List[str]:
+def _risk_distribution(
+    rows: List[Dict[str, Any]], median: Any, colours: Dict[str, str], coverage_complete: bool
+) -> List[str]:
     """Dots per organisation, with the median on the chart when it covers every organisation."""
     if not rows:
         return ['<p class="hint">No rows.</p>']
     whole = lambda v: _number_text(_whole(v))  # noqa: E731
-    plot = dot_plot(rows, "mean_risk", "orgId", colours, whole, median=median, mark_highest=median is not None)
+    plot = dot_plot(rows, "mean_risk", "orgId", colours, whole, median=median, mark_highest=coverage_complete)
     chart = f'<div class="chart">{plot}</div>'
     return [chart, _by_organisation(_table(rows, colours), open_=False)]
 
@@ -542,7 +547,7 @@ def _card_body(card: Dict[str, Any], coverage_complete: bool, colours: Dict[str,
             median_rows = results.get("portfolio_median") or []
             usable = coverage_complete or "portfolio_median" in per_org
             median = median_rows[0].get("median_of_org_means") if median_rows and usable else None
-            parts += _risk_distribution(rows, median, colours)
+            parts += _risk_distribution(rows, median, colours, coverage_complete)
         elif key in _SUPPORTING:
             parts.append(_by_organisation(_table(rows, colours), open_=not coverage_complete))
         else:
@@ -602,10 +607,15 @@ def _org_ids(cards: List[Dict[str, Any]]) -> List[str]:
 
 
 def _display_names(ids: List[str], labels: Dict[str, str]) -> Dict[str, str]:
-    """A unique display name for each org ID: its label, with its ID added if two names would clash."""
-    wanted = {org: labels.get(org, org) for org in ids}
-    counts = Counter(wanted.values())
-    return {org: (f"{name} ({org})" if counts[name] > 1 else name) for org, name in wanted.items()}
+    """A unique display name for each org ID: its label, with its ID added while names clash."""
+    names = {org: labels.get(org, org) for org in ids}
+    for _ in range(3):
+        counts = Counter(names.values())
+        if all(count == 1 for count in counts.values()):
+            return names
+        names = {org: (f"{name} ({org})" if counts[name] > 1 else name) for org, name in names.items()}
+    counts = Counter(names.values())
+    return {org: (org if counts[name] > 1 else name) for org, name in names.items()}
 
 
 def _with_labels(card: Dict[str, Any], names: Dict[str, str]) -> Dict[str, Any]:
@@ -677,7 +687,8 @@ def render_report(
         "<h1>Multi-Org Exposure Dashboard</h1>",
         f'<p class="sub">Generated {escape(_when(generated_at))} &middot; {len(orgs)} organisation(s) &middot; '
         "every figure comes from a fixed, tested query</p>",
-        f'<p class="sub">Organisations: {escape(", ".join(orgs))}. Data date: {escape(_data_dates(cards))}.</p>',
+        f'<p class="sub">Organisations: {escape(", ".join("(no organisation)" if o == "None" else o for o in orgs))}. '
+        f"Data date: {escape(_data_dates(cards))}.</p>",
         coverage,
         kev_line,
     ]

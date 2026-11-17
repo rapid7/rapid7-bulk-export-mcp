@@ -21,7 +21,6 @@ _MAX_PERIODS = 1000
 _MAX_X_LABELS = 8
 _LEADS = 3
 _MARKED_PERIODS = 26
-_MUTED = "#9aa5aa"
 _MUTED_LINE = "#5b676c"
 """The prototype draws every series but the three largest as thin grey lines."""
 _HIGHEST = "#ff903d"
@@ -201,7 +200,7 @@ def line_chart(
         parts.append(
             f'<g class="series{" lead" if lead else ""}{" marked" if lead and marked else ""}" '
             f'data-series="{escape(name)}" '
-            f'data-colour="{colour if lead else _MUTED}">'
+            f'data-colour="{colour if lead else _MUTED_LINE}">'
         )
         parts.append(
             f'<polyline points="{joined}" fill="none" stroke="{colour if lead else _MUTED_LINE}" '
@@ -245,20 +244,20 @@ def dot_plot(
         return ""
     low, high = min(v for _, v in values), max(v for _, v in values)
     span = high - low or 1.0
-    left, right, axis_y, dot_y = 30, 270, 76, 62
+    left, right, axis_y, dot_y = 40, 960, 110, 90
 
     def x_at(v: float) -> float:
         return (left + right) / 2 if high == low else left + (right - left) * (v - low) / span
 
-    parts = [_SVG_OPEN.format(w=300, h=96, f=_FONT).replace('width="100%"', 'width="100%" style="max-width:660px"')]
+    parts = [_SVG_OPEN.format(w=1000, h=140, f=_FONT)]
     parts.append(f'<line x1="{left}" y1="{axis_y}" x2="{right}" y2="{axis_y}" stroke="{_AXIS}" stroke-width="0.7"/>')
     leads = _largest({label: {"v": v} for label, v in values}, _LEADS)
     for label, v in values:
-        colour = colours.get(label, _FALLBACK) if label in leads else _MUTED
+        colour = colours.get(label, _FALLBACK) if label in leads else _MUTED_LINE
         parts.append(
             f'<g class="series{" lead" if label in leads else ""}" data-series="{escape(label)}" '
             f'data-colour="{colour}">'
-            f'<circle cx="{x_at(v):.2f}" cy="{dot_y}" r="4" fill="{colour}" opacity="0.85" '
+            f'<circle cx="{x_at(v):.2f}" cy="{dot_y}" r="6" fill="{colour}" opacity="0.85" '
             f'class="pt" data-heading="Organisation risk distribution" data-metric="Risk score" '
             f'data-value="{escape(fmt(v))}">'
             f"<title>{escape(label)}: {escape(fmt(v))}</title></circle></g>"
@@ -267,22 +266,24 @@ def dot_plot(
     if median_value is not None:
         mx = x_at(min(max(median_value, low), high))
         parts.append(
-            f'<line x1="{mx:.2f}" y1="40" x2="{mx:.2f}" y2="{axis_y}" stroke="{_MEDIAN}" stroke-width="1" '
+            f'<line x1="{mx:.2f}" y1="50" x2="{mx:.2f}" y2="{axis_y}" stroke="{_MEDIAN}" stroke-width="1" '
             'stroke-dasharray="3 3"/>'
         )
         parts.append(
-            f'<text x="{mx + 3:.2f}" y="37" font-size="6" fill="{_MEDIAN}">median {escape(fmt(median_value))}</text>'
+            f'<text x="{mx:.2f}" y="42" font-size="11" fill="{_MEDIAN}" text-anchor="middle">'
+            f"median {escape(fmt(median_value))}</text>"
         )
     if mark_highest and len(values) > 1:
         top_label, top_value = max(values, key=lambda item: item[1])
         parts.append(
-            f'<text x="{x_at(top_value):.2f}" y="52" font-size="6" fill="{_HIGHEST}" text-anchor="end">'
+            f'<text x="{x_at(top_value):.2f}" y="72" font-size="11" fill="{_HIGHEST}" text-anchor="end">'
             f"highest {escape(fmt(top_value))}</text>"
         )
     ticks = [low] if high == low else [low, _tick((low + high) / 2), high]
     for v in ticks:
         parts.append(
-            f'<text x="{x_at(v):.2f}" y="88" font-size="6" fill="{_LABEL}" text-anchor="middle">{escape(fmt(v))}</text>'
+            f'<text x="{x_at(v):.2f}" y="{axis_y + 20}" font-size="11" fill="{_LABEL}" text-anchor="middle">'
+            f"{escape(fmt(v))}</text>"
         )
     parts.append("</svg>")
     names = [label for label, _ in values]

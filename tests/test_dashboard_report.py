@@ -500,3 +500,28 @@ def test_each_definition_sits_in_a_collapsed_about_this_card(cards):
         about = section.split('<details class="about"><summary>About this card</summary>', 1)[1]
         assert card["definition"].split(".")[0] in about, card["card"]
     assert '<details class="about" open' not in html
+
+
+@pytest.mark.parametrize(("score", "shown"), [(72.5, "73"), (73.5, "74"), (645050.8, "645,051"), (-0.5, "-1")])
+def test_risk_scores_round_half_up(score, shown):
+    rows = [{"orgId": "ORG-A", "risk_score": score}]
+
+    html = _html([_card({"by_org": rows}, per_org=["by_org"], card="org_comparison")])
+
+    assert f'<td class="n">{shown}</td>' in html
+
+
+def test_a_null_median_does_not_hide_the_highest_label_with_complete_coverage():
+    card = _card(
+        {"by_org": [{"orgId": "A", "mean_risk": 1.0}, {"orgId": "B", "mean_risk": 9.0}], "portfolio_median": []},
+        per_org=["by_org"],
+        card="org_risk_distribution",
+    )
+
+    assert ">highest 9<" in _html([card])
+
+
+def test_findings_with_no_org_are_named_in_the_header():
+    card = _card({"by_org": [{"orgId": None, "n": 1}]}, per_org=["by_org"], orgs=[None])
+
+    assert "Organisations: (no organisation)." in _html([card])
