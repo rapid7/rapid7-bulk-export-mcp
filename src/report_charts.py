@@ -144,7 +144,7 @@ def _y_axis(top: float, fmt: Formatter, title: str, left: int, right: int, y0: i
                 f'<line x1="{left}" y1="{y:.2f}" x2="{right}" y2="{y:.2f}" stroke="{_GRID}" stroke-width="1"/>'
             )
         parts.append(
-            f'<text x="{left - 6}" y="{y + 3:.2f}" font-size="11" fill="{_LABEL}" text-anchor="end">'
+            f'<text x="{left - 6}" y="{y + 3:.2f}" font-size="11" fill="{_LABEL}" text-anchor="end" class="ytick">'
             f"{escape(fmt(_tick(top * i / 4)))}</text>"
         )
     parts.append(f'<line x1="{left}" y1="{y0}" x2="{left}" y2="{y1}" stroke="{_AXIS}" stroke-width="1"/>')
@@ -195,6 +195,7 @@ def line_chart(
     plotted = [v for series in points.values() for v in series.values()]
     peak = max(plotted, default=0.0)
     top = count_max(peak) if all(float(v).is_integer() for v in plotted) else nice_max(peak)
+
     left, right, y0, y1 = 90, 980, 20, 230
     step = (right - left) / max(1, len(xs) - 1)
 
@@ -202,6 +203,8 @@ def line_chart(
         return left + step * i if len(xs) > 1 else (left + right) / 2
 
     parts = [_SVG_OPEN.format(w=1000, h=270, f=_FONT)]
+    counts = all(float(v).is_integer() for v in plotted)
+    parts[0] = parts[0][:-1] + f' data-top="{top:.15g}" data-y0="{y0}" data-y1="{y1}" data-counts="{int(counts)}">'
     parts += _y_axis(top, fmt, "", left, right, y0, y1)
     every = max(1, math.ceil(len(xs) / _MAX_X_LABELS))
     for i, x in enumerate(xs):
@@ -234,7 +237,8 @@ def line_chart(
             parts.append(f'<circle cx="{cx:.2f}" cy="{cy:.2f}" r="4" fill="{colour}" class="mk"/>')
             parts.append(
                 f'<circle cx="{cx:.2f}" cy="{cy:.2f}" r="10" fill="transparent" class="pt" '
-                f'data-heading="{escape(heading)}" data-metric="{escape(metric)}" data-value="{escape(value)}">'
+                f'data-heading="{escape(heading)}" data-metric="{escape(metric)}" data-value="{escape(value)}" '
+                f'data-y="{points[name].get(x, 0.0):.15g}">'
                 f"<title>{escape(f'{name} {x}: {value}')}</title></circle>"
             )
         parts.append("</g>")

@@ -299,3 +299,13 @@ def test_an_all_zero_count_chart_has_no_fractional_ticks():
     svg = line_chart(rows, "week", "n", "org", COLOURS, _fmt)
 
     assert ">0.25<" not in svg and ">0.5<" not in svg and ">4<" in svg
+
+
+def test_a_line_chart_carries_what_the_script_needs_to_rescale_it():
+    rows = [{"week": "2026-11-02", "n": 1234567, "org": "A"}, {"week": "2026-11-09", "n": 3, "org": "B"}]
+
+    svg = line_chart(rows, "week", "n", "org", COLOURS, _fmt)
+
+    assert 'data-top="2000000" data-y0="20" data-y1="230" data-counts="1"' in svg
+    assert 'data-y="1234567"' in svg, "raw values keep full precision"
+    assert svg.count('class="ytick"') == 5

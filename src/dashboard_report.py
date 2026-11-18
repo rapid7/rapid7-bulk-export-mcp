@@ -150,6 +150,52 @@ _SCRIPT = """
     hovered.set(chart, name);
     render(chart);
   }
+  function axisTop(peak, counts) {
+    var steps = [1, 2, 2.5, 5, 10];
+    var raw = counts ? Math.max(peak, 0) / 4 : peak;
+    if (counts && raw <= 1) { return 4; }
+    if (!counts && raw <= 0) { return 1; }
+    var power = Math.pow(10, Math.floor(Math.log10(raw)));
+    for (var i = 0; i < steps.length; i++) {
+      var size = steps[i] * power;
+      if ((!counts || Number.isInteger(size)) && raw <= size) { return counts ? 4 * size : size; }
+    }
+    return counts ? 40 * power : 10 * power;
+  }
+  function rescale(chart) {
+    var svg = chart.querySelector("svg[data-top]");
+    if (!svg) { return; }
+    var names = picked(chart);
+    var top = Number(svg.getAttribute("data-top"));
+    if (names.size) {
+      var peak = 0;
+      chart.querySelectorAll("g.series").forEach(function (g) {
+        if (!names.has(g.getAttribute("data-series"))) { return; }
+        g.querySelectorAll(".pt").forEach(function (pt) { peak = Math.max(peak, Number(pt.getAttribute("data-y"))); });
+      });
+      top = axisTop(peak, svg.getAttribute("data-counts") === "1");
+    }
+    var y0 = Number(svg.getAttribute("data-y0"));
+    var y1 = Number(svg.getAttribute("data-y1"));
+    chart.querySelectorAll("g.series").forEach(function (g) {
+      var coords = [];
+      g.querySelectorAll(".pt").forEach(function (pt) {
+        var y = (y1 - (y1 - y0) * Number(pt.getAttribute("data-y")) / top).toFixed(2);
+        pt.setAttribute("cy", y);
+        var mark = pt.previousElementSibling;
+        if (mark && mark.classList.contains("mk")) { mark.setAttribute("cy", y); }
+        coords.push(pt.getAttribute("cx") + "," + y);
+      });
+      var ln = g.querySelector(".ln");
+      if (ln) { ln.setAttribute("points", coords.join(" ")); }
+    });
+    svg.querySelectorAll(".ytick").forEach(function (tick, i) {
+      if (!tick.hasAttribute("data-label")) { tick.setAttribute("data-label", tick.textContent); }
+      tick.textContent = names.size
+        ? Number((top * i / 4).toFixed(2)).toLocaleString("en-GB")
+        : tick.getAttribute("data-label");
+    });
+  }
   function toggle(el) {
     var chart = chartOf(el);
     var names = picked(chart);
@@ -157,9 +203,10 @@ _SCRIPT = """
     if (names.has(name)) { names.delete(name); } else { names.add(name); }
     selected.set(chart, names);
     render(chart);
+    rescale(chart);
   }
   function clearSelections() {
-    selected.forEach(function (names, chart) { names.clear(); render(chart); });
+    selected.forEach(function (names, chart) { names.clear(); render(chart); rescale(chart); });
   }
   function line(text, className) {
     var el = document.createElement("div");
@@ -238,7 +285,8 @@ _SCRIPT = """
 })();
 """
 """Hover tooltips and line focus, as the UX prototype has. Clicking a legend label keeps
-that series selected, and hides the others, until it is clicked again or Escape is pressed.
+that series selected, hides the others, and rescales the y axis to the selection, until it
+is clicked again or Escape is pressed.
 Fixed code: it reads each chart point's own <title> and writes only textContent, so no data
 is ever parsed as HTML."""
 
