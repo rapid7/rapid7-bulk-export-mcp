@@ -189,15 +189,16 @@ def test_coverage_is_partial_when_the_only_gap_is_a_recorded_outage(platform, mo
     assert "Do not present these as portfolio totals" not in coverage
 
 
-def test_an_unexplained_gap_alongside_an_outage_stays_strict(platform, monkeypatch):
+def test_each_gap_is_named_with_its_own_reason(platform, monkeypatch):
     _europe_is_down(platform, monkeypatch)
     mcp_server.start_rapid7_export(export_type="vulnerability", org_label="europe")
     test_multi_org_e2e._load_one_org("japan")
 
     coverage = mcp_server.get_rapid7_org_coverage()
 
-    assert "Do not present these as portfolio totals" in coverage
-    assert "have not loaded today: us" in coverage, "only the org without a recorded outage is a gap"
+    assert "Partial coverage: 1 of 3 organizations." in coverage
+    assert "europe (us): region unavailable" in coverage
+    assert "us: not loaded today." in coverage
 
 
 OUTAGE = {
@@ -237,7 +238,7 @@ def test_the_report_shows_labelled_totals_when_a_region_is_down(report):
     assert "Coverage: partial, 2 of 3 organizations." in summary
     assert "europe (me1): region unavailable, last tried 14:20 UTC." in summary
     assert "<strong>Coverage: 2 of 3 organisations.</strong> europe (me1): region unavailable" in html
-    assert "Figures below exclude them." in html and "Coverage is incomplete" not in html
+    assert "Figures below exclude it." in html and "Coverage is incomplete" not in html
     portfolio = html.split('id="portfolio_summary"')[1].split("</section>")[0]
     comparison = html.split('id="org_comparison"')[1].split("</section>")[0]
     assert '<p class="scope">2 of 3 organisations</p>' in portfolio
@@ -245,8 +246,8 @@ def test_the_report_shows_labelled_totals_when_a_region_is_down(report):
     assert 'class="scope"' not in comparison, "a per-organisation card needs no scope line"
 
 
-def test_the_report_still_hides_totals_for_an_unexplained_gap(report):
-    summary, html = report(["1 configured organization(s) have not loaded today: europe."], {})
+def test_the_report_still_hides_totals_when_old_rows_would_make_them_wrong(report):
+    summary, html = report(["The data holds 3 organization(s) but only 2 loaded today."], {"europe": {}})
 
     assert "Coverage: incomplete" in summary
     assert "Coverage is incomplete" in html and 'class="scope"' not in html
@@ -257,3 +258,10 @@ def test_the_renderer_refuses_exclusions_without_a_count():
 
     with pytest.raises(ValueError, match="configured_count"):
         render_report([], "2026-11-18T14:30:00+00:00", coverage_complete=True, excluded=["x (me1): down."])
+
+
+def test_more_than_one_excluded_organisation_reads_as_plural(report):
+    _, html = report([], {"europe": OUTAGE, "asia": {}})
+
+    assert "Coverage: 1 of 3 organisations.</strong> europe (me1)" in html
+    assert "asia: not loaded today." in html and "Figures below exclude them." in html
