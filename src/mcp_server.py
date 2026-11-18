@@ -1726,7 +1726,9 @@ def _scan_orgs_once(configs: list, export_type: str) -> tuple:
         loaded = 0
         pending = 0
         missing = 0
+        unavailable = 0
         queued = 0
+        outages = tracker.get_unavailable_today(export_type)
 
         # Count the loads already running before starting any more, so repeated polls
         # do not stack up downloads past the cap.
@@ -1744,8 +1746,12 @@ def _scan_orgs_once(configs: list, export_type: str) -> tuple:
                 # get_today_export only returns COMPLETE rows, so look for an
                 # in-flight one before declaring the org missing.
                 in_flight = _latest_export_for_org(tracker, export_type, label)
+                if in_flight is None and label in outages:
+                    lines.append(f"  {_gap_line(label, outages[label])} Retry later to include it.")
+                    unavailable += 1
+                    continue
                 if in_flight is None:
-                    lines.append(f"  {label}: no export today. Run start_rapid7_multi_org_export().")
+                    lines.append(f"  {label}: no export today. Start it with start_rapid7_export(org_label='{label}').")
                     missing += 1
                     continue
                 export_id = in_flight["export_id"]
@@ -1776,13 +1782,17 @@ def _scan_orgs_once(configs: list, export_type: str) -> tuple:
 
     result = f"{export_type.capitalize()} exports across {len(configs)} organization(s):\n\n"
     result += "\n".join(lines) + "\n\n"
-    result += f"Loaded: {loaded}   In progress: {pending}   Needs attention: {missing}\n\n"
+    result += (
+        f"Loaded: {loaded}   In progress: {pending}   Region unavailable: {unavailable}   "
+        f"Needs attention: {missing}\n\n"
+    )
     if pending:
         result += "Still working. Call check_rapid7_multi_org_export() again to keep waiting."
-    elif missing:
+    elif missing or unavailable:
         result += (
-            "Some organizations are not loaded. Fix those before reporting, "
-            "or portfolio totals will be short. Confirm with get_rapid7_org_coverage()."
+            f"{loaded} of {len(configs)} organizations are loaded. The report can be built now: it "
+            "computes combined figures over the loaded organizations, labels each one with how many "
+            "it covers, and names the rest. Confirm with get_rapid7_org_coverage()."
         )
     else:
         result += "All organizations loaded. Confirm with get_rapid7_org_coverage(), then query_rapid7()."
