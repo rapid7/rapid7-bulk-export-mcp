@@ -19,6 +19,9 @@ class _Tracker:
     def get_today_export(self, export_type, org_label):
         return {"export_id": "x"} if org_label in self._loaded_today else None
 
+    def get_unavailable_today(self, export_type):
+        return {}
+
     def close(self):
         pass
 

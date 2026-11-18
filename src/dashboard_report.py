@@ -96,6 +96,7 @@ table.mx th.rh { width: 24%; }
 table.mx td { text-align: center; padding: 8px 2px; border-radius: 4px; }
 table.mx th .range { display: block; font-weight: 400; font-size: 10px; color: var(--rds-text-tertiary); }
 .headline { margin: 0 0 10px; font-size: 13px; }
+.scope { margin: -4px 0 10px; font-size: var(--rds-fs-overline); color: var(--rds-status-high); }
 .headline .lab { color: var(--rds-text-secondary); font-size: 13px; font-weight: 400; margin: 0; }
 .headline strong { font-weight: 500; margin-left: 6px; }
 table.mx td.rl { background: none; text-align: right; padding-right: 8px; color: var(--rds-text-secondary);
@@ -580,12 +581,16 @@ def _data_dates(cards: List[Dict[str, Any]]) -> str:
     return f"from {dates[0]} to {dates[-1]}, by organisation"
 
 
-def _card_section(card: Dict[str, Any], coverage_complete: bool, colours: Dict[str, str]) -> str:
+def _card_section(
+    card: Dict[str, Any], coverage_complete: bool, colours: Dict[str, str], scope: Optional[str] = None
+) -> str:
     parts = [
         f'<section class="card" id="{escape(card["card"])}">',
         f'<p class="sec">{escape(card["title"])}</p>',
         f'<p class="hint">{escape(card.get("description", ""))}</p>',
     ]
+    if scope and set(card["results"]) - set(card.get("per_org", ())):
+        parts.append(f'<p class="scope">{escape(scope)}</p>')
     parts += _card_body(card, coverage_complete, colours)
     parts.append(
         '<details class="about"><summary>About this card</summary>'
@@ -641,6 +646,8 @@ def render_report(
     generated_at: str,
     coverage_complete: bool,
     coverage_message: Optional[str] = None,
+    excluded: Sequence[str] = (),
+    configured_count: Optional[int] = None,
 ) -> str:
     """Render the dashboard cards as one HTML document that opens offline.
 
@@ -650,6 +657,10 @@ def render_report(
         coverage_complete: False when an organisation is missing or stale, which leaves
             out every result that combines organisations.
         coverage_message: Shown at the top when coverage is incomplete.
+        excluded: With coverage_complete, one line per organisation left out because its
+            region was unavailable. Combined figures are then shown, and each card that
+            combines organisations says how many of configured_count it covers.
+        configured_count: How many organisations are configured. Required with excluded.
     """
     labels = {org: label for card in cards for org, label in (card.get("org_labels") or {}).items()}
     ids = _org_ids(cards)
@@ -671,7 +682,16 @@ def render_report(
         )
     else:
         kev_line = '<div class="strip">No CISA KEV catalogue is stored yet, so known exploits stand in for KEV.</div>'
-    if coverage_complete:
+    scope = None
+    if coverage_complete and excluded:
+        if configured_count is None:
+            raise ValueError("configured_count is required when organisations are excluded")
+        scope = f"{configured_count - len(excluded)} of {configured_count} organisations"
+        coverage = (
+            f'<div class="strip warning"><strong>Coverage: {escape(scope)}.</strong> '
+            f"{escape(' '.join(excluded))} Figures below exclude them.</div>"
+        )
+    elif coverage_complete:
         coverage = '<div class="strip">Organisation coverage check: complete.</div>'
     else:
         coverage = (
@@ -694,5 +714,5 @@ def render_report(
         coverage,
         kev_line,
     ]
-    body = [_card_section(card, coverage_complete, colours) for card in cards]
+    body = [_card_section(card, coverage_complete, colours, scope) for card in cards]
     return "\n".join(header + body + [f"</div><script>{_SCRIPT}</script></body></html>"])
