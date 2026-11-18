@@ -748,8 +748,7 @@ def render_report(
         f'{_font_faces()}\n{_STYLE}</style></head><body><div class="wrap">',
         f'<div class="topbar">{_logo()}</div>',
         "<h1>Multi-Org Exposure Dashboard</h1>",
-        f'<p class="sub">Generated {escape(_when(generated_at))} &middot; {escape(counted)} &middot; '
-        "every figure comes from a fixed, tested query</p>",
+        f'<p class="sub">Generated {escape(_when(generated_at))} &middot; {escape(counted)}</p>',
         f'<p class="sub">Organisations: {escape(", ".join("(no organisation)" if o == "None" else o for o in orgs))}. '
         f"Data date: {escape(_data_dates(cards))}.</p>",
         coverage,

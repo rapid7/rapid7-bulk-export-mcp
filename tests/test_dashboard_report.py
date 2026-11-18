@@ -578,3 +578,7 @@ def test_the_header_counts_loaded_orgs_and_those_with_findings(orgs, excluded, c
     from src.dashboard_report import _org_count
 
     assert _org_count(orgs, excluded, configured) == text
+
+
+def test_the_header_carries_no_query_provenance_copy(cards):
+    assert "fixed, tested query" not in _html(cards)
