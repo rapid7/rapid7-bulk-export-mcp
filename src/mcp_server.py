@@ -1289,11 +1289,12 @@ def generate_rapid7_dashboard_report() -> str:
     """Build the multi-org exposure report as one HTML file from the data already loaded.
 
     The server runs every dashboard card's fixed query and renders the document, so the
-    AI writes no SQL and retypes no number. It starts no export. When an organization is
-    missing or was not loaded today, the report says so and leaves out every figure that
-    combines organizations. When the only missing organizations are ones whose region was
-    recorded as unavailable today, the report shows the combined figures for the rest,
-    names the ones left out, and labels each combined card with how many it covers.
+    AI writes no SQL and retypes no number. It starts no export. When a configured
+    organization did not load today, the report still computes every combined figure over
+    the organizations that did, names each one left out and why (its region was unavailable,
+    or it was not loaded), and labels each combined card with how many it covers. Combined
+    figures are left out only when the data holds rows from an earlier run, which would
+    make them wrong rather than partial.
 
     Returns:
         The path of the new HTML file (readable only by its owner), the coverage state, and
@@ -1319,7 +1320,7 @@ def generate_rapid7_dashboard_report() -> str:
         cards = [run_card(db, name) for name in CARDS]
         # Inside the lock: a load records itself in the tracker after it releases the lock,
         # so a load seen here as complete finished before the cards were read.
-        configured, _loaded_today, warnings, outages = _coverage_warnings(orgs_in_data)
+        configured, _loaded_today, warnings, gaps = _coverage_warnings(orgs_in_data)
     except ValueError as e:
         return f"✗ {redact_secret(str(e))}"
     except Exception as e:
@@ -1332,13 +1333,15 @@ def generate_rapid7_dashboard_report() -> str:
             f"The data holds {orgs_in_data} organizations but no organization list could be read, "
             "so coverage cannot be confirmed."
         )
+    if warnings:
+        warnings += _gap_lines(gaps)
     generated = utc_now()
     html = render_report(
         cards,
         generated.replace(tzinfo=_dt.timezone.utc).isoformat(timespec="seconds"),
         coverage_complete=not warnings,
         coverage_message=" ".join(warnings) or None,
-        excluded=_outage_lines(outages) if not warnings else (),
+        excluded=_gap_lines(gaps) if not warnings else (),
         configured_count=len(configured),
     )
     path = _DATA_DIR / "reports" / f"multi-org-report-{generated.strftime('%Y%m%dT%H%M%S%fZ')}.html"
@@ -1349,13 +1352,13 @@ def generate_rapid7_dashboard_report() -> str:
 
     if warnings:
         coverage = "incomplete, so figures that combine organizations are left out"
-    elif outages:
-        covered = len(configured) - len(outages)
+    elif gaps:
+        covered = len(configured) - len(gaps)
         coverage = (
             f"partial, {covered} of {len(configured)} organizations. Combined figures cover only those, "
             "and the report says so on each one"
         )
-        warnings = _outage_lines(outages)
+        warnings = _gap_lines(gaps)
     else:
         coverage = "complete"
     opened = _open_report(path)
@@ -1848,10 +1851,11 @@ def _coverage_warnings(orgs_in_data: int) -> tuple:
     """Compare the configured orgs with the orgs that loaded today.
 
     Returns:
-        (configured labels, labels loaded today, warnings, outages). No warnings means every
-        configured organization either loaded today or is missing only because its region
-        was recorded as unavailable today. Outages maps each such organization's label to
-        its region, reason, and last_tried (UTC). Any other gap is a warning.
+        (configured labels, labels loaded today, warnings, gaps). Gaps maps each configured
+        organization that did not load today to why: its region, reason, and last_tried
+        (UTC) when its region was recorded as unavailable, or an empty dict otherwise. A gap
+        makes the figures partial, not wrong, so it is not a warning. Warnings are kept for
+        data that would make combined figures wrong: rows left over from an earlier run.
     """
     try:
         configured = load_org_labels()
@@ -1877,14 +1881,7 @@ def _coverage_warnings(orgs_in_data: int) -> tuple:
         tracker.close()
 
     warnings: list = []
-    absent = set(configured) - set(loaded_today)
-    outages = {label: recorded[label] for label in sorted(absent & set(recorded))}
-    missing = sorted(absent - set(outages))
-    if missing:
-        warnings.append(
-            f"{len(missing)} configured organization(s) have not loaded today: {', '.join(missing)}. "
-            f"Run check_rapid7_multi_org_export()."
-        )
+    gaps = {label: recorded.get(label, {}) for label in sorted(set(configured) - set(loaded_today))}
     if orgs_in_data > len(loaded_today):
         # More orgs in the table than were loaded today means data left over from an
         # earlier run, possibly for an org no longer in the org list. Its rows would be
@@ -1894,15 +1891,19 @@ def _coverage_warnings(orgs_in_data: int) -> tuple:
             f"so it contains rows from an earlier run. Purge and reload, or explain the extra "
             f"organization before quoting totals."
         )
-    return configured, loaded_today, warnings, outages
+    return configured, loaded_today, warnings, gaps
 
 
-def _outage_lines(outages: dict) -> list:
-    """One line per unavailable organization, naming its region, reason, and last attempt."""
-    return [
-        f"{label} ({info['region']}): region unavailable, last tried {info['last_tried']:%H:%M} UTC. {info['reason']}."
-        for label, info in outages.items()
-    ]
+def _gap_line(label: str, info: dict) -> str:
+    if not info:
+        return f"{label}: not loaded today."
+    tried = f"{info['last_tried']:%H:%M}"
+    return f"{label} ({info['region']}): region unavailable, last tried {tried} UTC. {info['reason']}."
+
+
+def _gap_lines(gaps: dict) -> list:
+    """One line per organization left out, naming why."""
+    return [_gap_line(label, info) for label, info in gaps.items()]
 
 
 @mcp.tool(
@@ -1955,7 +1956,7 @@ def get_rapid7_org_coverage() -> str:
     finally:
         _db_lock.release()
 
-    configured, loaded_today, warnings, outages = _coverage_warnings(len(rows))
+    configured, loaded_today, warnings, gaps = _coverage_warnings(len(rows))
 
     result = f"Organizations present in the loaded vulnerability data: {len(rows)}\n\n"
     for row in rows:
@@ -1968,14 +1969,14 @@ def get_rapid7_org_coverage() -> str:
 
     if warnings:
         result += "\n⚠️  Do not present these as portfolio totals yet.\n"
-        for warning in warnings:
+        for warning in warnings + _gap_lines(gaps):
             result += f"  - {warning}\n"
         return result
 
-    if outages:
-        covered = len(configured) - len(outages)
+    if gaps:
+        covered = len(configured) - len(gaps)
         result += f"\nPartial coverage: {covered} of {len(configured)} organizations.\n"
-        result += "".join(f"  - {line}\n" for line in _outage_lines(outages))
+        result += "".join(f"  - {line}\n" for line in _gap_lines(gaps))
         result += (
             f"Combined figures cover only these {covered} organizations. Say so with every combined "
             f"figure, and name the organizations left out.\n"

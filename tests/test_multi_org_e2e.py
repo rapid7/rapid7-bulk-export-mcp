@@ -248,9 +248,9 @@ def test_MultiOrg_CoverageWarnsWhenAnOrgIsMissingFromTheData(platform):
     assert set(_counts_by_org()) == {"ORG-JP", "ORG-US"}
 
     coverage = mcp_server.get_rapid7_org_coverage()
-    assert "⚠️" in coverage
-    assert "have not loaded today: europe" in coverage, "the missing org must be named, not just counted"
-    assert "Do not present these as portfolio totals" in coverage
+    assert "Partial coverage: 2 of 3 organizations." in coverage
+    assert "europe: not loaded today." in coverage, "the missing org must be named, not just counted"
+    assert "Say so with every combined figure" in coverage
 
 
 def test_MultiOrg_PolicyIsRefusedPerOrg(platform):
@@ -328,7 +328,7 @@ def test_MultiOrg_CoverageDoesNotLetAStaleOrgMaskAMissingOne(platform):
 
     coverage = mcp_server.get_rapid7_org_coverage()
     assert "Counts match" not in coverage
-    assert "have not loaded today: europe" in coverage
+    assert "europe: not loaded today." in coverage
     assert "rows from an earlier run" in coverage
 
 

@@ -689,7 +689,7 @@ def render_report(
         scope = f"{configured_count - len(excluded)} of {configured_count} organisations"
         coverage = (
             f'<div class="strip warning"><strong>Coverage: {escape(scope)}.</strong> '
-            f"{escape(' '.join(excluded))} Figures below exclude them.</div>"
+            f"{escape(' '.join(excluded))} Figures below exclude {'it' if len(excluded) == 1 else 'them'}.</div>"
         )
     elif coverage_complete:
         coverage = '<div class="strip">Organisation coverage check: complete.</div>'
