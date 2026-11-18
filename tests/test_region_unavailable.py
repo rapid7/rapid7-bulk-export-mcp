@@ -173,3 +173,87 @@ def test_any_other_failure_keeps_the_strict_advice(platform, monkeypatch):
 
     assert "Resolve these before reporting" in result
     assert _tracker().get_unavailable_today("vulnerability") == {}
+
+
+def test_coverage_is_partial_when_the_only_gap_is_a_recorded_outage(platform, monkeypatch):
+    _europe_is_down(platform, monkeypatch)
+    mcp_server.start_rapid7_export(export_type="vulnerability", org_label="europe")
+    for label in ("japan", "us"):
+        test_multi_org_e2e._load_one_org(label)
+
+    coverage = mcp_server.get_rapid7_org_coverage()
+
+    assert "Partial coverage: 2 of 3 organizations." in coverage
+    assert "europe (us): region unavailable, last tried" in coverage
+    assert "eu.api.insight.rapid7.com answered HTTP 504." in coverage
+    assert "Do not present these as portfolio totals" not in coverage
+
+
+def test_an_unexplained_gap_alongside_an_outage_stays_strict(platform, monkeypatch):
+    _europe_is_down(platform, monkeypatch)
+    mcp_server.start_rapid7_export(export_type="vulnerability", org_label="europe")
+    test_multi_org_e2e._load_one_org("japan")
+
+    coverage = mcp_server.get_rapid7_org_coverage()
+
+    assert "Do not present these as portfolio totals" in coverage
+    assert "have not loaded today: us" in coverage, "only the org without a recorded outage is a gap"
+
+
+OUTAGE = {
+    "region": "me1",
+    "reason": "me1.api.insight.rapid7.com answered HTTP 504",
+    "last_tried": datetime(2026, 11, 18, 14, 20),
+}
+
+
+@pytest.fixture
+def report(tmp_path, monkeypatch):
+    """A real database with two loaded orgs, and the report tool's coverage state set per test."""
+    from src.duckdb_loader import VulnerabilityDatabase
+    from tests.test_org_labels import _load
+
+    database = VulnerabilityDatabase(str(tmp_path / "data.db"))
+    _load(database, tmp_path, "ORG-A", "japan")
+    _load(database, tmp_path, "ORG-B", "us")
+    monkeypatch.setattr(mcp_server, "db", database)
+    monkeypatch.setattr(mcp_server, "_DATA_DIR", tmp_path)
+    written = {}
+    monkeypatch.setattr(mcp_server, "_write_private_file", lambda path, html: written.update(html=html))
+    monkeypatch.setattr(mcp_server, "_open_report", lambda path: True)
+
+    def _run(warnings, outages):
+        state = (["japan", "us", "europe"], ["japan", "us"], list(warnings), dict(outages))
+        monkeypatch.setattr(mcp_server, "_coverage_warnings", lambda orgs_in_data: state)
+        return mcp_server.generate_rapid7_dashboard_report(), written.get("html", "")
+
+    yield _run
+    database.close()
+
+
+def test_the_report_shows_labelled_totals_when_a_region_is_down(report):
+    summary, html = report([], {"europe": OUTAGE})
+
+    assert "Coverage: partial, 2 of 3 organizations." in summary
+    assert "europe (me1): region unavailable, last tried 14:20 UTC." in summary
+    assert "<strong>Coverage: 2 of 3 organisations.</strong> europe (me1): region unavailable" in html
+    assert "Figures below exclude them." in html and "Coverage is incomplete" not in html
+    portfolio = html.split('id="portfolio_summary"')[1].split("</section>")[0]
+    comparison = html.split('id="org_comparison"')[1].split("</section>")[0]
+    assert '<p class="scope">2 of 3 organisations</p>' in portfolio
+    assert "Total critical findings" in portfolio, "the combined figures are shown"
+    assert 'class="scope"' not in comparison, "a per-organisation card needs no scope line"
+
+
+def test_the_report_still_hides_totals_for_an_unexplained_gap(report):
+    summary, html = report(["1 configured organization(s) have not loaded today: europe."], {})
+
+    assert "Coverage: incomplete" in summary
+    assert "Coverage is incomplete" in html and 'class="scope"' not in html
+
+
+def test_the_renderer_refuses_exclusions_without_a_count():
+    from src.dashboard_report import render_report
+
+    with pytest.raises(ValueError, match="configured_count"):
+        render_report([], "2026-11-18T14:30:00+00:00", coverage_complete=True, excluded=["x (me1): down."])
