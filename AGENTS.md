@@ -12,7 +12,7 @@ uv sync
 
 # Required env vars
 export RAPID7_API_KEY=your-key
-export RAPID7_REGION=us   # us, us2, us3, eu, ca, au, ap
+export RAPID7_REGION=us   # us, us2, us3, eu, ca, au, ap, me1, aps2
 
 # Run the server (stdio)
 uv run rapid7-mcp-server

@@ -1964,7 +1964,7 @@ def main():
         print()
         print("Environment Variables:")
         print("  RAPID7_API_KEY    Your Rapid7 InsightVM API key (required)")
-        print("  RAPID7_REGION     Your Rapid7 region: us, us2, us3, eu, ca, au, ap (default: us)")
+        print("  RAPID7_REGION     Your Rapid7 region: us, us2, us3, eu, ca, au, ap, me1, aps2 (default: us)")
         print("  DATA_DIR          Directory for database files (takes precedence when set)")
         print("  PLUGIN_DATA       Plugin-host data dir; used when DATA_DIR is unset (else ~/.rapid7_mcp)")
         print("  MCP_TRANSPORT     Transport protocol: 'stdio' (default) or 'http'")

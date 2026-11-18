@@ -21,6 +21,8 @@ REGION_ENDPOINTS = {
     "ca": "https://ca.api.insight.rapid7.com/export/graphql",
     "au": "https://au.api.insight.rapid7.com/export/graphql",
     "ap": "https://ap.api.insight.rapid7.com/export/graphql",
+    "me1": "https://me1.api.insight.rapid7.com/export/graphql",
+    "aps2": "https://aps2.api.insight.rapid7.com/export/graphql",
 }
 
 
