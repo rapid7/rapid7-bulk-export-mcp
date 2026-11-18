@@ -108,6 +108,7 @@ summary { font-size: var(--rds-fs-overline); color: var(--rds-text-secondary); c
 .chart.focusing .series.focus.marked .mk { opacity: 1; }
 .chart .mk.on { opacity: 1; }
 .chart .legend span { cursor: pointer; }
+.chart .legend span.selected { color: var(--rds-text-primary); }
 .chart.focusing .legend span:not(.focus) { opacity: 0.4; }
 #tip { position: fixed; display: none; pointer-events: none; z-index: 10; white-space: nowrap;
   background: #ffffff; color: #181d1f; border-radius: 4px; padding: 8px 10px; font-size: 12px;
@@ -124,14 +125,39 @@ _SCRIPT = """
   tip.setAttribute("role", "tooltip");
   document.body.appendChild(tip);
   var pinned = null;
+  var selected = new Map();
+  var hovered = new Map();
   function chartOf(el) { return el.closest(".chart"); }
   function seriesOf(el) { return el.closest("[data-series]"); }
+  function picked(chart) { return selected.get(chart) || new Set(); }
+  function render(chart) {
+    var names = new Set(picked(chart));
+    if (hovered.get(chart)) { names.add(hovered.get(chart)); }
+    chart.classList.toggle("focusing", names.size > 0);
+    chart.querySelectorAll("[data-series]").forEach(function (el) {
+      el.classList.toggle("focus", names.has(el.getAttribute("data-series")));
+    });
+    chart.querySelectorAll(".legend span").forEach(function (el) {
+      var on = picked(chart).has(el.getAttribute("data-series"));
+      el.classList.toggle("selected", on);
+      el.setAttribute("aria-pressed", on ? "true" : "false");
+    });
+  }
   function focus(chart, name) {
     if (!chart) { return; }
-    chart.classList.toggle("focusing", name !== null);
-    chart.querySelectorAll("[data-series]").forEach(function (el) {
-      el.classList.toggle("focus", el.getAttribute("data-series") === name);
-    });
+    hovered.set(chart, name);
+    render(chart);
+  }
+  function toggle(el) {
+    var chart = chartOf(el);
+    var names = picked(chart);
+    var name = el.getAttribute("data-series");
+    if (names.has(name)) { names.delete(name); } else { names.add(name); }
+    selected.set(chart, names);
+    render(chart);
+  }
+  function clearSelections() {
+    selected.forEach(function (names, chart) { names.clear(); render(chart); });
   }
   function line(text, className) {
     var el = document.createElement("div");
@@ -194,11 +220,23 @@ _SCRIPT = """
     });
     el.addEventListener("mouseleave", function () { if (!pinned) { focus(chartOf(el), null); } });
   });
+  document.querySelectorAll(".chart .legend span").forEach(function (el) {
+    el.setAttribute("role", "button");
+    el.setAttribute("tabindex", "0");
+    el.setAttribute("aria-pressed", "false");
+    el.addEventListener("click", function (event) { event.stopPropagation(); toggle(el); });
+    el.addEventListener("keydown", function (event) {
+      if (event.key === "Enter" || event.key === " ") { event.preventDefault(); toggle(el); }
+    });
+  });
   document.addEventListener("click", release);
-  document.addEventListener("keydown", function (event) { if (event.key === "Escape") { release(); } });
+  document.addEventListener("keydown", function (event) {
+    if (event.key === "Escape") { release(); clearSelections(); }
+  });
 })();
 """
-"""Hover tooltips and line focus, as the UX prototype has. Fixed code: it reads each chart
+"""Hover tooltips and line focus, as the UX prototype has. Clicking a legend label keeps
+that series selected until it is clicked again or Escape is pressed. Fixed code: it reads each chart
 point's own <title> and writes only textContent, so no data is ever parsed as HTML."""
 
 _LEFT_OUT_TEXT = "Left out: this combines organisations, and coverage is incomplete."

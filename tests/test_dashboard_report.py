@@ -582,3 +582,11 @@ def test_the_header_counts_loaded_orgs_and_those_with_findings(orgs, excluded, c
 
 def test_the_header_carries_no_query_provenance_copy(cards):
     assert "fixed, tested query" not in _html(cards)
+
+
+def test_legend_labels_are_toggle_buttons_that_keep_a_selection(cards):
+    [script] = re.findall(r"<script>(.*?)</script>", _html(cards), re.S)
+
+    assert 'el.setAttribute("role", "button")' in script and 'el.setAttribute("aria-pressed", "false")' in script
+    assert "selected.set(chart, names)" in script, "a click adds to the chart's selection rather than replacing it"
+    assert 'if (event.key === "Escape") { release(); clearSelections(); }' in script
