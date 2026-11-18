@@ -41,6 +41,7 @@ from .export_manager import (
     poll_until_complete,
 )
 from .export_tracker import ExportTracker
+from .graphql_client import RegionUnavailableError
 
 # The remediation retry path lives in the orchestrator now; re-export the
 # exception here because the tool tests raise it as mcp_server.ExportInProgressError.
@@ -556,6 +557,8 @@ def start_rapid7_export(
             print("Creating new vulnerability export...", file=sys.stderr)
             new_id = create_vulnerability_export(config)
             print(f"Created {export_type} export with ID: {new_id}", file=sys.stderr)
+            if label:
+                tracker.clear_unavailable(label, export_type)
             tracker.save_export(
                 export_id=new_id,
                 status="PENDING",
@@ -661,6 +664,19 @@ def start_rapid7_export(
                 f'download_rapid7_export(export_id="{new_id}", export_type="asset_software")'
             )
 
+    except RegionUnavailableError as e:
+        if label is None:
+            return redact_secret(f"✗ The Rapid7 region is unavailable: {e}. Try again later.")
+        region = config["region"]
+        ExportTracker(str(_DATA_DIR / "rapid7_bulk_export_tracking.db")).record_unavailable(
+            label, export_type, region, str(e)
+        )
+        return redact_secret(
+            f"✗ Organization '{label}' is unavailable: its region ({region}) did not answer. {e}.\n\n"
+            "The outage is recorded. The other organizations are not affected, and the report "
+            "leaves this one out and labels the combined figures with how many organizations they cover.\n"
+            "Retrying later is safe: if the platform did create an export, the retry picks it up."
+        )
     except Exception as e:
         return redact_secret(f"✗ Error starting {export_type} export: {str(e)}")
 
@@ -1610,7 +1626,14 @@ def start_rapid7_multi_org_export(export_type: str = "vulnerability") -> str:
         # Named rather than summarised: a report built from a subset of the
         # organizations, presented as the whole portfolio, is the failure to avoid.
         result += "Failed:\n" + "\n".join(failed) + "\n\n"
-        result += "Resolve these before reporting, or the portfolio totals will be short.\n\n"
+        if all("is unavailable" in line for line in failed):
+            result += (
+                "Their regions did not answer, and each outage is recorded. The report can cover the "
+                "other organizations, and labels every combined figure with how many it covers. "
+                "Retry these later to include them.\n\n"
+            )
+        else:
+            result += "Resolve these before reporting, or the portfolio totals will be short.\n\n"
     result += "Poll and load with: check_rapid7_multi_org_export()"
     return result
 
