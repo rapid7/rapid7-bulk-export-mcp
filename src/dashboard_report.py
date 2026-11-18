@@ -109,6 +109,7 @@ summary { font-size: var(--rds-fs-overline); color: var(--rds-text-secondary); c
 .chart .mk.on { opacity: 1; }
 .chart .legend span { cursor: pointer; }
 .chart .legend span.selected { color: var(--rds-text-primary); }
+.chart.filtering g.series:not(.focus) { display: none; }
 .chart.focusing .legend span:not(.focus) { opacity: 0.4; }
 #tip { position: fixed; display: none; pointer-events: none; z-index: 10; white-space: nowrap;
   background: #ffffff; color: #181d1f; border-radius: 4px; padding: 8px 10px; font-size: 12px;
@@ -134,6 +135,7 @@ _SCRIPT = """
     var names = new Set(picked(chart));
     if (hovered.get(chart)) { names.add(hovered.get(chart)); }
     chart.classList.toggle("focusing", names.size > 0);
+    chart.classList.toggle("filtering", picked(chart).size > 0);
     chart.querySelectorAll("[data-series]").forEach(function (el) {
       el.classList.toggle("focus", names.has(el.getAttribute("data-series")));
     });
@@ -236,8 +238,9 @@ _SCRIPT = """
 })();
 """
 """Hover tooltips and line focus, as the UX prototype has. Clicking a legend label keeps
-that series selected until it is clicked again or Escape is pressed. Fixed code: it reads each chart
-point's own <title> and writes only textContent, so no data is ever parsed as HTML."""
+that series selected, and hides the others, until it is clicked again or Escape is pressed.
+Fixed code: it reads each chart point's own <title> and writes only textContent, so no data
+is ever parsed as HTML."""
 
 _LEFT_OUT_TEXT = "Left out: this combines organisations, and coverage is incomplete."
 

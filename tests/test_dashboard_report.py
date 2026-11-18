@@ -590,3 +590,10 @@ def test_legend_labels_are_toggle_buttons_that_keep_a_selection(cards):
     assert 'el.setAttribute("role", "button")' in script and 'el.setAttribute("aria-pressed", "false")' in script
     assert "selected.set(chart, names)" in script, "a click adds to the chart's selection rather than replacing it"
     assert 'if (event.key === "Escape") { release(); clearSelections(); }' in script
+
+
+def test_a_legend_selection_hides_the_other_series(cards):
+    html = _html(cards)
+
+    assert ".chart.filtering g.series:not(.focus) { display: none; }" in html
+    assert 'chart.classList.toggle("filtering", picked(chart).size > 0);' in html
