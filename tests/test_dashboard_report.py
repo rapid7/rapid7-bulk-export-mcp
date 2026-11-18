@@ -354,13 +354,32 @@ def test_the_by_organisation_table_opens_when_coverage_is_incomplete(cards, comp
     assert "<summary>By organisation</summary>" in section
 
 
-def test_more_than_three_orgs_each_get_their_own_colour():
-    orgs = [f"ORG-{i}" for i in range(10)]
-    rows = [{"orgId": org, "n": 1} for org in orgs]
-    html = _html([_card({"by_org": rows}, per_org=["by_org"], orgs=orgs)])
+def test_the_three_highest_risk_orgs_take_the_prototype_colours_in_rank_order():
+    orgs = [f"ORG-{i}" for i in range(6)]
+    risk = [{"orgId": org, "mean_risk": float(i)} for i, org in enumerate(orgs)]
+    html = _html([_card({"by_org": risk}, per_org=["by_org"], orgs=orgs)])
 
-    swatches = re.findall(r'<span class="swatch" style="background:(#[0-9a-f]{6})"></span>', html)
-    assert len(swatches) == 10 == len(set(swatches))
+    swatch = {
+        org: colour for colour, org in re.findall(r'class="swatch" style="background:([^"]+)"></span>(ORG-\d)', html)
+    }
+    assert swatch == {
+        "ORG-5": "#77b8ec",
+        "ORG-4": "#ff3d82",
+        "ORG-3": "#7262c4",
+        "ORG-2": "rgba(248,250,250,0.38)",
+        "ORG-1": "rgba(248,250,250,0.38)",
+        "ORG-0": "rgba(248,250,250,0.38)",
+    }
+
+
+def test_the_same_three_lead_in_every_chart(cards):
+    from src.dashboard_report import _lead_colours
+
+    names = {org: org for org in ("A", "B", "C", "D")}
+    risk = [{"orgId": o, "mean_risk": r} for o, r in (("A", 1), ("B", 9), ("C", 5), ("D", 7))]
+    colours = _lead_colours([{"results": {"by_org": risk}}], sorted(names), names)
+
+    assert colours == {"B": "#77b8ec", "D": "#ff3d82", "C": "#7262c4", "A": "rgba(248,250,250,0.38)"}
 
 
 def test_incomplete_coverage_still_draws_the_per_org_charts(cards):

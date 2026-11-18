@@ -5,7 +5,7 @@ from decimal import Decimal
 
 import pytest
 
-from src.report_charts import _MUTED_LINE, dot_plot, line_chart, nice_max
+from src.report_charts import _MUTED_TIP, dot_plot, line_chart, nice_max
 
 
 def _fmt(value):
@@ -201,7 +201,7 @@ def test_only_the_three_largest_series_lead_as_the_prototype_draws_them():
 
     leads = re.findall(r'<g class="series lead[^"]*" data-series="([^"]+)"', svg)
     assert sorted(leads) == ["ORG-3", "ORG-4", "ORG-5"]
-    assert svg.count('data-colour="#5b676c"') == 2, "the tooltip dot matches the grey line"
+    assert svg.count('data-colour="#9aa5aa"') == 2, "the tooltip dot uses the prototype's muted swatch"
 
 
 def test_each_hover_target_carries_its_tooltip_parts_escaped():
@@ -234,9 +234,9 @@ def test_only_the_largest_series_keep_their_colour_and_the_rest_draw_grey():
 
     svg = line_chart(rows, "week", "n", "orgId", colours, _fmt)
 
-    assert svg.count('stroke="#5b676c" stroke-width="1.6"') == 2
+    assert svg.count('stroke="rgba(248,250,250,0.38)" stroke-width="1.6"') == 2
     assert svg.count('stroke="#77b8ec" stroke-width="2.4"') == 3
-    assert svg.count('<i style="background:#5b676c"></i>') == 2, "the legend matches the drawn colour"
+    assert svg.count('<i style="background:rgba(248,250,250,0.38)"></i>') == 2, "the legend matches the line"
 
 
 def test_line_charts_have_no_y_axis_title():
@@ -261,9 +261,9 @@ def test_muted_dots_draw_tooltip_and_legend_in_one_grey():
 
     svg = dot_plot(rows, "mean_risk", "orgId", colours, _fmt)
 
-    assert svg.count('fill="#5b676c"') == 2
-    assert svg.count('data-colour="#5b676c"') == 2
-    assert svg.count('<i style="background:#5b676c"></i>') == 2
+    assert svg.count('fill="rgba(248,250,250,0.55)"') == 2
+    assert svg.count('data-colour="#9aa5aa"') == 2
+    assert svg.count('<i style="background:rgba(248,250,250,0.38)"></i>') == 2
 
 
 def test_the_dot_plot_fills_the_card_width():
@@ -281,8 +281,8 @@ def test_equal_scores_stack_and_keep_the_coloured_dots_visible():
 
     heights = sorted({int(y) for y in re.findall(r'<circle cx="960.00" cy="(\d+)"', svg)})
     assert len(heights) == 5, "six equal scores spread over the five lanes"
-    last_six = re.findall(r'data-colour="([^"]+)"', svg)[-3:]
-    assert _MUTED_LINE not in last_six, "the coloured dots are drawn last, on top"
+    last_three = re.findall(r'data-colour="([^"]+)"', svg)[-3:]
+    assert _MUTED_TIP not in last_three, "the coloured dots are drawn last, on top"
 
 
 @pytest.mark.parametrize(("peak", "top"), [(0, 4), (3, 4), (6, 8), (880, 1000), (16521, 20000)])

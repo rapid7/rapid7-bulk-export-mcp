@@ -7,7 +7,7 @@ ever see a card's small result set, never the raw findings. Every label is HTML-
 import math
 from datetime import date, timedelta
 from html import escape
-from typing import Any, Callable, Dict, List, Optional, Sequence, Set
+from typing import Any, Callable, Collection, Dict, List, Optional, Sequence, Set
 
 Formatter = Callable[[Any], str]
 
@@ -23,7 +23,10 @@ _LEADS = 3
 _DOT_GAP = 13
 _DOT_LANES = 5
 _MARKED_PERIODS = 26
-_MUTED_LINE = "#5b676c"
+_MUTED_LINE = "rgba(248,250,250,0.38)"
+_MUTED_DOT = "rgba(248,250,250,0.55)"
+_MUTED_TIP = "#9aa5aa"
+"""The UX prototype's colours for every series that is not one of the three leads."""
 """The prototype draws every series but the three largest as thin grey lines."""
 _HIGHEST = "#ff903d"
 _MAX_VALUE = 1e300
@@ -165,6 +168,7 @@ def line_chart(
     series: Sequence[str] = (),
     y_title: Optional[str] = None,
     x_values: Sequence[str] = (),
+    leads: Optional[Collection[str]] = None,
 ) -> str:
     """One line per series over the sorted x values. A missing point counts as zero.
 
@@ -207,7 +211,7 @@ def line_chart(
                 f'text-anchor="middle">{escape(x)}</text>'
             )
     metric = y_title or _label_text(y_key)
-    leads = _largest(points, _LEADS)
+    leads = set(leads) if leads is not None else _largest(points, _LEADS)
     marked = len(xs) <= _MARKED_PERIODS
     for name in sorted(names, key=lambda n: (sum(points[n].values()), n)):
         coords = [(x_at(i), y1 - (y1 - y0) * points[name].get(x, 0.0) / top) for i, x in enumerate(xs)]
@@ -217,7 +221,7 @@ def line_chart(
         parts.append(
             f'<g class="series{" lead" if lead else ""}{" marked" if lead and marked else ""}" '
             f'data-series="{escape(name)}" '
-            f'data-colour="{colour if lead else _MUTED_LINE}">'
+            f'data-colour="{colour if lead else _MUTED_TIP}">'
         )
         parts.append(
             f'<polyline points="{joined}" fill="none" stroke="{colour if lead else _MUTED_LINE}" '
@@ -246,6 +250,7 @@ def dot_plot(
     fmt: Formatter,
     median: Any = None,
     mark_highest: bool = False,
+    leads: Optional[Collection[str]] = None,
 ) -> str:
     """One dot per row on a single axis from the lowest to the highest value.
 
@@ -268,7 +273,7 @@ def dot_plot(
 
     parts = [_SVG_OPEN.format(w=1000, h=160, f=_FONT)]
     parts.append(f'<line x1="{left}" y1="{axis_y}" x2="{right}" y2="{axis_y}" stroke="{_AXIS}" stroke-width="0.7"/>')
-    leads = _largest({label: {"v": v} for label, v in values}, _LEADS)
+    leads = set(leads) if leads is not None else _largest({label: {"v": v} for label, v in values}, _LEADS)
     # Coloured dots take the bottom lanes and draw last, so a pile of equal scores never
     # hides them. A dot too close to one already placed moves up a lane.
     order = sorted(values, key=lambda item: (item[0] not in leads, item[1], item[0]))
@@ -284,11 +289,12 @@ def dot_plot(
         lanes[lane].append(x)
         placed[label] = dot_y - lane * _DOT_GAP
     for label, v in sorted(values, key=lambda item: (item[0] in leads, item[1], item[0])):
-        colour = colours.get(label, _FALLBACK) if label in leads else _MUTED_LINE
+        lead = label in leads
+        colour = colours.get(label, _FALLBACK) if lead else _MUTED_DOT
         parts.append(
-            f'<g class="series{" lead" if label in leads else ""}" data-series="{escape(label)}" '
-            f'data-colour="{colour}">'
-            f'<circle cx="{x_at(v):.2f}" cy="{placed[label]:.0f}" r="6" fill="{colour}" opacity="0.85" '
+            f'<g class="series{" lead" if lead else ""}" data-series="{escape(label)}" '
+            f'data-colour="{colour if lead else _MUTED_TIP}">'
+            f'<circle cx="{x_at(v):.2f}" cy="{placed[label]:.0f}" r="{7 if lead else 6}" fill="{colour}" '
             f'class="pt" data-heading="Organisation risk distribution" data-metric="Risk score" '
             f'data-value="{escape(fmt(v))}">'
             f"<title>{escape(label)}: {escape(fmt(v))}</title></circle></g>"

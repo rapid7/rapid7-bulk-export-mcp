@@ -23,20 +23,10 @@ from .report_charts import dot_plot, line_chart
 
 _ASSETS = Path(__file__).parent / "assets"
 
-SERIES_COLOURS = (
-    "#77b8ec",
-    "#ff3d82",
-    "#7262c4",
-    "#4edaca",
-    "#c39bf2",
-    "#f4d35e",
-    "#ff8a65",
-    "#a5d6a7",
-    "#f48fb1",
-    "#90a4ae",
-)
-"""Org series colours. The first three are the RDS categorical data-viz colours. The rest
-extend them for portfolios of more than three organisations, avoiding the severity colours."""
+LEAD_COLOURS = ("#77b8ec", "#ff3d82", "#7262c4")
+"""The UX prototype's colours for its three lead organisations, the highest risk scores, in rank order."""
+MUTED_COLOUR = "rgba(248,250,250,0.38)"
+"""The prototype's colour for every other organisation, wherever it appears."""
 
 HEAT_RAMP = (
     ("#ffe100", "#181d1f"),
@@ -488,7 +478,16 @@ def _weekly(y_key: str, y_title: str) -> Callable[[List[Dict[str, Any]], Dict[st
         if not rows:
             return '<p class="hint">No rows.</p>'
         chart = line_chart(
-            rows, "week", y_key, "orgId", colours, _number_text, series=list(colours), y_title=y_title, x_values=weeks
+            rows,
+            "week",
+            y_key,
+            "orgId",
+            colours,
+            _number_text,
+            series=list(colours),
+            y_title=y_title,
+            x_values=weeks,
+            leads=_leads(colours),
         )
         note = (
             f'<p class="inlinenote">Last {len(weeks)} weeks to the data date. Every week is in the figures.</p>'
@@ -529,7 +528,9 @@ def _risk_distribution(
     if not rows:
         return ['<p class="hint">No rows.</p>']
     whole = lambda v: _number_text(_whole(v))  # noqa: E731
-    plot = dot_plot(rows, "mean_risk", "orgId", colours, whole, median=median, mark_highest=coverage_complete)
+    plot = dot_plot(
+        rows, "mean_risk", "orgId", colours, whole, median=median, mark_highest=coverage_complete, leads=_leads(colours)
+    )
     chart = f'<div class="chart">{plot}</div>'
     return [chart, _by_organisation(_table(rows, colours), open_=False)]
 
@@ -608,6 +609,27 @@ def _card_section(
     return "\n".join(parts)
 
 
+def _lead_colours(cards: List[Dict[str, Any]], ids: List[str], names: Dict[str, str]) -> Dict[str, str]:
+    """The three highest-risk organisations take the lead colours for the whole report.
+
+    As in the UX prototype, the same three are coloured in every chart, legend, and table,
+    and every other organisation is muted. With no risk score, the first three by ID lead.
+    """
+    risk: Dict[str, float] = {}
+    for card in cards:
+        for rows in card["results"].values():
+            for row in rows:
+                score = row.get("mean_risk")
+                if row.get("orgId") is not None and _is_number(score) and math.isfinite(float(score)):
+                    risk.setdefault(str(row["orgId"]), float(score))
+    ranked = sorted(ids, key=lambda org: (-risk.get(org, float("-inf")), org))
+    return {names[org]: LEAD_COLOURS[i] if i < len(LEAD_COLOURS) else MUTED_COLOUR for i, org in enumerate(ranked)}
+
+
+def _leads(colours: Dict[str, str]) -> List[str]:
+    return [name for name, colour in colours.items() if colour in LEAD_COLOURS]
+
+
 def _org_ids(cards: List[Dict[str, Any]]) -> List[str]:
     """Every org ID the cards mention, in a stable order."""
     ids = {str(org) for card in cards for org in card["orgs"]}
@@ -684,7 +706,7 @@ def render_report(
     ids = _org_ids(cards)
     names = _display_names(ids, labels)
     # Keyed by org ID, so a renamed label never moves another org's colour.
-    colours = {names[org]: SERIES_COLOURS[i % len(SERIES_COLOURS)] for i, org in enumerate(ids)}
+    colours = _lead_colours(cards, ids, names)
     cards = [_with_labels(card, names) for card in cards]
     orgs = sorted({str(org) for card in cards for org in card["orgs"]})
     kev = next((card["kev_catalogue"] for card in cards if card.get("kev_catalogue")), None)
