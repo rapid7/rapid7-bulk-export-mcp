@@ -7,7 +7,7 @@ allowing reuse of exports from the same day instead of creating new ones.
 
 import json
 import os
-from datetime import date, datetime
+from datetime import date, datetime, timezone
 from typing import Any, Dict, List, Optional
 
 from .db_utils import duckdb_connection
@@ -84,6 +84,20 @@ class ExportTracker:
             # under a single logical job so the whole range is polled and
             # resumed as one unit. `chunks` holds the ordered per-window plan
             # as JSON: [{start, end, export_id, status}].
+            # One row per org and export type whose region could not be reached, so the
+            # coverage check can tell an outage from an export nobody ran.
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS org_unavailable (
+                    org_label VARCHAR NOT NULL,
+                    export_type VARCHAR NOT NULL,
+                    export_date DATE NOT NULL,
+                    region VARCHAR NOT NULL,
+                    reason VARCHAR NOT NULL,
+                    last_tried TIMESTAMP NOT NULL,
+                    PRIMARY KEY (org_label, export_type)
+                )
+            """)
+
             conn.execute("""
                 CREATE TABLE IF NOT EXISTS export_jobs (
                     job_id VARCHAR PRIMARY KEY,
@@ -547,6 +561,41 @@ class ExportTracker:
             }
             for row in results
         ]
+
+    def record_unavailable(self, org_label: str, export_type: str, region: str, reason: str) -> None:
+        """Record that an org's region could not be reached today, replacing any earlier outage."""
+        with duckdb_connection(self.db_path) as conn:
+            conn.execute(
+                """
+                INSERT INTO org_unavailable (org_label, export_type, export_date, region, reason, last_tried)
+                VALUES (?, ?, ?, ?, ?, ?)
+                ON CONFLICT (org_label, export_type) DO UPDATE SET
+                    export_date = EXCLUDED.export_date,
+                    region = EXCLUDED.region,
+                    reason = EXCLUDED.reason,
+                    last_tried = EXCLUDED.last_tried
+                """,
+                [org_label, export_type, date.today(), region, reason, datetime.now(timezone.utc).replace(tzinfo=None)],
+            )
+
+    def clear_unavailable(self, org_label: str, export_type: str) -> None:
+        """Forget an org's outage once its region answers again."""
+        with duckdb_connection(self.db_path) as conn:
+            conn.execute(
+                "DELETE FROM org_unavailable WHERE org_label = ? AND export_type = ?", [org_label, export_type]
+            )
+
+    def get_unavailable_today(self, export_type: str) -> Dict[str, Dict[str, Any]]:
+        """Return today's outages by org label, each with its region, reason, and last_tried (UTC)."""
+        with duckdb_connection(self.db_path) as conn:
+            rows = conn.execute(
+                """
+                SELECT org_label, region, reason, last_tried FROM org_unavailable
+                WHERE export_type = ? AND export_date = ?
+                """,
+                [export_type, date.today()],
+            ).fetchall()
+        return {row[0]: {"region": row[1], "reason": row[2], "last_tried": row[3]} for row in rows}
 
     def close(self):
         """No-op — connections are short-lived and released per-operation."""
