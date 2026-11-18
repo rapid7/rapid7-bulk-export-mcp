@@ -5,7 +5,7 @@ from decimal import Decimal
 
 import pytest
 
-from src.report_charts import dot_plot, line_chart, nice_max
+from src.report_charts import _MUTED_LINE, dot_plot, line_chart, nice_max
 
 
 def _fmt(value):
@@ -271,4 +271,31 @@ def test_the_dot_plot_fills_the_card_width():
         [{"orgId": "ORG-A", "mean_risk": 1}, {"orgId": "ORG-B", "mean_risk": 9}], "mean_risk", "orgId", COLOURS, _fmt
     )
 
-    assert 'viewBox="0 0 1000 140"' in svg and "max-width" not in svg
+    assert 'viewBox="0 0 1000 160"' in svg and "max-width" not in svg
+
+
+def test_equal_scores_stack_and_keep_the_coloured_dots_visible():
+    rows = [{"orgId": f"ORG-{i}", "mean_risk": 100} for i in range(6)] + [{"orgId": "ORG-LOW", "mean_risk": 1}]
+
+    svg = dot_plot(rows, "mean_risk", "orgId", COLOURS, _fmt)
+
+    heights = sorted({int(y) for y in re.findall(r'<circle cx="960.00" cy="(\d+)"', svg)})
+    assert len(heights) == 5, "six equal scores spread over the five lanes"
+    last_six = re.findall(r'data-colour="([^"]+)"', svg)[-3:]
+    assert _MUTED_LINE not in last_six, "the coloured dots are drawn last, on top"
+
+
+@pytest.mark.parametrize(("peak", "top"), [(0, 4), (3, 4), (6, 8), (880, 1000), (16521, 20000)])
+def test_a_count_axis_has_whole_number_ticks(peak, top):
+    from src.report_charts import count_max
+
+    assert count_max(peak) == top
+    assert all(float(top * i / 4).is_integer() for i in range(5))
+
+
+def test_an_all_zero_count_chart_has_no_fractional_ticks():
+    rows = [{"week": "2026-11-02", "n": 0, "org": "A"}, {"week": "2026-11-09", "n": 0, "org": "A"}]
+
+    svg = line_chart(rows, "week", "n", "org", COLOURS, _fmt)
+
+    assert ">0.25<" not in svg and ">0.5<" not in svg and ">4<" in svg

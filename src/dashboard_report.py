@@ -409,11 +409,19 @@ _SEVERITY_RANGES = {"critical": "9.0-10.0", "high": "7.0-8.9", "medium": "4.0-6.
 """CVSS v3 score range of each severity, as the UX prototype labels its columns."""
 
 
+_AGE_BANDS = ("0-7", "8-30", "31-60", "61-90", "91+")
+
+
 def _heat_table(rows: List[Dict[str, Any]], colours: Dict[str, str]) -> str:
     """Age band by severity, each non-zero cell shaded by its quintile among the non-zero cells."""
     if not rows:
         return '<p class="hint">No rows.</p>'
     severities = [c for c in rows[0] if c != "band"]
+    # The query returns only bands that hold findings. The grid always shows all five, as
+    # the prototype does, so an empty band reads as 0 rather than as missing.
+    by_band = {r.get("band"): r for r in rows}
+    if set(by_band) <= set(_AGE_BANDS):
+        rows = [by_band.get(band) or {"band": band, **{c: 0 for c in severities}} for band in _AGE_BANDS]
 
     def count(value: Any) -> Optional[float]:
         if not _is_number(value):
@@ -641,6 +649,16 @@ def _with_labels(card: Dict[str, Any], names: Dict[str, str]) -> Dict[str, Any]:
     return shown
 
 
+def _org_count(orgs: Sequence[str], excluded: Sequence[str], configured_count: Optional[int]) -> str:
+    """How many organisations the report covers, and how many of those have findings."""
+    if not configured_count:
+        return f"{len(orgs)} organisation(s)"
+    loaded = configured_count - len(excluded)
+    if loaded == len(orgs):
+        return f"{loaded} organisation(s)"
+    return f"{loaded} organisation(s) loaded, {len(orgs)} with findings"
+
+
 def render_report(
     cards: List[Dict[str, Any]],
     generated_at: str,
@@ -699,6 +717,7 @@ def render_report(
             f"{escape(coverage_message or 'An organisation is missing or was not loaded today.')} "
             "Figures that combine organisations are left out.</div>"
         )
+    counted = _org_count(orgs, excluded, configured_count)
     header = [
         "<!doctype html>",
         '<html lang="en" data-rds-brand="callisto" data-rds-mode="dark"><head><meta charset="utf-8">',
@@ -707,7 +726,7 @@ def render_report(
         f'{_font_faces()}\n{_STYLE}</style></head><body><div class="wrap">',
         f'<div class="topbar">{_logo()}</div>',
         "<h1>Multi-Org Exposure Dashboard</h1>",
-        f'<p class="sub">Generated {escape(_when(generated_at))} &middot; {len(orgs)} organisation(s) &middot; '
+        f'<p class="sub">Generated {escape(_when(generated_at))} &middot; {escape(counted)} &middot; '
         "every figure comes from a fixed, tested query</p>",
         f'<p class="sub">Organisations: {escape(", ".join("(no organisation)" if o == "None" else o for o in orgs))}. '
         f"Data date: {escape(_data_dates(cards))}.</p>",

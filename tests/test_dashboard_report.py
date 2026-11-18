@@ -535,3 +535,27 @@ def test_the_age_grid_is_sized_like_the_prototype(cards):
     assert "table.mx th.rh { width: 24%; }" in html
     assert "table.mx td { text-align: center; padding: 8px 2px;" in html
     assert ".headline { margin: 0 0 10px; font-size: 13px; }" in html
+
+
+def test_the_age_grid_always_shows_all_five_bands():
+    from src.dashboard_report import _heat_table
+
+    html = _heat_table([{"band": "91+", "critical": 5, "high": 1, "medium": 0, "low": 0}], {})
+
+    for band in ("0-7", "8-30", "31-60", "61-90", "91+"):
+        assert f'<td class="rl">{band} days</td>' in html
+    assert html.index(">0-7 days<") < html.index(">91+ days</td>")
+
+
+@pytest.mark.parametrize(
+    ("orgs", "excluded", "configured", "text"),
+    [
+        (["a", "b"], [], None, "2 organisation(s)"),
+        (["a", "b"], ["c: not loaded today."], 3, "2 organisation(s)"),
+        (["a"], ["c: not loaded today."], 3, "2 organisation(s) loaded, 1 with findings"),
+    ],
+)
+def test_the_header_counts_loaded_orgs_and_those_with_findings(orgs, excluded, configured, text):
+    from src.dashboard_report import _org_count
+
+    assert _org_count(orgs, excluded, configured) == text

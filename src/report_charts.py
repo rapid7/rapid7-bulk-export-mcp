@@ -20,6 +20,8 @@ _MEDIAN = "#82939c"
 _MAX_PERIODS = 1000
 _MAX_X_LABELS = 8
 _LEADS = 3
+_DOT_GAP = 13
+_DOT_LANES = 5
 _MARKED_PERIODS = 26
 _MUTED_LINE = "#5b676c"
 """The prototype draws every series but the three largest as thin grey lines."""
@@ -107,6 +109,19 @@ def nice_max(value: float) -> float:
     return 10 * power
 
 
+def count_max(value: float) -> float:
+    """An axis top for whole-number counts, so each of the four ticks is a whole number."""
+    raw = max(value, 0.0) / 4
+    if raw <= 1:
+        return 4.0
+    power = 10.0 ** math.floor(math.log10(min(raw, _MAX_VALUE)))
+    for step in (1, 2, 2.5, 5, 10):
+        size = step * power
+        if size.is_integer() and raw <= size:
+            return 4 * size
+    return 40 * power
+
+
 def _legend(names: Sequence[str], colours: Dict[str, str], muted: Sequence[str] = ()) -> str:
     items = "".join(
         f'<span data-series="{escape(name)}">'
@@ -173,7 +188,9 @@ def line_chart(
     for r in rows:
         series = points[str(r.get(series_key))]
         series[str(r.get(x_key))] = series.get(str(r.get(x_key)), 0.0) + _value(r.get(y_key))
-    top = nice_max(max((v for series in points.values() for v in series.values()), default=0.0))
+    plotted = [v for series in points.values() for v in series.values()]
+    peak = max(plotted, default=0.0)
+    top = count_max(peak) if all(float(v).is_integer() for v in plotted) else nice_max(peak)
     left, right, y0, y1 = 90, 980, 20, 230
     step = (right - left) / max(1, len(xs) - 1)
 
@@ -244,20 +261,34 @@ def dot_plot(
         return ""
     low, high = min(v for _, v in values), max(v for _, v in values)
     span = high - low or 1.0
-    left, right, axis_y, dot_y = 40, 960, 110, 90
+    left, right, axis_y, dot_y = 40, 960, 130, 110
 
     def x_at(v: float) -> float:
         return (left + right) / 2 if high == low else left + (right - left) * (v - low) / span
 
-    parts = [_SVG_OPEN.format(w=1000, h=140, f=_FONT)]
+    parts = [_SVG_OPEN.format(w=1000, h=160, f=_FONT)]
     parts.append(f'<line x1="{left}" y1="{axis_y}" x2="{right}" y2="{axis_y}" stroke="{_AXIS}" stroke-width="0.7"/>')
     leads = _largest({label: {"v": v} for label, v in values}, _LEADS)
-    for label, v in values:
+    # Coloured dots take the bottom lanes and draw last, so a pile of equal scores never
+    # hides them. A dot too close to one already placed moves up a lane.
+    order = sorted(values, key=lambda item: (item[0] not in leads, item[1], item[0]))
+    lanes: List[List[float]] = []
+    placed: Dict[str, float] = {}
+    for label, v in order:
+        x = x_at(v)
+        lane = next((i for i, xs in enumerate(lanes) if all(abs(x - other) >= _DOT_GAP for other in xs)), None)
+        if lane is None:
+            lane = min(len(lanes), _DOT_LANES - 1)
+            if lane == len(lanes):
+                lanes.append([])
+        lanes[lane].append(x)
+        placed[label] = dot_y - lane * _DOT_GAP
+    for label, v in sorted(values, key=lambda item: (item[0] in leads, item[1], item[0])):
         colour = colours.get(label, _FALLBACK) if label in leads else _MUTED_LINE
         parts.append(
             f'<g class="series{" lead" if label in leads else ""}" data-series="{escape(label)}" '
             f'data-colour="{colour}">'
-            f'<circle cx="{x_at(v):.2f}" cy="{dot_y}" r="6" fill="{colour}" opacity="0.85" '
+            f'<circle cx="{x_at(v):.2f}" cy="{placed[label]:.0f}" r="6" fill="{colour}" opacity="0.85" '
             f'class="pt" data-heading="Organisation risk distribution" data-metric="Risk score" '
             f'data-value="{escape(fmt(v))}">'
             f"<title>{escape(label)}: {escape(fmt(v))}</title></circle></g>"
@@ -266,17 +297,18 @@ def dot_plot(
     if median_value is not None:
         mx = x_at(min(max(median_value, low), high))
         parts.append(
-            f'<line x1="{mx:.2f}" y1="50" x2="{mx:.2f}" y2="{axis_y}" stroke="{_MEDIAN}" stroke-width="1" '
+            f'<line x1="{mx:.2f}" y1="34" x2="{mx:.2f}" y2="{axis_y}" stroke="{_MEDIAN}" stroke-width="1" '
             'stroke-dasharray="3 3"/>'
         )
         parts.append(
-            f'<text x="{mx:.2f}" y="42" font-size="11" fill="{_MEDIAN}" text-anchor="middle">'
+            f'<text x="{mx:.2f}" y="26" font-size="11" fill="{_MEDIAN}" text-anchor="middle">'
             f"median {escape(fmt(median_value))}</text>"
         )
     if mark_highest and len(values) > 1:
         top_label, top_value = max(values, key=lambda item: item[1])
         parts.append(
-            f'<text x="{x_at(top_value):.2f}" y="72" font-size="11" fill="{_HIGHEST}" text-anchor="end">'
+            f'<text x="{x_at(top_value) - 9:.2f}" y="{placed[top_label] + 4:.0f}" font-size="11" '
+            f'fill="{_HIGHEST}" text-anchor="end">'
             f"highest {escape(fmt(top_value))}</text>"
         )
     ticks = [low] if high == low else [low, _tick((low + high) / 2), high]
