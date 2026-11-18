@@ -265,3 +265,15 @@ def test_more_than_one_excluded_organisation_reads_as_plural(report):
 
     assert "Coverage: 1 of 3 organisations.</strong> europe (me1)" in html
     assert "asia: not loaded today." in html and "Figures below exclude them." in html
+
+
+def test_the_poll_reports_a_down_region_and_says_the_report_can_go_ahead(platform, monkeypatch):
+    _europe_is_down(platform, monkeypatch)
+    mcp_server.start_rapid7_multi_org_export()
+
+    result = mcp_server.check_rapid7_multi_org_export(wait_seconds=30)
+
+    assert "europe (us): region unavailable, last tried" in result and "Retry later to include it." in result
+    assert "Loaded: 2   In progress: 0   Region unavailable: 1   Needs attention: 0" in result
+    assert "2 of 3 organizations are loaded. The report can be built now" in result
+    assert "Fix those before reporting" not in result
