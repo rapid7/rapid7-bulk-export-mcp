@@ -337,7 +337,8 @@ def test_the_report_carries_the_ux_titles_and_copy(cards):
         if description:
             assert description in section, card
     age = _section(html, "unresolved_age_severity")
-    assert '<div class="k">91+ days</div>' in age
+    assert '<p class="headline"><span class="lab">91+ days</span> <strong>' in age
+    assert '<th class="rh"></th>' in age, "no Days active header, as in the prototype"
     assert 'Critical<span class="range">CVSS 9.0-10.0</span>' in age
     assert "light amber (lowest) to dark red (highest)" in age
     comparison = _section(html, "org_comparison")
@@ -386,7 +387,7 @@ def test_weekly_charts_plot_the_last_26_weeks_and_keep_every_week_in_the_figures
     assert 'data-heading="Week of 2026-05-25"' in chart and "2023-06-12" not in chart
     assert "2023-06-12" in figures and "1,400,000" in figures
     assert "Last 26 weeks to the data date" in section
-    assert 'class="series lead"' in chart, "26 points leave room for the prototype's markers"
+    assert 'class="series lead marked"' in chart, "26 points leave room for the prototype's markers"
 
 
 def test_an_unreadable_data_date_plots_every_week():
@@ -431,7 +432,8 @@ def test_a_stored_catalogue_gives_real_kev_figures_and_names_its_source():
     portfolio = _section(html, "portfolio_summary")
     comparison = _section(html, "org_comparison")
     assert '<div class="k">Total findings in CISA KEV</div><div class="v">3</div>' in portfolio
-    assert "CISA KEV catalogue 2026.11.13, released 2026-11-13 20:24 UTC" in portfolio
+    assert "CISA KEV catalogue 2026.11.13" not in portfolio, "the header strip names the catalogue once"
+    assert "CISA KEV catalogue 2026.11.13, released 2026-11-13 20:24 UTC" in html
     assert "Total CISA KEV findings</th>" in comparison and "CISA KEV per assessed asset</th>" in comparison
     assert "known exploits stand in" not in comparison
     assert "1,781 entries" in html
@@ -466,3 +468,70 @@ def test_a_stored_catalogue_with_no_cves_column_gives_the_right_reason():
 
     assert "has no list of CVE IDs per finding" in html
     assert "No CISA KEV catalogue is stored yet" not in html
+
+
+def test_risk_scores_show_as_whole_numbers():
+    rows = [{"orgId": "ORG-A", "risk_score": 645050.8, "total_assessed_assets": 2650}]
+
+    html = _html([_card({"by_org": rows}, per_org=["by_org"], card="org_comparison")])
+
+    assert '<td class="n">645,051</td>' in html
+    assert "645,050.8" not in html
+
+
+@pytest.mark.parametrize(("complete", "marked"), [(True, True), (False, False)])
+def test_the_highest_risk_label_appears_only_with_complete_coverage(cards, complete, marked):
+    section = _section(_html(cards, complete=complete), "org_risk_distribution")
+
+    assert (">highest " in section) is marked
+
+
+def test_organisations_and_data_dates_appear_once_in_the_header(cards):
+    html = _html(cards)
+
+    assert html.count("Data date:") == 1
+    assert "Organisations: ORG-A, ORG-B. Data date: 2026-09-23 00:00 UTC." in html
+
+
+def test_each_definition_sits_in_a_collapsed_about_this_card(cards):
+    html = _html(cards)
+
+    for card in cards:
+        section = _section(html, card["card"])
+        about = section.split('<details class="about"><summary>About this card</summary>', 1)[1]
+        assert card["definition"].split(".")[0] in about, card["card"]
+    assert '<details class="about" open' not in html
+
+
+@pytest.mark.parametrize(("score", "shown"), [(72.5, "73"), (73.5, "74"), (645050.8, "645,051"), (-0.5, "-1")])
+def test_risk_scores_round_half_up(score, shown):
+    rows = [{"orgId": "ORG-A", "risk_score": score}]
+
+    html = _html([_card({"by_org": rows}, per_org=["by_org"], card="org_comparison")])
+
+    assert f'<td class="n">{shown}</td>' in html
+
+
+def test_a_null_median_does_not_hide_the_highest_label_with_complete_coverage():
+    card = _card(
+        {"by_org": [{"orgId": "A", "mean_risk": 1.0}, {"orgId": "B", "mean_risk": 9.0}], "portfolio_median": []},
+        per_org=["by_org"],
+        card="org_risk_distribution",
+    )
+
+    assert ">highest 9<" in _html([card])
+
+
+def test_findings_with_no_org_are_named_in_the_header():
+    card = _card({"by_org": [{"orgId": None, "n": 1}]}, per_org=["by_org"], orgs=[None])
+
+    assert "Organisations: (no organisation)." in _html([card])
+
+
+def test_the_age_grid_is_sized_like_the_prototype(cards):
+    html = _html(cards)
+
+    assert "table.mx { width: 100%; max-width: 660px; table-layout: fixed;" in html
+    assert "table.mx th.rh { width: 24%; }" in html
+    assert "table.mx td { text-align: center; padding: 8px 2px;" in html
+    assert ".headline { margin: 0 0 10px; font-size: 13px; }" in html

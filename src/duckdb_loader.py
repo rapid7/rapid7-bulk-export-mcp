@@ -86,6 +86,8 @@ def _has_column(conn, table_name: str, column: str) -> bool:
 # per-table time above is overwritten by whichever org loaded last, so ageing every org
 # to it would age an older org's findings against a later org's load.
 ORG_LOAD_METADATA_TABLE = "_org_load_metadata"
+ORG_LABELS_TABLE = "_org_labels"
+"""The configured label of each org a multi-org load refreshed, so reports can name it."""
 
 # Tables an org-scoped refresh replaces for the refreshed org even when the new export
 # has no rows for them. Only the vulnerability export loads per org today, and it
@@ -500,6 +502,10 @@ class VulnerabilityDatabase:
                         loaded_at = utc_now()
                         self._record_load_metadata(conn, tables_touched, loaded_at)
                         self._record_org_load_metadata(conn, org_ids_by_table, loaded_at, replace=False)
+                        if org_label and found_orgs:
+                            # An empty export names no org and keeps the org's previous rows,
+                            # so it keeps their label too.
+                            self._record_org_label(conn, found_orgs, org_label, loaded_at)
                 except Exception:
                     conn.rollback()
                     raise
@@ -664,6 +670,39 @@ class VulnerabilityDatabase:
                     """,  # nosec B608
                     [table_name, str(org_id), loaded_at],
                 )
+
+    @staticmethod
+    def _record_org_label(conn, org_ids: Set[Any], org_label: str, loaded_at: datetime) -> None:
+        """Pair each refreshed org ID with its configured label. A label names one org at a time."""
+        conn.execute(
+            f"""
+            CREATE TABLE IF NOT EXISTS {ORG_LABELS_TABLE} (
+                org_id VARCHAR PRIMARY KEY,
+                org_label VARCHAR NOT NULL,
+                updated_at TIMESTAMP NOT NULL
+            )
+            """  # nosec B608
+        )
+        conn.execute(f"DELETE FROM {ORG_LABELS_TABLE} WHERE org_label = ?", [org_label])  # nosec B608
+        for org_id in org_ids:
+            conn.execute(
+                f"""
+                INSERT INTO {ORG_LABELS_TABLE} (org_id, org_label, updated_at) VALUES (?, ?, ?)
+                ON CONFLICT (org_id) DO UPDATE SET org_label = EXCLUDED.org_label, updated_at = EXCLUDED.updated_at
+                """,  # nosec B608
+                [str(org_id), org_label, loaded_at],
+            )
+
+    def get_org_labels(self) -> Dict[str, str]:
+        """Each org ID's configured label from multi-org loads, or an empty mapping."""
+        with duckdb_connection(self.db_path, read_only=True) as conn:
+            exists = conn.execute(
+                "SELECT COUNT(*) FROM information_schema.tables WHERE table_name = ?", [ORG_LABELS_TABLE]
+            ).fetchone()
+            if not exists or exists[0] == 0:
+                return {}
+            rows = conn.execute(f"SELECT org_id, org_label FROM {ORG_LABELS_TABLE}").fetchall()  # nosec B608
+        return {row[0]: row[1] for row in rows}
 
     def get_org_load_metadata(self, table_name: str) -> Dict[str, datetime]:
         """Return each org's last load time for one table, or an empty mapping."""

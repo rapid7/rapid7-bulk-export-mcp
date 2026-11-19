@@ -11,8 +11,9 @@ SIL Open Font License, which ships beside the font files in assets/.
 
 import base64
 import math
+from collections import Counter
 from datetime import datetime, timedelta, timezone
-from decimal import Decimal
+from decimal import ROUND_HALF_UP, Decimal
 from functools import lru_cache
 from html import escape
 from pathlib import Path
@@ -87,27 +88,33 @@ table.cmp { width: 100%; border-collapse: collapse; font-size: var(--rds-fs-body
 table.cmp th, table.cmp td { padding: 6px 8px; border-bottom: 1px solid var(--rds-divider); text-align: left; }
 table.cmp thead th { font-weight: 500; color: var(--rds-text-secondary); font-size: var(--rds-fs-overline); }
 table.cmp .n { text-align: right; font-variant-numeric: tabular-nums; }
-table.mx { border-spacing: 2px; border-collapse: separate; font-size: var(--rds-fs-body2); }
+table.mx { width: 100%; max-width: 660px; table-layout: fixed; border-spacing: 2px; border-collapse: separate;
+  font-size: var(--rds-fs-body2); font-variant-numeric: tabular-nums; }
 table.mx th { font-weight: 500; color: var(--rds-text-secondary); font-size: var(--rds-fs-overline);
-  text-align: right; padding: 2px 8px; }
-table.mx th.rh { text-align: left; }
-table.mx td { text-align: right; padding: 5px 9px; border-radius: 4px; font-variant-numeric: tabular-nums; }
-table.mx th .range { display: block; font-weight: 400; color: var(--rds-text-tertiary); }
-table.mx td.rl { background: var(--rds-bg-subtle); text-align: left; font-size: var(--rds-fs-overline); }
+  text-align: center; padding: 2px; }
+table.mx th.rh { width: 24%; }
+table.mx td { text-align: center; padding: 8px 2px; border-radius: 4px; }
+table.mx th .range { display: block; font-weight: 400; font-size: 10px; color: var(--rds-text-tertiary); }
+.headline { margin: 0 0 10px; font-size: 13px; }
+.headline .lab { color: var(--rds-text-secondary); font-size: 13px; font-weight: 400; margin: 0; }
+.headline strong { font-weight: 500; margin-left: 6px; }
+table.mx td.rl { background: none; text-align: right; padding-right: 8px; color: var(--rds-text-secondary);
+  font-size: var(--rds-fs-overline); }
 .legend { display: flex; flex-wrap: wrap; gap: 14px; margin: 6px 0 4px; }
 .legend span { font-size: var(--rds-fs-overline); color: var(--rds-text-secondary);
   display: inline-flex; align-items: center; gap: 5px; }
 .legend i { width: 14px; height: 2.5px; border-radius: 2px; display: inline-block; }
 details { margin-top: 6px; }
+details.about { margin-top: 10px; }
 summary { font-size: var(--rds-fs-overline); color: var(--rds-text-secondary); cursor: pointer; }
 .chart { position: relative; }
 .chart .pt { cursor: pointer; }
-.chart .series:not(.lead) .mk { opacity: 0; }
+.chart .series:not(.marked) .mk { opacity: 0; }
 .chart .series:not(.lead) .ln { opacity: 0.9; }
 .chart.focusing .ln { opacity: 0.15; }
 .chart.focusing .mk { opacity: 0; }
 .chart.focusing .series.focus .ln { opacity: 1; stroke-width: 3.2; }
-.chart.focusing .series.focus.lead .mk { opacity: 1; }
+.chart.focusing .series.focus.marked .mk { opacity: 1; }
 .chart .mk.on { opacity: 1; }
 .chart .legend span { cursor: pointer; }
 .chart.focusing .legend span:not(.focus) { opacity: 0.4; }
@@ -264,6 +271,17 @@ def _decimal_text(value: Any) -> str:
     return text.rstrip("0").rstrip(".") if "." in text else text
 
 
+_WHOLE_NUMBERS = {"risk_score", "mean_risk", "median_risk", "max_risk", "median_of_org_means"}
+"""Risk scores shown as whole numbers, as the prototype shows them."""
+
+
+def _whole(value: Any) -> Any:
+    """Round half up, as readers expect. Scores arrive rounded to one decimal, so an exact .x5 can be off by one."""
+    if not _is_number(value) or not math.isfinite(float(value)):
+        return value
+    return int(Decimal(str(value)).quantize(Decimal(1), rounding=ROUND_HALF_UP))
+
+
 def _text(value: Any) -> str:
     if value is None:
         return ""
@@ -315,7 +333,8 @@ def _table(rows: List[Dict[str, Any]], colours: Dict[str, str]) -> str:
             if c == "orgId":
                 cells.append(_org_cell(row.get(c), colours))
             elif c in numeric:
-                cells.append(f'<td class="n">{_text(row.get(c))}</td>')
+                value = _whole(row.get(c)) if c in _WHOLE_NUMBERS else row.get(c)
+                cells.append(f'<td class="n">{_text(value)}</td>')
             else:
                 cells.append(f"<td>{_text(row.get(c))}</td>")
         body.append("<tr>" + "".join(cells) + "</tr>")
@@ -356,7 +375,7 @@ def _kev_source(kev: Optional[Dict[str, Any]]) -> str:
 
 def _portfolio_tiles(rows: List[Dict[str, Any]], colours: Dict[str, str], kev: Optional[Dict[str, Any]] = None) -> str:
     if kev:
-        third, notes = ("Total findings in CISA KEV", "kev_findings"), {"kev_findings": _kev_source(kev)}
+        third, notes = ("Total findings in CISA KEV", "kev_findings"), {}
     else:
         third = ("Total findings with a known exploit", "with_exploits")
         notes = {"with_exploits": "Stands in for findings in CISA KEV: no KEV catalogue is stored yet"}
@@ -414,7 +433,7 @@ def _heat_table(rows: List[Dict[str, Any]], colours: Dict[str, str]) -> str:
     headline = ""
     if oldest is not None:
         total = sum(int(v) for c in severities if _is_number(v := oldest.get(c)))
-        headline = _tiles([("91+ days", total, "")])
+        headline = f'<p class="headline"><span class="lab">91+ days</span> <strong>{_text(total)}</strong></p>'
     head = "".join(
         f'<th>{escape(_label(c))}<span class="range">CVSS {_SEVERITY_RANGES.get(c, "")}</span></th>'
         if c in _SEVERITY_RANGES
@@ -426,7 +445,7 @@ def _heat_table(rows: List[Dict[str, Any]], colours: Dict[str, str]) -> str:
         for r in rows
     )
     return (
-        f'{headline}<table class="mx"><thead><tr><th class="rh">Days active</th>{head}</tr></thead>'
+        f'{headline}<table class="mx"><thead><tr><th class="rh"></th>{head}</tr></thead>'
         f"<tbody>{body}</tbody></table>"
         '<p class="inlinenote">Cell shade encodes magnitude, light amber (lowest) to dark red (highest).</p>'
     )
@@ -494,11 +513,15 @@ _WEEKLY = {
 }
 
 
-def _risk_distribution(rows: List[Dict[str, Any]], median: Any, colours: Dict[str, str]) -> List[str]:
+def _risk_distribution(
+    rows: List[Dict[str, Any]], median: Any, colours: Dict[str, str], coverage_complete: bool
+) -> List[str]:
     """Dots per organisation, with the median on the chart when it covers every organisation."""
     if not rows:
         return ['<p class="hint">No rows.</p>']
-    chart = f'<div class="chart">{dot_plot(rows, "mean_risk", "orgId", colours, _number_text, median=median)}</div>'
+    whole = lambda v: _number_text(_whole(v))  # noqa: E731
+    plot = dot_plot(rows, "mean_risk", "orgId", colours, whole, median=median, mark_highest=coverage_complete)
+    chart = f'<div class="chart">{plot}</div>'
     return [chart, _by_organisation(_table(rows, colours), open_=False)]
 
 
@@ -526,7 +549,7 @@ def _card_body(card: Dict[str, Any], coverage_complete: bool, colours: Dict[str,
             median_rows = results.get("portfolio_median") or []
             usable = coverage_complete or "portfolio_median" in per_org
             median = median_rows[0].get("median_of_org_means") if median_rows and usable else None
-            parts += _risk_distribution(rows, median, colours)
+            parts += _risk_distribution(rows, median, colours, coverage_complete)
         elif key in _SUPPORTING:
             parts.append(_by_organisation(_table(rows, colours), open_=not coverage_complete))
         else:
@@ -543,20 +566,74 @@ def _card_body(card: Dict[str, Any], coverage_complete: bool, colours: Dict[str,
     return parts
 
 
+def _data_dates(cards: List[Dict[str, Any]]) -> str:
+    """Every organisation's data date, once for the whole report."""
+    by_org: Dict[str, str] = {}
+    for card in cards:
+        for org, when in card.get("as_of_by_org", {}).items():
+            by_org.setdefault(str(org), when)
+    if not by_org:
+        return ", ".join(sorted({_when(card["as_of"]) for card in cards}))
+    dates = sorted({_when(when) for when in by_org.values()})
+    if len(dates) == 1:
+        return dates[0]
+    return f"from {dates[0]} to {dates[-1]}, by organisation"
+
+
 def _card_section(card: Dict[str, Any], coverage_complete: bool, colours: Dict[str, str]) -> str:
-    dates = [_when(d) for d in sorted(set(card.get("as_of_by_org", {}).values())) or [card["as_of"]]]
-    date_text = dates[0] if len(dates) == 1 else f"from {dates[0]} to {dates[-1]}, by organisation"
-    orgs = ", ".join(map(str, card["orgs"]))
     parts = [
         f'<section class="card" id="{escape(card["card"])}">',
         f'<p class="sec">{escape(card["title"])}</p>',
         f'<p class="hint">{escape(card.get("description", ""))}</p>',
     ]
     parts += _card_body(card, coverage_complete, colours)
-    parts.append(f'<p class="inlinenote">{escape(card["definition"])}</p>')
-    parts.append(f'<p class="inlinenote">Data date: {escape(date_text)}. Organisations: {escape(orgs)}.</p>')
+    parts.append(
+        '<details class="about"><summary>About this card</summary>'
+        f'<p class="inlinenote">{escape(card["definition"])}</p></details>'
+    )
     parts.append("</section>")
     return "\n".join(parts)
+
+
+def _org_ids(cards: List[Dict[str, Any]]) -> List[str]:
+    """Every org ID the cards mention, in a stable order."""
+    ids = {str(org) for card in cards for org in card["orgs"]}
+    ids |= {
+        str(row["orgId"])
+        for card in cards
+        for rows in card["results"].values()
+        for row in rows
+        if row.get("orgId") is not None
+    }
+    return sorted(ids)
+
+
+def _display_names(ids: List[str], labels: Dict[str, str]) -> Dict[str, str]:
+    """A unique display name for each org ID: its label, with its ID added while names clash."""
+    names = {org: labels.get(org, org) for org in ids}
+    for _ in range(3):
+        counts = Counter(names.values())
+        if all(count == 1 for count in counts.values()):
+            return names
+        names = {org: (f"{name} ({org})" if counts[name] > 1 else name) for org, name in names.items()}
+    counts = Counter(names.values())
+    return {org: (org if counts[name] > 1 else name) for org, name in names.items()}
+
+
+def _with_labels(card: Dict[str, Any], names: Dict[str, str]) -> Dict[str, Any]:
+    """The card with each org ID shown by its display name."""
+
+    def name(org: Any) -> Any:
+        return names.get(str(org), org) if org is not None else org
+
+    shown = dict(card)
+    shown["orgs"] = [name(org) for org in card["orgs"]]
+    shown["as_of_by_org"] = {str(name(org)): when for org, when in card.get("as_of_by_org", {}).items()}
+    shown["results"] = {
+        query: [{k: (name(v) if k == "orgId" else v) for k, v in row.items()} for row in rows]
+        for query, rows in card["results"].items()
+    }
+    return shown
 
 
 def render_report(
@@ -574,8 +651,13 @@ def render_report(
             out every result that combines organisations.
         coverage_message: Shown at the top when coverage is incomplete.
     """
+    labels = {org: label for card in cards for org, label in (card.get("org_labels") or {}).items()}
+    ids = _org_ids(cards)
+    names = _display_names(ids, labels)
+    # Keyed by org ID, so a renamed label never moves another org's colour.
+    colours = {names[org]: SERIES_COLOURS[i % len(SERIES_COLOURS)] for i, org in enumerate(ids)}
+    cards = [_with_labels(card, names) for card in cards]
     orgs = sorted({str(org) for card in cards for org in card["orgs"]})
-    colours = {org: SERIES_COLOURS[i % len(SERIES_COLOURS)] for i, org in enumerate(orgs)}
     kev = next((card["kev_catalogue"] for card in cards if card.get("kev_catalogue")), None)
     if kev:
         kev_line = (
@@ -607,6 +689,8 @@ def render_report(
         "<h1>Multi-Org Exposure Dashboard</h1>",
         f'<p class="sub">Generated {escape(_when(generated_at))} &middot; {len(orgs)} organisation(s) &middot; '
         "every figure comes from a fixed, tested query</p>",
+        f'<p class="sub">Organisations: {escape(", ".join("(no organisation)" if o == "None" else o for o in orgs))}. '
+        f"Data date: {escape(_data_dates(cards))}.</p>",
         coverage,
         kev_line,
     ]
