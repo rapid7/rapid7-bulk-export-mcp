@@ -14,6 +14,7 @@ import os
 import sys
 import threading
 import time
+import webbrowser
 from pathlib import Path
 from typing import Optional
 
@@ -22,11 +23,12 @@ from fastmcp import FastMCP
 from fastmcp.server.auth import restrict_tag
 from mcp.types import ToolAnnotations
 
-from . import orchestrator
+from . import kev_catalogue, orchestrator
 from .artifact_store import download_artifact, storage_configured
 from .auth import ENV_AUDIENCE, ENV_ISSUER, ENV_JWKS_URI, build_auth
 from .config import ORGS_FILE_ENV, key_configured, load_config, load_org_configs, load_org_labels, redact_secret
 from .dashboard_queries import CARDS, run_card
+from .dashboard_report import render_report
 from .download import download_all_files
 from .duckdb_loader import VulnerabilityDatabase, utc_now
 from .export_manager import (
@@ -249,6 +251,7 @@ def _orchestrator_context() -> orchestrator.OrchestratorContext:
         download_and_load=lambda *a, **kw: _download_and_load_files(*a, **kw),
         in_progress_retry_secs=_IN_PROGRESS_RETRY_SECS,
         config_for_org=lambda org_label: _config_for_org(org_label),
+        refresh_kev=lambda db_path, write_lock: kev_catalogue.refresh_catalogue(db_path, write_lock=write_lock),
     )
 
 
@@ -1175,6 +1178,9 @@ def get_rapid7_dashboard_card(card: str) -> str:
             - org_comparison: risk score, assets, critical findings, and averages per organization.
 
     Returns:
+        KEV columns (kev_findings, total_kev_findings, kev_per_assessed_asset) are null when no
+        CISA KEV catalogue can be used, which kev_unavailable explains. Null means unknown, not 0:
+        say so, and never report it as zero.
         JSON with the card title, its description and definition (state both on the card), each organization's
         data date (as_of_by_org), the oldest of them (as_of), the organizations included, and
         the result rows of each query. In a hosted deployment it also carries data_loaded,
@@ -1219,6 +1225,118 @@ UNSUPPORTED_AGGREGATIONS_WARNING = (
 """The same list as the skill's "Figures the export cannot supply" section."""
 
 
+REPORT_AUTO_OPEN_ENV = "REPORT_AUTO_OPEN"
+
+
+def _open_report(path: Path) -> bool:
+    """Open a written report in the local default browser, unless hosted or turned off.
+
+    A hosted server's file is on another machine, so opening it there would help no one.
+    """
+    if storage_configured() or os.environ.get(REPORT_AUTO_OPEN_ENV, "true").strip().lower() in ("0", "false", "no"):
+        return False
+    try:
+        return bool(webbrowser.open(path.as_uri()))
+    except Exception:
+        logging.getLogger(__name__).warning("Could not open the report in a browser", exc_info=True)
+        return False
+
+
+def _write_private_file(path: Path, text: str) -> None:
+    """Create a file only its owner can read, failing rather than overwriting one."""
+    path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+    # mkdir leaves an existing directory's mode alone, and the umask can loosen a new one.
+    os.chmod(path.parent, 0o700)
+    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            handle.write(text)
+    except BaseException:
+        path.unlink(missing_ok=True)
+        raise
+
+
+@mcp.tool(
+    annotations=ToolAnnotations(
+        title="Generate Rapid7 Dashboard Report",
+        readOnlyHint=False,
+        destructiveHint=False,
+        idempotentHint=False,
+        openWorldHint=False,
+    ),
+    tags={WRITE_TOOL_TAG},
+    auth=_require_write_scope,
+)
+def generate_rapid7_dashboard_report() -> str:
+    """Build the multi-org exposure report as one HTML file from the data already loaded.
+
+    The server runs every dashboard card's fixed query and renders the document, so the
+    AI writes no SQL and retypes no number. It starts no export. When an organization is
+    missing or was not loaded today, the report says so and leaves out every figure that
+    combines organizations.
+
+    Returns:
+        The path of the new HTML file (readable only by its owner), the coverage state, and
+        the cards it contains.
+    """
+    global db
+
+    precondition = _read_precondition()
+    if precondition is not None:
+        return precondition
+
+    # Coverage and every card are read under one lock, so the report describes one
+    # consistent state of the data and never a load half way through.
+    if not _db_lock.acquire(blocking=False):
+        return (
+            "⏳ A background download/load is in progress, so the report can't be built "
+            "safely right now. Try again once loading has finished."
+        )
+    try:
+        if db is None or not db.has_data():
+            return "Error: No data loaded. Load the vulnerability exports before building the report."
+        orgs_in_data = db.query('SELECT COUNT(DISTINCT "orgId") AS n FROM vulnerabilities')[0]["n"]
+        cards = [run_card(db, name) for name in CARDS]
+        # Inside the lock: a load records itself in the tracker after it releases the lock,
+        # so a load seen here as complete finished before the cards were read.
+        configured, _loaded_today, warnings = _coverage_warnings(orgs_in_data)
+    except ValueError as e:
+        return f"✗ {redact_secret(str(e))}"
+    except Exception as e:
+        return f"✗ Error building the dashboard report: {redact_secret(str(e))}"
+    finally:
+        _db_lock.release()
+
+    if not configured and orgs_in_data > 1:
+        warnings.append(
+            f"The data holds {orgs_in_data} organizations but no organization list could be read, "
+            "so coverage cannot be confirmed."
+        )
+    generated = utc_now()
+    html = render_report(
+        cards,
+        generated.replace(tzinfo=_dt.timezone.utc).isoformat(timespec="seconds"),
+        coverage_complete=not warnings,
+        coverage_message=" ".join(warnings) or None,
+    )
+    path = _DATA_DIR / "reports" / f"multi-org-report-{generated.strftime('%Y%m%dT%H%M%S%fZ')}.html"
+    try:
+        _write_private_file(path, html)
+    except OSError as e:
+        return f"✗ Could not write the report: {redact_secret(str(e))}"
+
+    coverage = "complete" if not warnings else "incomplete, so figures that combine organizations are left out"
+    opened = _open_report(path)
+    lines = [
+        f"✓ Report written to {path}",
+        "Opened it in the default browser." if opened else f"Open it: [{path.name}]({path.as_uri()})",
+        f"Coverage: {coverage}.",
+    ]
+    lines += [f"  - {warning}" for warning in warnings]
+    lines.append(f"Cards: {', '.join(card['title'] for card in cards)}.")
+    return "\n".join(lines)
+
+
 @mcp.prompt(
     name="multi_org_report",
     title="Multi-Org Exposure Report",
@@ -1230,17 +1348,18 @@ def multi_org_report() -> str:
     return (
         "Build the multi-org exposure report from the exports that are already loaded. "
         "Do not start or download any export.\n\n"
-        "1. Call get_rapid7_org_coverage(). If it reports no data, stop and say that exports "
-        "must be loaded first. If it warns that an organization is missing, or that data was "
-        "not loaded today, say so at the top of the report and leave out every portfolio total.\n"
-        "2. Call get_rapid7_dashboard_card(card) once for each of these cards, in this order:\n"
+        "1. Call generate_rapid7_dashboard_report(). If it reports no data, stop and say that "
+        "exports must be loaded first.\n"
+        "2. If the tool says it opened the report in the browser, say so. Otherwise give the user "
+        "the clickable link on its Open it line, exactly as returned. Give its coverage line too. If coverage "
+        "is incomplete, name the organizations it lists and say that the report leaves out every "
+        "portfolio total and every other figure that combines organizations.\n"
+        "3. The report holds these cards, in this order:\n"
         f"{cards}\n"
-        "3. For each card, show its title, its description, its definition, its data date (as_of) and the "
-        "organizations it covers, then its figures. Use only the numbers the card returns. "
-        "Do not call query_rapid7 and do not write SQL for any figure in this report.\n"
-        "4. Label anything you work out yourself from those numbers, such as a ratio or a "
-        "share, as your own interpretation, so it is not read as a card figure.\n"
-        f"5. {UNSUPPORTED_AGGREGATIONS_WARNING}"
+        "Do not retype the report's figures. If the user asks about one, read it with "
+        "get_rapid7_dashboard_card(card). Do not call query_rapid7 and do not write SQL for "
+        "any figure in this report.\n"
+        f"4. {UNSUPPORTED_AGGREGATIONS_WARNING}"
     )
 
 
@@ -1686,6 +1805,54 @@ def compact_rapid7_database() -> str:
     )
 
 
+def _coverage_warnings(orgs_in_data: int) -> tuple:
+    """Compare the configured orgs with the orgs that loaded today.
+
+    Returns:
+        (configured labels, labels loaded today, warnings). No warnings means the loaded
+        data covers every configured organization and nothing else.
+    """
+    try:
+        configured = load_org_labels()
+    except Exception:
+        # Coverage of loaded data is still worth reporting when the org file is broken.
+        configured = []
+    if not configured:
+        return configured, [], []
+
+    # Identity, not cardinality. Comparing counts alone passes when a stale org from an
+    # earlier run masks an org that failed today, which is exactly the plausible-but-
+    # wrong total this gate exists to stop. So ask the tracker which orgs actually
+    # completed a load today, by name.
+    tracker = _tracker()
+    try:
+        loaded_today = sorted(
+            label
+            for label in configured
+            if tracker.get_today_export(export_type="vulnerability", org_label=label) is not None
+        )
+    finally:
+        tracker.close()
+
+    warnings: list = []
+    missing = sorted(set(configured) - set(loaded_today))
+    if missing:
+        warnings.append(
+            f"{len(missing)} configured organization(s) have not loaded today: {', '.join(missing)}. "
+            f"Run check_rapid7_multi_org_export()."
+        )
+    if orgs_in_data > len(loaded_today):
+        # More orgs in the table than were loaded today means data left over from an
+        # earlier run, possibly for an org no longer in the org list. Its rows would be
+        # counted into today's portfolio totals.
+        warnings.append(
+            f"The data holds {orgs_in_data} organization(s) but only {len(loaded_today)} loaded today, "
+            f"so it contains rows from an earlier run. Purge and reload, or explain the extra "
+            f"organization before quoting totals."
+        )
+    return configured, loaded_today, warnings
+
+
 @mcp.tool(
     annotations=ToolAnnotations(
         title="Get Rapid7 Org Coverage",
@@ -1736,25 +1903,7 @@ def get_rapid7_org_coverage() -> str:
     finally:
         _db_lock.release()
 
-    try:
-        configured = load_org_labels()
-    except Exception:
-        # Coverage of loaded data is still worth reporting when the org file is broken.
-        configured = []
-
-    # Identity, not cardinality. Comparing counts alone passes when a stale org from an
-    # earlier run masks an org that failed today, which is exactly the plausible-but-
-    # wrong total this gate exists to stop. So ask the tracker which orgs actually
-    # completed a load today, by name.
-    tracker = _tracker()
-    try:
-        loaded_today = sorted(
-            label
-            for label in configured
-            if tracker.get_today_export(export_type="vulnerability", org_label=label) is not None
-        )
-    finally:
-        tracker.close()
+    configured, loaded_today, warnings = _coverage_warnings(len(rows))
 
     result = f"Organizations present in the loaded vulnerability data: {len(rows)}\n\n"
     for row in rows:
@@ -1763,24 +1912,7 @@ def get_rapid7_org_coverage() -> str:
     if not configured:
         return result
 
-    missing = sorted(set(configured) - set(loaded_today))
     result += f"\nConfigured organizations: {len(configured)}\nLoaded today: {len(loaded_today)}\n"
-
-    warnings: list = []
-    if missing:
-        warnings.append(
-            f"{len(missing)} configured organization(s) have not loaded today: {', '.join(missing)}. "
-            f"Run check_rapid7_multi_org_export()."
-        )
-    if len(rows) > len(loaded_today):
-        # More orgs in the table than were loaded today means data left over from an
-        # earlier run, possibly for an org no longer in the org list. Its rows would be
-        # counted into today's portfolio totals.
-        warnings.append(
-            f"The data holds {len(rows)} organization(s) but only {len(loaded_today)} loaded today, "
-            f"so it contains rows from an earlier run. Purge and reload, or explain the extra "
-            f"organization before quoting totals."
-        )
 
     if warnings:
         result += "\n⚠️  Do not present these as portfolio totals yet.\n"

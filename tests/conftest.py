@@ -1,4 +1,5 @@
 import logging
+import socket
 
 import pytest
 
@@ -27,3 +28,20 @@ def _restore_refresh_logger():
     logger.handlers[:] = handlers
     logger.setLevel(level)
     logger.propagate = propagate
+
+
+@pytest.fixture(autouse=True)
+def _no_outside_network(monkeypatch):
+    """No test may open a connection off this machine, however it reaches the network.
+
+    A test that needs a KEV catalogue passes a stub session to kev_catalogue instead.
+    """
+    real_connect = socket.socket.connect
+
+    def _local_only(sock, address):
+        host = address[0] if isinstance(address, tuple) else address
+        if isinstance(host, str) and host not in ("127.0.0.1", "::1", "localhost") and sock.family != socket.AF_UNIX:
+            raise ConnectionRefusedError(f"tests may not reach {host}")
+        return real_connect(sock, address)
+
+    monkeypatch.setattr(socket.socket, "connect", _local_only)

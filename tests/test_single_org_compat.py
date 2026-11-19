@@ -93,3 +93,16 @@ def test_existing_read_tools_work_without_an_org_list(served):
     assert "ORG-A" in mcp_server.query_rapid7('SELECT DISTINCT "orgId" FROM vulnerabilities')
     assert "vulnerabilities" in mcp_server.get_rapid7_stats()
     assert "vulnerabilities" in mcp_server.get_rapid7_schema()
+
+
+def test_the_report_with_one_org_and_no_org_list_leaves_nothing_out(served, tmp_path, monkeypatch):
+    monkeypatch.setattr(mcp_server, "_DATA_DIR", tmp_path / "data")
+    monkeypatch.setenv(mcp_server.REPORT_AUTO_OPEN_ENV, "false")
+
+    result = mcp_server.generate_rapid7_dashboard_report()
+
+    assert "Coverage: complete." in result
+    [report] = (tmp_path / "data" / "reports").glob("multi-org-report-*.html")
+    html = report.read_text(encoding="utf-8")
+    assert "Left out" not in html
+    assert "Coverage is incomplete" not in html
