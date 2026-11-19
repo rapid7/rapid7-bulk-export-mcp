@@ -23,20 +23,10 @@ from .report_charts import dot_plot, line_chart
 
 _ASSETS = Path(__file__).parent / "assets"
 
-SERIES_COLOURS = (
-    "#77b8ec",
-    "#ff3d82",
-    "#7262c4",
-    "#4edaca",
-    "#c39bf2",
-    "#f4d35e",
-    "#ff8a65",
-    "#a5d6a7",
-    "#f48fb1",
-    "#90a4ae",
-)
-"""Org series colours. The first three are the RDS categorical data-viz colours. The rest
-extend them for portfolios of more than three organisations, avoiding the severity colours."""
+LEAD_COLOURS = ("#77b8ec", "#ff3d82", "#7262c4")
+"""The UX prototype's colours for its three lead organisations, the highest risk scores, in rank order."""
+MUTED_COLOUR = "rgba(248,250,250,0.38)"
+"""The prototype's colour for every other organisation, wherever it appears."""
 
 HEAT_RAMP = (
     ("#ffe100", "#181d1f"),
@@ -118,6 +108,8 @@ summary { font-size: var(--rds-fs-overline); color: var(--rds-text-secondary); c
 .chart.focusing .series.focus.marked .mk { opacity: 1; }
 .chart .mk.on { opacity: 1; }
 .chart .legend span { cursor: pointer; }
+.chart .legend span.selected { color: var(--rds-text-primary); }
+.chart.filtering g.series:not(.focus) { display: none; }
 .chart.focusing .legend span:not(.focus) { opacity: 0.4; }
 #tip { position: fixed; display: none; pointer-events: none; z-index: 10; white-space: nowrap;
   background: #ffffff; color: #181d1f; border-radius: 4px; padding: 8px 10px; font-size: 12px;
@@ -134,14 +126,87 @@ _SCRIPT = """
   tip.setAttribute("role", "tooltip");
   document.body.appendChild(tip);
   var pinned = null;
+  var selected = new Map();
+  var hovered = new Map();
   function chartOf(el) { return el.closest(".chart"); }
   function seriesOf(el) { return el.closest("[data-series]"); }
+  function picked(chart) { return selected.get(chart) || new Set(); }
+  function render(chart) {
+    var names = new Set(picked(chart));
+    if (hovered.get(chart)) { names.add(hovered.get(chart)); }
+    chart.classList.toggle("focusing", names.size > 0);
+    chart.classList.toggle("filtering", picked(chart).size > 0);
+    chart.querySelectorAll("[data-series]").forEach(function (el) {
+      el.classList.toggle("focus", names.has(el.getAttribute("data-series")));
+    });
+    chart.querySelectorAll(".legend span").forEach(function (el) {
+      var on = picked(chart).has(el.getAttribute("data-series"));
+      el.classList.toggle("selected", on);
+      el.setAttribute("aria-pressed", on ? "true" : "false");
+    });
+  }
   function focus(chart, name) {
     if (!chart) { return; }
-    chart.classList.toggle("focusing", name !== null);
-    chart.querySelectorAll("[data-series]").forEach(function (el) {
-      el.classList.toggle("focus", el.getAttribute("data-series") === name);
+    hovered.set(chart, name);
+    render(chart);
+  }
+  function axisTop(peak, counts) {
+    var steps = [1, 2, 2.5, 5, 10];
+    var raw = counts ? Math.max(peak, 0) / 4 : peak;
+    if (counts && raw <= 1) { return 4; }
+    if (!counts && raw <= 0) { return 1; }
+    var power = Math.pow(10, Math.floor(Math.log10(raw)));
+    for (var i = 0; i < steps.length; i++) {
+      var size = steps[i] * power;
+      if ((!counts || Number.isInteger(size)) && raw <= size) { return counts ? 4 * size : size; }
+    }
+    return counts ? 40 * power : 10 * power;
+  }
+  function rescale(chart) {
+    var svg = chart.querySelector("svg[data-top]");
+    if (!svg) { return; }
+    var names = picked(chart);
+    var top = Number(svg.getAttribute("data-top"));
+    if (names.size) {
+      var peak = 0;
+      chart.querySelectorAll("g.series").forEach(function (g) {
+        if (!names.has(g.getAttribute("data-series"))) { return; }
+        g.querySelectorAll(".pt").forEach(function (pt) { peak = Math.max(peak, Number(pt.getAttribute("data-y"))); });
+      });
+      top = axisTop(peak, svg.getAttribute("data-counts") === "1");
+    }
+    var y0 = Number(svg.getAttribute("data-y0"));
+    var y1 = Number(svg.getAttribute("data-y1"));
+    chart.querySelectorAll("g.series").forEach(function (g) {
+      var coords = [];
+      g.querySelectorAll(".pt").forEach(function (pt) {
+        var y = (y1 - (y1 - y0) * Number(pt.getAttribute("data-y")) / top).toFixed(2);
+        pt.setAttribute("cy", y);
+        var mark = pt.previousElementSibling;
+        if (mark && mark.classList.contains("mk")) { mark.setAttribute("cy", y); }
+        coords.push(pt.getAttribute("cx") + "," + y);
+      });
+      var ln = g.querySelector(".ln");
+      if (ln) { ln.setAttribute("points", coords.join(" ")); }
     });
+    svg.querySelectorAll(".ytick").forEach(function (tick, i) {
+      if (!tick.hasAttribute("data-label")) { tick.setAttribute("data-label", tick.textContent); }
+      tick.textContent = names.size
+        ? Number((top * i / 4).toFixed(2)).toLocaleString("en-GB")
+        : tick.getAttribute("data-label");
+    });
+  }
+  function toggle(el) {
+    var chart = chartOf(el);
+    var names = picked(chart);
+    var name = el.getAttribute("data-series");
+    if (names.has(name)) { names.delete(name); } else { names.add(name); }
+    selected.set(chart, names);
+    render(chart);
+    rescale(chart);
+  }
+  function clearSelections() {
+    selected.forEach(function (names, chart) { names.clear(); render(chart); rescale(chart); });
   }
   function line(text, className) {
     var el = document.createElement("div");
@@ -204,12 +269,26 @@ _SCRIPT = """
     });
     el.addEventListener("mouseleave", function () { if (!pinned) { focus(chartOf(el), null); } });
   });
+  document.querySelectorAll(".chart .legend span").forEach(function (el) {
+    el.setAttribute("role", "button");
+    el.setAttribute("tabindex", "0");
+    el.setAttribute("aria-pressed", "false");
+    el.addEventListener("click", function (event) { event.stopPropagation(); toggle(el); });
+    el.addEventListener("keydown", function (event) {
+      if (event.key === "Enter" || event.key === " ") { event.preventDefault(); toggle(el); }
+    });
+  });
   document.addEventListener("click", release);
-  document.addEventListener("keydown", function (event) { if (event.key === "Escape") { release(); } });
+  document.addEventListener("keydown", function (event) {
+    if (event.key === "Escape") { release(); clearSelections(); }
+  });
 })();
 """
-"""Hover tooltips and line focus, as the UX prototype has. Fixed code: it reads each chart
-point's own <title> and writes only textContent, so no data is ever parsed as HTML."""
+"""Hover tooltips and line focus, as the UX prototype has. Clicking a legend label keeps
+that series selected, hides the others, and rescales the y axis to the selection, until it
+is clicked again or Escape is pressed.
+Fixed code: it reads each chart point's own <title> and writes only textContent, so no data
+is ever parsed as HTML."""
 
 _LEFT_OUT_TEXT = "Left out: this combines organisations, and coverage is incomplete."
 
@@ -409,11 +488,19 @@ _SEVERITY_RANGES = {"critical": "9.0-10.0", "high": "7.0-8.9", "medium": "4.0-6.
 """CVSS v3 score range of each severity, as the UX prototype labels its columns."""
 
 
+_AGE_BANDS = ("0-7", "8-30", "31-60", "61-90", "91+")
+
+
 def _heat_table(rows: List[Dict[str, Any]], colours: Dict[str, str]) -> str:
     """Age band by severity, each non-zero cell shaded by its quintile among the non-zero cells."""
     if not rows:
         return '<p class="hint">No rows.</p>'
     severities = [c for c in rows[0] if c != "band"]
+    # The query returns only bands that hold findings. The grid always shows all five, as
+    # the prototype does, so an empty band reads as 0 rather than as missing.
+    by_band = {r.get("band"): r for r in rows}
+    if set(by_band) <= set(_AGE_BANDS):
+        rows = [by_band.get(band) or {"band": band, **{c: 0 for c in severities}} for band in _AGE_BANDS]
 
     def count(value: Any) -> Optional[float]:
         if not _is_number(value):
@@ -480,7 +567,16 @@ def _weekly(y_key: str, y_title: str) -> Callable[[List[Dict[str, Any]], Dict[st
         if not rows:
             return '<p class="hint">No rows.</p>'
         chart = line_chart(
-            rows, "week", y_key, "orgId", colours, _number_text, series=list(colours), y_title=y_title, x_values=weeks
+            rows,
+            "week",
+            y_key,
+            "orgId",
+            colours,
+            _number_text,
+            series=list(colours),
+            y_title=y_title,
+            x_values=weeks,
+            leads=_leads(colours),
         )
         note = (
             f'<p class="inlinenote">Last {len(weeks)} weeks to the data date. Every week is in the figures.</p>'
@@ -521,7 +617,9 @@ def _risk_distribution(
     if not rows:
         return ['<p class="hint">No rows.</p>']
     whole = lambda v: _number_text(_whole(v))  # noqa: E731
-    plot = dot_plot(rows, "mean_risk", "orgId", colours, whole, median=median, mark_highest=coverage_complete)
+    plot = dot_plot(
+        rows, "mean_risk", "orgId", colours, whole, median=median, mark_highest=coverage_complete, leads=_leads(colours)
+    )
     chart = f'<div class="chart">{plot}</div>'
     return [chart, _by_organisation(_table(rows, colours), open_=False)]
 
@@ -600,6 +698,27 @@ def _card_section(
     return "\n".join(parts)
 
 
+def _lead_colours(cards: List[Dict[str, Any]], ids: List[str], names: Dict[str, str]) -> Dict[str, str]:
+    """The three highest-risk organisations take the lead colours for the whole report.
+
+    As in the UX prototype, the same three are coloured in every chart, legend, and table,
+    and every other organisation is muted. With no risk score, the first three by ID lead.
+    """
+    risk: Dict[str, float] = {}
+    for card in cards:
+        for rows in card["results"].values():
+            for row in rows:
+                score = row.get("mean_risk")
+                if row.get("orgId") is not None and _is_number(score) and math.isfinite(float(score)):
+                    risk.setdefault(str(row["orgId"]), float(score))
+    ranked = sorted(ids, key=lambda org: (-risk.get(org, float("-inf")), org))
+    return {names[org]: LEAD_COLOURS[i] if i < len(LEAD_COLOURS) else MUTED_COLOUR for i, org in enumerate(ranked)}
+
+
+def _leads(colours: Dict[str, str]) -> List[str]:
+    return [name for name, colour in colours.items() if colour in LEAD_COLOURS]
+
+
 def _org_ids(cards: List[Dict[str, Any]]) -> List[str]:
     """Every org ID the cards mention, in a stable order."""
     ids = {str(org) for card in cards for org in card["orgs"]}
@@ -641,6 +760,16 @@ def _with_labels(card: Dict[str, Any], names: Dict[str, str]) -> Dict[str, Any]:
     return shown
 
 
+def _org_count(orgs: Sequence[str], excluded: Sequence[str], configured_count: Optional[int]) -> str:
+    """How many organisations the report covers, and how many of those have findings."""
+    if not configured_count:
+        return f"{len(orgs)} organisation(s)"
+    loaded = configured_count - len(excluded)
+    if loaded == len(orgs):
+        return f"{loaded} organisation(s)"
+    return f"{loaded} organisation(s) loaded, {len(orgs)} with findings"
+
+
 def render_report(
     cards: List[Dict[str, Any]],
     generated_at: str,
@@ -666,7 +795,7 @@ def render_report(
     ids = _org_ids(cards)
     names = _display_names(ids, labels)
     # Keyed by org ID, so a renamed label never moves another org's colour.
-    colours = {names[org]: SERIES_COLOURS[i % len(SERIES_COLOURS)] for i, org in enumerate(ids)}
+    colours = _lead_colours(cards, ids, names)
     cards = [_with_labels(card, names) for card in cards]
     orgs = sorted({str(org) for card in cards for org in card["orgs"]})
     kev = next((card["kev_catalogue"] for card in cards if card.get("kev_catalogue")), None)
@@ -699,6 +828,7 @@ def render_report(
             f"{escape(coverage_message or 'An organisation is missing or was not loaded today.')} "
             "Figures that combine organisations are left out.</div>"
         )
+    counted = _org_count(orgs, excluded, configured_count)
     header = [
         "<!doctype html>",
         '<html lang="en" data-rds-brand="callisto" data-rds-mode="dark"><head><meta charset="utf-8">',
@@ -707,8 +837,7 @@ def render_report(
         f'{_font_faces()}\n{_STYLE}</style></head><body><div class="wrap">',
         f'<div class="topbar">{_logo()}</div>',
         "<h1>Multi-Org Exposure Dashboard</h1>",
-        f'<p class="sub">Generated {escape(_when(generated_at))} &middot; {len(orgs)} organisation(s) &middot; '
-        "every figure comes from a fixed, tested query</p>",
+        f'<p class="sub">Generated {escape(_when(generated_at))} &middot; {escape(counted)}</p>',
         f'<p class="sub">Organisations: {escape(", ".join("(no organisation)" if o == "None" else o for o in orgs))}. '
         f"Data date: {escape(_data_dates(cards))}.</p>",
         coverage,
