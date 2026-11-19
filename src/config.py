@@ -81,27 +81,49 @@ def key_configured() -> bool:
     return _resolve_api_key() is not None
 
 
+def _known_secrets() -> List[str]:
+    """Every API key this server can resolve: the single-org key and each org's key_ref.
+
+    Each lookup fails on its own, so one missing key or a broken orgs file never stops
+    the others from being found.
+    """
+    found: List[str] = []
+    try:
+        single = _resolve_api_key()
+        if single:
+            found.append(single)
+    except Exception:  # nosec B110 - a failed lookup means nothing to redact for that key
+        pass
+    try:
+        entries = _read_org_entries() or []
+    except Exception:
+        entries = []
+    for entry in entries:
+        key_ref = entry.get("key_ref") if isinstance(entry, dict) else None
+        if not isinstance(key_ref, str) or not key_ref.strip():
+            continue
+        try:
+            value = _resolve_secret(key_ref)
+        except Exception:  # nosec B112 - a failed lookup means nothing to redact for that key
+            continue
+        if value:
+            found.append(value)
+    return found
+
+
 def redact_secret(text: str) -> str:
-    """Replace the configured API key, if present, with a fixed placeholder.
+    """Replace every API key the server can resolve with a fixed placeholder.
 
     Tool error paths return ``str(e)`` to the model and the transcript, and an
-    exception can carry request material that includes the credential. Scrubbing
-    the known key value before it is returned closes that leak at the boundary
-    where the string leaves the process, regardless of which layer raised. A
-    resolution failure here must never turn into a leak, so any error while
-    resolving the key is treated as "nothing to redact" and the text is returned
-    unchanged only when no key could be found.
+    exception can carry request material that includes a credential. In multi-org
+    mode that credential is an org's key from its key_ref, not RAPID7_API_KEY, so
+    every org's key is scrubbed too. A failed lookup must never turn scrubbing into
+    a crash on the path where a string leaves the process, so it only means there is
+    nothing to redact for that key.
     """
-    try:
-        api_key = _resolve_api_key()
-    except Exception:
-        # Refusing to leak beats propagating: an error resolving the key must
-        # not turn scrubbing into a crash on the path where a string is leaving
-        # the process. Nothing to redact against, so return the text as-is.
-        api_key = None
-    if not api_key:
-        return text
-    return text.replace(api_key, "***REDACTED***")
+    for secret in sorted(set(_known_secrets()), key=len, reverse=True):
+        text = text.replace(secret, "***REDACTED***")
+    return text
 
 
 def load_config() -> Dict[str, str]:

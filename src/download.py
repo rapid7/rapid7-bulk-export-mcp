@@ -8,10 +8,19 @@ progress reporting and proper error handling.
 
 import sys
 from typing import List
+from urllib.parse import urlparse
 
 import requests
 
 from .config import USER_AGENT
+
+_RAPID7_API_SUFFIX = ".api.insight.rapid7.com"
+
+
+def _is_rapid7_api(url: str) -> bool:
+    parsed = urlparse(url)
+    host = (parsed.hostname or "").lower()
+    return parsed.scheme == "https" and host.endswith(_RAPID7_API_SUFFIX)
 
 
 def download_parquet_file(url: str, api_key: str) -> bytes:
@@ -39,10 +48,11 @@ def download_parquet_file(url: str, api_key: str) -> bytes:
         >>> content = download_parquet_file(url, api_key)
         >>> print(f"Downloaded {len(content)} bytes")
     """
-    headers = {
-        "X-Api-Key": api_key,
-        "User-Agent": USER_AGENT,
-    }
+    headers = {"User-Agent": USER_AGENT}
+    # Export file URLs are signed, so they need no key. The key goes only to Rapid7's own
+    # API hosts, never to the storage service behind a signed URL.
+    if _is_rapid7_api(url):
+        headers["X-Api-Key"] = api_key
 
     # Stream download for memory efficiency
     response = requests.get(url, headers=headers, stream=True, timeout=30)

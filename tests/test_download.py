@@ -15,7 +15,7 @@ class TestDownloadParquetFile:
     @responses.activate
     def test_download_parquet_file_success(self):
         """Test successful download returns file content."""
-        url = "https://example.com/file.parquet"
+        url = "https://us.api.insight.rapid7.com/export/file.parquet"
         api_key = "test-api-key"
         expected_content = b"parquet file content"
 
@@ -30,7 +30,7 @@ class TestDownloadParquetFile:
     @responses.activate
     def test_download_parquet_file_includes_api_key_header(self):
         """Test that X-Api-Key header is included in the request."""
-        url = "https://example.com/file.parquet"
+        url = "https://us.api.insight.rapid7.com/export/file.parquet"
         api_key = "my-secret-key"
 
         responses.add(responses.GET, url, body=b"content", status=200)
@@ -43,7 +43,7 @@ class TestDownloadParquetFile:
     @responses.activate
     def test_download_parquet_file_http_error(self):
         """Test that HTTP error raises HTTPError."""
-        url = "https://example.com/file.parquet"
+        url = "https://us.api.insight.rapid7.com/export/file.parquet"
         api_key = "test-api-key"
 
         responses.add(responses.GET, url, body="Not Found", status=404)
@@ -56,7 +56,7 @@ class TestDownloadParquetFile:
     @responses.activate
     def test_download_parquet_file_server_error(self):
         """Test that server error raises HTTPError."""
-        url = "https://example.com/file.parquet"
+        url = "https://us.api.insight.rapid7.com/export/file.parquet"
         api_key = "test-api-key"
 
         responses.add(responses.GET, url, body="Internal Server Error", status=500)
@@ -69,7 +69,7 @@ class TestDownloadParquetFile:
     @responses.activate
     def test_download_parquet_file_unauthorized(self):
         """Test that unauthorized error raises HTTPError."""
-        url = "https://example.com/file.parquet"
+        url = "https://us.api.insight.rapid7.com/export/file.parquet"
         api_key = "invalid-key"
 
         responses.add(responses.GET, url, body="Unauthorized", status=401)
@@ -132,7 +132,10 @@ class TestDownloadAllFiles:
     @responses.activate
     def test_download_all_files_includes_api_key_in_all_requests(self):
         """Test that API key is included in all download requests."""
-        urls = ["https://example.com/file1.parquet", "https://example.com/file2.parquet"]
+        urls = [
+            "https://us.api.insight.rapid7.com/f/file1.parquet",
+            "https://us.api.insight.rapid7.com/f/file2.parquet",
+        ]
         api_key = "my-secret-key"
 
         for url in urls:
@@ -148,7 +151,10 @@ class TestDownloadAllFiles:
     @responses.activate
     def test_download_all_files_http_error_on_first_file(self):
         """Test that HTTP error on first file raises HTTPError."""
-        urls = ["https://example.com/file1.parquet", "https://example.com/file2.parquet"]
+        urls = [
+            "https://us.api.insight.rapid7.com/f/file1.parquet",
+            "https://us.api.insight.rapid7.com/f/file2.parquet",
+        ]
         api_key = "test-api-key"
 
         responses.add(responses.GET, urls[0], body="Not Found", status=404)
@@ -163,7 +169,10 @@ class TestDownloadAllFiles:
     @responses.activate
     def test_download_all_files_http_error_on_second_file(self):
         """Test that HTTP error on second file raises HTTPError after first succeeds."""
-        urls = ["https://example.com/file1.parquet", "https://example.com/file2.parquet"]
+        urls = [
+            "https://us.api.insight.rapid7.com/f/file1.parquet",
+            "https://us.api.insight.rapid7.com/f/file2.parquet",
+        ]
         api_key = "test-api-key"
 
         responses.add(responses.GET, urls[0], body=b"file1 content", status=200)
