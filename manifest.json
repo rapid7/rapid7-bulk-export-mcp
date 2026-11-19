@@ -137,7 +137,7 @@
     "region": {
       "type": "string",
       "title": "Rapid7 Region",
-      "description": "Your Rapid7 data storage region: us, eu, ca, au, or ap. Find this under your account name in the Insight Platform.",
+      "description": "Your Rapid7 data storage region: us, us2, us3, eu, ca, au, ap, me1, or aps2. Find this under your account name in the Insight Platform.",
       "required": true,
       "default": "us"
     },

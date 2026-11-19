@@ -354,13 +354,32 @@ def test_the_by_organisation_table_opens_when_coverage_is_incomplete(cards, comp
     assert "<summary>By organisation</summary>" in section
 
 
-def test_more_than_three_orgs_each_get_their_own_colour():
-    orgs = [f"ORG-{i}" for i in range(10)]
-    rows = [{"orgId": org, "n": 1} for org in orgs]
-    html = _html([_card({"by_org": rows}, per_org=["by_org"], orgs=orgs)])
+def test_the_three_highest_risk_orgs_take_the_prototype_colours_in_rank_order():
+    orgs = [f"ORG-{i}" for i in range(6)]
+    risk = [{"orgId": org, "mean_risk": float(i)} for i, org in enumerate(orgs)]
+    html = _html([_card({"by_org": risk}, per_org=["by_org"], orgs=orgs)])
 
-    swatches = re.findall(r'<span class="swatch" style="background:(#[0-9a-f]{6})"></span>', html)
-    assert len(swatches) == 10 == len(set(swatches))
+    swatch = {
+        org: colour for colour, org in re.findall(r'class="swatch" style="background:([^"]+)"></span>(ORG-\d)', html)
+    }
+    assert swatch == {
+        "ORG-5": "#77b8ec",
+        "ORG-4": "#ff3d82",
+        "ORG-3": "#7262c4",
+        "ORG-2": "rgba(248,250,250,0.38)",
+        "ORG-1": "rgba(248,250,250,0.38)",
+        "ORG-0": "rgba(248,250,250,0.38)",
+    }
+
+
+def test_the_same_three_lead_in_every_chart(cards):
+    from src.dashboard_report import _lead_colours
+
+    names = {org: org for org in ("A", "B", "C", "D")}
+    risk = [{"orgId": o, "mean_risk": r} for o, r in (("A", 1), ("B", 9), ("C", 5), ("D", 7))]
+    colours = _lead_colours([{"results": {"by_org": risk}}], sorted(names), names)
+
+    assert colours == {"B": "#77b8ec", "D": "#ff3d82", "C": "#7262c4", "A": "rgba(248,250,250,0.38)"}
 
 
 def test_incomplete_coverage_still_draws_the_per_org_charts(cards):
@@ -535,3 +554,46 @@ def test_the_age_grid_is_sized_like_the_prototype(cards):
     assert "table.mx th.rh { width: 24%; }" in html
     assert "table.mx td { text-align: center; padding: 8px 2px;" in html
     assert ".headline { margin: 0 0 10px; font-size: 13px; }" in html
+
+
+def test_the_age_grid_always_shows_all_five_bands():
+    from src.dashboard_report import _heat_table
+
+    html = _heat_table([{"band": "91+", "critical": 5, "high": 1, "medium": 0, "low": 0}], {})
+
+    for band in ("0-7", "8-30", "31-60", "61-90", "91+"):
+        assert f'<td class="rl">{band} days</td>' in html
+    assert html.index(">0-7 days<") < html.index(">91+ days</td>")
+
+
+@pytest.mark.parametrize(
+    ("orgs", "excluded", "configured", "text"),
+    [
+        (["a", "b"], [], None, "2 organisation(s)"),
+        (["a", "b"], ["c: not loaded today."], 3, "2 organisation(s)"),
+        (["a"], ["c: not loaded today."], 3, "2 organisation(s) loaded, 1 with findings"),
+    ],
+)
+def test_the_header_counts_loaded_orgs_and_those_with_findings(orgs, excluded, configured, text):
+    from src.dashboard_report import _org_count
+
+    assert _org_count(orgs, excluded, configured) == text
+
+
+def test_the_header_carries_no_query_provenance_copy(cards):
+    assert "fixed, tested query" not in _html(cards)
+
+
+def test_legend_labels_are_toggle_buttons_that_keep_a_selection(cards):
+    [script] = re.findall(r"<script>(.*?)</script>", _html(cards), re.S)
+
+    assert 'el.setAttribute("role", "button")' in script and 'el.setAttribute("aria-pressed", "false")' in script
+    assert "selected.set(chart, names)" in script, "a click adds to the chart's selection rather than replacing it"
+    assert 'if (event.key === "Escape") { release(); clearSelections(); }' in script
+
+
+def test_a_legend_selection_hides_the_other_series(cards):
+    html = _html(cards)
+
+    assert ".chart.filtering g.series:not(.focus) { display: none; }" in html
+    assert 'chart.classList.toggle("filtering", picked(chart).size > 0);' in html

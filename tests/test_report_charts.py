@@ -5,7 +5,7 @@ from decimal import Decimal
 
 import pytest
 
-from src.report_charts import dot_plot, line_chart, nice_max
+from src.report_charts import _MUTED_TIP, dot_plot, line_chart, nice_max
 
 
 def _fmt(value):
@@ -201,7 +201,7 @@ def test_only_the_three_largest_series_lead_as_the_prototype_draws_them():
 
     leads = re.findall(r'<g class="series lead[^"]*" data-series="([^"]+)"', svg)
     assert sorted(leads) == ["ORG-3", "ORG-4", "ORG-5"]
-    assert svg.count('data-colour="#5b676c"') == 2, "the tooltip dot matches the grey line"
+    assert svg.count('data-colour="#9aa5aa"') == 2, "the tooltip dot uses the prototype's muted swatch"
 
 
 def test_each_hover_target_carries_its_tooltip_parts_escaped():
@@ -234,9 +234,9 @@ def test_only_the_largest_series_keep_their_colour_and_the_rest_draw_grey():
 
     svg = line_chart(rows, "week", "n", "orgId", colours, _fmt)
 
-    assert svg.count('stroke="#5b676c" stroke-width="1.6"') == 2
+    assert svg.count('stroke="rgba(248,250,250,0.38)" stroke-width="1.6"') == 2
     assert svg.count('stroke="#77b8ec" stroke-width="2.4"') == 3
-    assert svg.count('<i style="background:#5b676c"></i>') == 2, "the legend matches the drawn colour"
+    assert svg.count('<i style="background:rgba(248,250,250,0.38)"></i>') == 2, "the legend matches the line"
 
 
 def test_line_charts_have_no_y_axis_title():
@@ -261,9 +261,9 @@ def test_muted_dots_draw_tooltip_and_legend_in_one_grey():
 
     svg = dot_plot(rows, "mean_risk", "orgId", colours, _fmt)
 
-    assert svg.count('fill="#5b676c"') == 2
-    assert svg.count('data-colour="#5b676c"') == 2
-    assert svg.count('<i style="background:#5b676c"></i>') == 2
+    assert svg.count('fill="rgba(248,250,250,0.55)"') == 2
+    assert svg.count('data-colour="#9aa5aa"') == 2
+    assert svg.count('<i style="background:rgba(248,250,250,0.38)"></i>') == 2
 
 
 def test_the_dot_plot_fills_the_card_width():
@@ -271,4 +271,41 @@ def test_the_dot_plot_fills_the_card_width():
         [{"orgId": "ORG-A", "mean_risk": 1}, {"orgId": "ORG-B", "mean_risk": 9}], "mean_risk", "orgId", COLOURS, _fmt
     )
 
-    assert 'viewBox="0 0 1000 140"' in svg and "max-width" not in svg
+    assert 'viewBox="0 0 1000 160"' in svg and "max-width" not in svg
+
+
+def test_equal_scores_stack_and_keep_the_coloured_dots_visible():
+    rows = [{"orgId": f"ORG-{i}", "mean_risk": 100} for i in range(6)] + [{"orgId": "ORG-LOW", "mean_risk": 1}]
+
+    svg = dot_plot(rows, "mean_risk", "orgId", COLOURS, _fmt)
+
+    heights = sorted({int(y) for y in re.findall(r'<circle cx="960.00" cy="(\d+)"', svg)})
+    assert len(heights) == 5, "six equal scores spread over the five lanes"
+    last_three = re.findall(r'data-colour="([^"]+)"', svg)[-3:]
+    assert _MUTED_TIP not in last_three, "the coloured dots are drawn last, on top"
+
+
+@pytest.mark.parametrize(("peak", "top"), [(0, 4), (3, 4), (6, 8), (880, 1000), (16521, 20000)])
+def test_a_count_axis_has_whole_number_ticks(peak, top):
+    from src.report_charts import count_max
+
+    assert count_max(peak) == top
+    assert all(float(top * i / 4).is_integer() for i in range(5))
+
+
+def test_an_all_zero_count_chart_has_no_fractional_ticks():
+    rows = [{"week": "2026-11-02", "n": 0, "org": "A"}, {"week": "2026-11-09", "n": 0, "org": "A"}]
+
+    svg = line_chart(rows, "week", "n", "org", COLOURS, _fmt)
+
+    assert ">0.25<" not in svg and ">0.5<" not in svg and ">4<" in svg
+
+
+def test_a_line_chart_carries_what_the_script_needs_to_rescale_it():
+    rows = [{"week": "2026-11-02", "n": 1234567, "org": "A"}, {"week": "2026-11-09", "n": 3, "org": "B"}]
+
+    svg = line_chart(rows, "week", "n", "org", COLOURS, _fmt)
+
+    assert 'data-top="2000000" data-y0="20" data-y1="230" data-counts="1"' in svg
+    assert 'data-y="1234567"' in svg, "raw values keep full precision"
+    assert svg.count('class="ytick"') == 5

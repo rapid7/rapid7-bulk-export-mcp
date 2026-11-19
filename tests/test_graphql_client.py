@@ -8,7 +8,7 @@ import pytest
 import requests
 import responses
 
-from src.graphql_client import send_graphql_request
+from src.graphql_client import RegionUnavailableError, send_graphql_request
 
 
 class TestSendGraphQLRequest:
@@ -116,7 +116,7 @@ class TestSendGraphQLRequest:
 
         responses.add(responses.POST, endpoint, body=requests.exceptions.ConnectionError("Connection failed"))
 
-        with pytest.raises(requests.exceptions.ConnectionError):
+        with pytest.raises(RegionUnavailableError, match="could not be reached"):
             send_graphql_request(endpoint, api_key, query)
 
     @responses.activate

@@ -7,10 +7,20 @@ authentication and error handling.
 """
 
 from typing import Any, Dict, Optional
+from urllib.parse import urlparse
 
 import requests
 
 from .config import USER_AGENT
+
+TIMEOUT_SECONDS = (10, 30)
+"""Connect and read timeouts. A region that is down must fail in seconds, not minutes."""
+
+_GATEWAY_ERRORS = frozenset({502, 503, 504})
+
+
+class RegionUnavailableError(requests.RequestException):
+    """The region's API could not be reached, or its gateway answered 502, 503, or 504."""
 
 
 def send_graphql_request(
@@ -34,6 +44,7 @@ def send_graphql_request(
         The parsed JSON response as a dictionary
 
     Raises:
+        RegionUnavailableError: If the region cannot be reached or answers 502, 503, or 504
         requests.HTTPError: If the HTTP response status code is not 200
         ValueError: If the response contains GraphQL errors
         requests.RequestException: If the network request fails
@@ -55,8 +66,17 @@ def send_graphql_request(
     if variables is not None:
         body["variables"] = variables
 
-    # Send POST request
-    response = requests.post(endpoint, headers=headers, json=body, timeout=30)
+    host = urlparse(endpoint).hostname or endpoint
+    # The underlying message is dropped on purpose: a proxy or adapter can echo the
+    # request, and this text reaches the transcript.
+    try:
+        response = requests.post(endpoint, headers=headers, json=body, timeout=TIMEOUT_SECONDS)
+    except requests.Timeout:
+        raise RegionUnavailableError(f"{host} did not respond in time") from None
+    except requests.ConnectionError:
+        raise RegionUnavailableError(f"{host} could not be reached") from None
+    if response.status_code in _GATEWAY_ERRORS:
+        raise RegionUnavailableError(f"{host} answered HTTP {response.status_code}")
 
     # Raise HTTPError for non-200 status codes
     response.raise_for_status()

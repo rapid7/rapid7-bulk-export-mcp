@@ -169,6 +169,20 @@ class TestLoadOrgConfigs:
         assert [c["api_key"] for c in configs] == ["key-nr", "key-pay"]
         assert configs[1]["endpoint"] == REGION_ENDPOINTS["eu"]
 
+    @pytest.mark.parametrize(
+        ("region", "endpoint"),
+        [
+            ("me1", "https://me1.api.insight.rapid7.com/export/graphql"),
+            ("aps2", "https://aps2.api.insight.rapid7.com/export/graphql"),
+        ],
+    )
+    def test_an_org_in_the_middle_east_or_india_region_resolves(self, tmp_path, region, endpoint):
+        orgs_file = self._write_orgs(tmp_path, [{"label": "one", "key_ref": "R7_KEY_ONE", "region": region}])
+        with patch.dict(os.environ, {"RAPID7_ORGS_FILE": orgs_file, "R7_KEY_ONE": "key-one"}, clear=True):
+            [config] = load_org_configs()
+
+        assert (config["region"], config["endpoint"]) == (region, endpoint)
+
     def test_region_defaults_to_environment(self, tmp_path):
         """An org without a region inherits RAPID7_REGION."""
         orgs_file = self._write_orgs(tmp_path, [{"label": "one", "key_ref": "R7_KEY_ONE"}])

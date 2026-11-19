@@ -96,7 +96,7 @@ param authRequiredScopes string = ''
 param authWriteScope string = 'rapid7.write'
 
 // --- Rapid7 (job only) -------------------------------------------------------
-@description('Rapid7 region for the export endpoint (RAPID7_REGION): us, us2, us3, eu, ca, au, ap.')
+@description('Rapid7 region for the export endpoint (RAPID7_REGION): us, us2, us3, eu, ca, au, ap, me1, aps2.')
 @allowed([
   'us'
   'us2'
