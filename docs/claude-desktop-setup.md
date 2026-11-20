@@ -148,11 +148,11 @@ Notes on that block:
   `DATA_DIR`, so it falls back to `~/.rapid7_mcp`. If the development server used the same
   directory, the older build could load in snapshot mode over the top of the multi-org
   data and drop every org but the last. A separate directory makes that impossible.
-- `RAPID7_API_KEY` is left empty on purpose for a pure multi-org run, because each
-  organization's key is resolved from the org list instead. If any tool complains that
-  it is missing, put one of the organization keys there.
+- `RAPID7_API_KEY` is optional when `RAPID7_ORGS_FILE` is set, because each
+  organization's key is resolved from the org list. To keep that key as one of the
+  organizations, give its entry the `key_ref` `RAPID7_API_KEY`.
 - Keys are not in this file. `RAPID7_ORGS_FILE` points at a list of *names* of Keychain
-  entries. See `docs/multi-org-demo.md` for how to write that file and store the keys.
+  entries. Run `uv run scripts/add_rapid7_org.py` to store the keys and write that file.
 
 ### A4. Restart Claude Desktop
 
@@ -213,6 +213,27 @@ The skill in this branch contains the multi-organization section. If you upload 
 zip, or skip this step, Claude will still have the new tools but will not know the
 correct order to call them in, and will not know to gate on `get_rapid7_org_coverage`
 before quoting totals. Do not skip it.
+
+## Adding a second organization to a single-org setup
+
+If you already use one API key, you do not start again:
+
+1. Run `uv run scripts/add_rapid7_org.py`.
+2. Answer yes when it asks to keep the key you already use (`RAPID7_API_KEY`). Give that
+   organization a label and a region.
+3. Add the new organization at the next prompt. The script stores its key in the
+   Keychain and writes the orgs file with both organizations. It does not store the
+   existing key again. That organization's entry references `RAPID7_API_KEY`.
+4. Set the organizations file in Claude Desktop to the path the script prints. Keep the
+   Rapid7 API Key setting as it is, because the first organization uses it.
+5. Quit and reopen Claude Desktop, then export every organization.
+
+The first multi-org export of your original organization replaces its single-org data,
+so its totals are not counted twice.
+
+To go back to one organization, clear the organizations file setting in Claude Desktop
+and restart it. The server then uses the Rapid7 API Key alone, as before. The next
+export replaces the data with that organization only.
 
 ## Verifying the whole thing end to end
 

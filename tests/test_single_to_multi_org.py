@@ -1,6 +1,7 @@
 """A single-org setup grows into multi-org: the original key becomes the first org, and nothing else changes."""
 
 import json
+from datetime import datetime
 from pathlib import Path
 
 import pytest
@@ -157,3 +158,77 @@ def test_next_steps_say_to_keep_the_desktop_key_when_an_org_uses_it(tmp_path, mo
     _run(tmp_path, ["", "fogcutter", "", "second", "eu", ""], monkeypatch)
 
     assert "Keep the Rapid7 API Key set in Claude Desktop: 'fogcutter' uses it." in capsys.readouterr().out
+
+
+from src.duckdb_loader import VulnerabilityDatabase  # noqa: E402
+from tests.test_org_labels import _assets  # noqa: E402
+from tests.test_org_load_metadata import _org_file  # noqa: E402
+
+
+def _counts(db):
+    return {
+        row["org"]: row["n"] for row in db.query('SELECT "orgId" AS org, COUNT(*) AS n FROM vulnerabilities GROUP BY 1')
+    }
+
+
+def _org_rows(tmp_path, org_id, n, tag):
+    """n findings for one org, in a file named by tag so loads never share a file."""
+    import pyarrow as pa
+    import pyarrow.parquet as pq
+
+    base = pq.read_table(_org_file(tmp_path, org_id, datetime(2026, 9, 1)))
+    rows = pa.concat_tables([base] * n).set_column(2, "vulnId", pa.array([f"V{i}" for i in range(n)]))
+    path = tmp_path / f"{org_id}-{tag}.parquet"
+    pq.write_table(rows, path)
+    return str(path)
+
+
+@pytest.fixture
+def db(tmp_path):
+    database = VulnerabilityDatabase(str(tmp_path / "data.db"))
+    yield database
+    database.close()
+
+
+def test_the_first_multi_org_load_replaces_the_original_orgs_single_org_rows(db, tmp_path):
+    db.load_parquet_files_by_prefix({"asset_vulnerability": [_org_rows(tmp_path, "ORG-A", 5, "single")]})
+    assert _counts(db) == {"ORG-A": 5}
+
+    db.load_parquet_files_by_prefix(
+        {"asset_vulnerability": [_org_rows(tmp_path, "ORG-A", 3, "multi")], "asset": [_assets(tmp_path, "ORG-A")]},
+        org_scoped=True,
+        org_label="primary",
+    )
+    db.load_parquet_files_by_prefix(
+        {"asset_vulnerability": [_org_rows(tmp_path, "ORG-B", 2, "multi")], "asset": [_assets(tmp_path, "ORG-B")]},
+        org_scoped=True,
+        org_label="second",
+    )
+
+    assert _counts(db) == {"ORG-A": 3, "ORG-B": 2}, "the original org's 5 single-org rows are replaced, not added to"
+    assert db.get_org_labels() == {"ORG-A": "primary", "ORG-B": "second"}
+
+
+def test_going_back_to_single_org_leaves_only_the_original_orgs_snapshot(db, tmp_path):
+    for org, n, label in (("ORG-A", 3, "primary"), ("ORG-B", 2, "second")):
+        db.load_parquet_files_by_prefix(
+            {"asset_vulnerability": [_org_rows(tmp_path, org, n, "multi")]}, org_scoped=True, org_label=label
+        )
+
+    db.load_parquet_files_by_prefix({"asset_vulnerability": [_org_rows(tmp_path, "ORG-A", 4, "single")]})
+
+    assert _counts(db) == {"ORG-A": 4}, "a single-org snapshot load replaces every org's rows"
+
+
+def test_removing_the_orgs_file_returns_the_same_key_to_single_org_use(tmp_path, monkeypatch, no_keychain):
+    monkeypatch.setenv("RAPID7_API_KEY", "key-primary")
+    monkeypatch.setenv("RAPID7_REGION", "us")
+    monkeypatch.setenv(
+        "RAPID7_ORGS_FILE", _orgs_file(tmp_path, [{"label": "primary", "key_ref": "RAPID7_API_KEY", "region": "us"}])
+    )
+    [as_org] = load_org_configs()
+
+    monkeypatch.delenv("RAPID7_ORGS_FILE")
+    [single] = load_org_configs()
+
+    assert (single["label"], single["api_key"], single["endpoint"]) == (None, as_org["api_key"], as_org["endpoint"])
