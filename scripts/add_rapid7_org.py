@@ -30,6 +30,8 @@ except ImportError:  # pragma: no cover
 DEFAULT_ORGS_FILE = "~/.rapid7_mcp/orgs.json"
 KEYCHAIN_ACCOUNT = "rapid7"
 KEY_REF_PREFIX = "R7_KEY_"
+SINGLE_ORG_KEY_REF = "RAPID7_API_KEY"
+"""The key a single-org setup already uses. Claude Desktop passes it to the server only."""
 LABEL_PATTERN = re.compile(r"^[a-z0-9][a-z0-9_-]*$")
 
 
@@ -172,6 +174,11 @@ def verify(orgs):
         key_ref = org.get("key_ref", "?")
         region = org.get("region", "(default)")
         key = resolve_key(key_ref)
+        if not key and key_ref == SINGLE_ORG_KEY_REF:
+            # Claude Desktop keeps this key in its own store and passes it to the server
+            # only, so a terminal cannot see it. The server reports it if it is missing.
+            print(f"  {label:<20} {key_ref:<28} {region:<5} set in Claude Desktop")
+            continue
         if not key:
             unresolved.append(f"{label} (key_ref: {key_ref})")
             print(f"  {label:<20} {key_ref:<28} {region:<5} MISSING")
@@ -197,12 +204,28 @@ def verify(orgs):
     return True
 
 
-def prompt_one(default_region, read_key_from_stdin):
-    """Prompt for one organization. Return the entry, or None when the user is done."""
+def carry_over_entry(default_region):
+    """Offer to keep the single-org key as the first organization. Return its entry, or None."""
+    answer = input(f"Keep the API key you already use ({SINGLE_ORG_KEY_REF}) as the first organization? [Y/n]: ")
+    if answer.strip().lower() not in ("", "y", "yes"):
+        return None
+    label = normalize_label(input("Label for it [primary]: ") or "primary")
+    region = validate_region(input(f"Region [{default_region}]: "), default_region)
+    print(f"'{label}' will use {SINGLE_ORG_KEY_REF}. It is added when you add a second organization.")
+    return {"label": label, "key_ref": SINGLE_ORG_KEY_REF, "region": region}
+
+
+def prompt_one(default_region, read_key_from_stdin, reserved=()):
+    """Prompt for one organization. Return the entry, or None when the user is done.
+
+    Labels in reserved are refused before any key is stored.
+    """
     raw_label = input("\nLabel (empty to finish): ")
     if not raw_label.strip():
         return None
     label = normalize_label(raw_label)
+    if label in reserved:
+        raise ValueError(f"'{label}' is already the label for {SINGLE_ORG_KEY_REF}. Choose another label.")
     region = validate_region(input(f"Region [{default_region}]: "), default_region)
     key_ref = key_ref_for(label)
 
@@ -251,6 +274,11 @@ def main(argv=None):
         ),
     )
     parser.add_argument(
+        "--no-carry-over",
+        action="store_true",
+        help=f"Do not offer to keep {SINGLE_ORG_KEY_REF} as the first organization of a new orgs file",
+    )
+    parser.add_argument(
         "--verify-only",
         action="store_true",
         help="Report how the existing orgs file resolves and change nothing",
@@ -274,10 +302,21 @@ def main(argv=None):
     if args.verify_only:
         return 0 if verify(orgs) else 1
 
+    pending = None
+    if not os.path.exists(path) and not args.no_carry_over:
+        try:
+            pending = carry_over_entry(default_region)
+        except (EOFError, KeyboardInterrupt):
+            print()
+            return 0
+        except ValueError as e:
+            print(f"Error: {e}", file=sys.stderr)
+            return 1
+
     added = 0
     while True:
         try:
-            entry = prompt_one(default_region, args.key_from_stdin)
+            entry = prompt_one(default_region, args.key_from_stdin, reserved={pending["label"]} if pending else ())
         except (EOFError, KeyboardInterrupt):
             print()
             break
@@ -286,6 +325,8 @@ def main(argv=None):
             continue
         if entry is None:
             break
+        if pending:
+            orgs, pending = [pending], None
         orgs = merge_org(orgs, entry)
         write_orgs(path, orgs)
         added += 1
@@ -300,6 +341,9 @@ def main(argv=None):
     print(f'  1. Set "RAPID7_ORGS_FILE": "{path}" in the Claude Desktop config env block.')
     print("  2. Quit Claude Desktop with Cmd Q, then reopen it.")
     print("  3. Ask Claude: Which organizations are configured for Rapid7 reporting?")
+    kept = [org["label"] for org in orgs if org.get("key_ref") == SINGLE_ORG_KEY_REF]
+    if kept:
+        print(f"  Keep the Rapid7 API Key set in Claude Desktop: '{kept[0]}' uses it.")
     return 0 if usable else 1
 
 
