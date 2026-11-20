@@ -130,9 +130,9 @@
     "api_key": {
       "type": "string",
       "title": "Rapid7 API Key",
-      "description": "Your Rapid7 InsightVM API key (User or Organization key). Generate one at Administration > API Key Management in the Rapid7 Insight Platform.",
+      "description": "Your Rapid7 InsightVM API key (User or Organization key). Generate one at Administration > API Key Management in the Rapid7 Insight Platform. Required for single-organization use. Optional when an organizations file is set.",
       "sensitive": true,
-      "required": true
+      "required": false
     },
     "region": {
       "type": "string",
@@ -144,7 +144,7 @@
     "orgs_file": {
       "type": "string",
       "title": "Organizations file (multi-org reporting only)",
-      "description": "Absolute path to a JSON file listing the organizations to report across, for example /Users/you/.rapid7_mcp/orgs.json. Each entry names a label and a key_ref, where key_ref is the name of an environment variable or macOS Keychain entry holding that organization's API key. Never put keys in this file. Leave empty for single-organization use.",
+      "description": "Absolute path to a JSON file listing the organizations to report across, for example /Users/you/.rapid7_mcp/orgs.json. Each entry names a label and a key_ref, where key_ref is the name of an environment variable or macOS Keychain entry holding that organization's API key. To keep the API key above as one of the organizations, give its entry the key_ref RAPID7_API_KEY. Never put keys in this file. Leave empty for single-organization use.",
       "required": false
     }
   }
