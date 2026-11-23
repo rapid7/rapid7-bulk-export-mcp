@@ -43,6 +43,12 @@ class PlaintextStore(MemoryStore):
 PlaintextStore.__module__ = "keyrings.alt.file"
 
 
+@pytest.fixture(autouse=True)
+def not_macos(monkeypatch):
+    """keyring paths run as Linux, so no test reaches the real macOS Keychain."""
+    monkeypatch.setattr(keystore.platform, "system", lambda: "Linux")
+
+
 @pytest.fixture
 def store():
     previous = keyring.get_keyring()
@@ -119,3 +125,65 @@ def test_an_error_from_the_os_store_reads_as_no_key(windows):
         patch.object(WindowsCredentialManager, "get_password", side_effect=RuntimeError("locked")),
     ):
         assert config._get_key_from_keychain("R7_KEY_EU") is None
+
+
+class FakeSecurity:
+    """Stands in for Apple's security tool, recording every call."""
+
+    def __init__(self):
+        self.items, self.calls = {}, []
+
+    def __call__(self, args, input=None, capture_output=True, text=True, timeout=None):
+        self.calls.append((list(args), input))
+        result = type("Result", (), {"returncode": 0, "stdout": ""})()
+        verb = args[1] if args[0] == "security" else None
+        if verb == "-i":
+            words = input.split()
+            self.items[words[words.index("-s") + 1]] = words[words.index("-w") + 1]
+        elif verb == "find-generic-password":
+            ref = args[args.index("-s") + 1]
+            result.returncode, result.stdout = (0, self.items[ref] + "\n") if ref in self.items else (44, "")
+        elif verb == "delete-generic-password":
+            self.items.pop(args[args.index("-s") + 1], None)
+        return result
+
+
+@pytest.fixture
+def mac(monkeypatch):
+    fake = FakeSecurity()
+    monkeypatch.setattr(keystore.platform, "system", lambda: "Darwin")
+    monkeypatch.setattr(keystore.subprocess, "run", fake)
+    return fake
+
+
+def test_on_macos_keys_go_through_security_and_never_appear_in_its_arguments(mac):
+    keystore.store("R7_KEY_FOGCUTTER", "aaaa-1111-key")
+
+    assert mac.items == {"R7_KEY_FOGCUTTER": "aaaa-1111-key"}
+    assert all("aaaa-1111-key" not in " ".join(args) for args, _ in mac.calls), "the key is sent on stdin only"
+    assert any(args == ["security", "-i"] and "aaaa-1111-key" in stdin for args, stdin in mac.calls if stdin)
+    assert keystore.read("R7_KEY_FOGCUTTER") == "aaaa-1111-key"
+    assert keystore.name() == "macOS Keychain"
+
+
+def test_on_macos_a_key_stored_by_the_old_script_is_read_unchanged(mac):
+    mac.items["R7_KEY_SYNTH_VM_EU_CENTRAL_1"] = "old-script-key"
+
+    assert keystore.read("R7_KEY_SYNTH_VM_EU_CENTRAL_1") == "old-script-key"
+
+
+def test_on_macos_remove_deletes_the_item(mac):
+    keystore.store("R7_KEY_A", "key-a")
+
+    assert keystore.remove("R7_KEY_A") is True
+    assert keystore.read("R7_KEY_A") is None
+
+
+@pytest.mark.parametrize(
+    ("ref", "key"), [("R7 KEY", "k"), ("R7_KEY_A", "has space"), ("R7_KEY_A", "x\nadd-generic-password")]
+)
+def test_on_macos_a_name_or_key_that_could_change_the_command_is_refused(mac, ref, key):
+    with pytest.raises(ValueError):
+        keystore.store(ref, key)
+
+    assert mac.calls == []
