@@ -9,6 +9,7 @@ holds names and regions only, never a key.
     rapid7-orgs list       show the organizations, never their keys
     rapid7-orgs remove X   remove organization X and its stored key
     rapid7-orgs check      re-check every key and its region
+    rapid7-orgs menu       choose a task from a menu (the window Claude opens)
 """
 
 import argparse
@@ -240,12 +241,48 @@ def command_check(path: str) -> int:
     return 0 if not problems else 1
 
 
+MENU = ("Add organizations", "Remove an organization", "Check every key", "Quit")
+
+
+def command_menu(path: str) -> int:
+    """The window Claude opens: the organizations, then a choice of task, until Quit."""
+    while True:
+        print(f"\nRapid7 organizations in {path}:")
+        command_list(path)
+        print()
+        for number, item in enumerate(MENU, 1):
+            print(f"  {number}. {item}")
+        try:
+            choice = input(f"Choose 1 to {len(MENU)}: ").strip()
+            if choice == "1":
+                command_add(path)
+            elif choice == "2":
+                name = input("Name of the organization to remove: ").strip()
+                if name and ask(f"Remove '{name}' and its stored key? (y/N)").lower() in ("y", "yes"):
+                    command_remove(path, name)
+                else:
+                    print(f"Kept '{name}'.")
+            elif choice == "3":
+                command_check(path)
+            elif choice in ("4", "q", "quit"):
+                break
+        except ValueError as e:
+            print(f"  {e}")
+        except (EOFError, KeyboardInterrupt):
+            break
+    try:
+        input("\nPress Return to close this window.")
+    except (EOFError, KeyboardInterrupt):
+        pass
+    return 0
+
+
 def main(argv: Optional[List[str]] = None) -> int:
     parser = argparse.ArgumentParser(
         prog="rapid7-orgs", description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
     )
     parser.add_argument("--orgs-file", help=f"The orgs file (default: $RAPID7_ORGS_FILE, else {DEFAULT_ORGS_FILE})")
-    parser.add_argument("command", nargs="?", default="add", choices=["add", "list", "remove", "check"])
+    parser.add_argument("command", nargs="?", default="add", choices=["add", "list", "remove", "check", "menu"])
     parser.add_argument("name", nargs="?", help="The organization to remove")
     args = parser.parse_args(argv)
     path = orgs_path(args.orgs_file)
@@ -258,6 +295,8 @@ def main(argv: Optional[List[str]] = None) -> int:
             return command_remove(path, args.name)
         if args.command == "check":
             return command_check(path)
+        if args.command == "menu":
+            return command_menu(path)
         return command_add(path)
     except (ValueError, keystore.KeyStoreUnavailable) as e:
         print(f"Error: {e}", file=sys.stderr)

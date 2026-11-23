@@ -32,7 +32,7 @@ def env(tmp_path, monkeypatch, capsys):
 
     def run(typed=(), keys=(), *args):
         typed, keys = list(typed), list(keys)
-        monkeypatch.setattr("builtins.input", lambda prompt="": typed.pop(0))
+        monkeypatch.setattr("builtins.input", lambda prompt="": print(prompt, end="") or typed.pop(0))
         monkeypatch.setattr(orgs_cli.getpass, "getpass", lambda prompt="": keys.pop(0))
         code = orgs_cli.main(["--orgs-file", str(path), *args])
         out = capsys.readouterr()
@@ -151,3 +151,33 @@ def test_the_command_installs_with_the_server():
     pyproject = (Path(__file__).resolve().parent.parent / "pyproject.toml").read_text()
 
     assert 'rapid7-orgs = "src.orgs_cli:main"' in pyproject.split("[project.scripts]")[1]
+
+
+def test_the_menu_lists_the_orgs_then_runs_the_chosen_task(env):
+    env(["n", "fogcutter", "", ""], ["key-us-0001"])
+
+    code, out = env(["2", "fogcutter", "y", "4", ""], (), "menu")
+
+    assert code == 0
+    assert "fogcutter" in out and "1. Add organizations" in out and "2. Remove an organization" in out
+    assert _orgs(env) == [] and env.stored == {}
+
+
+def test_the_menu_add_choice_starts_the_walkthrough(env):
+    code, out = env(["1", "n", "emea", "", "", "4", ""], ["key-eu-0002"], "menu")
+
+    assert code == 0 and [o["label"] for o in _orgs(env)] == ["emea"]
+
+
+def test_the_menu_asks_before_removing_and_keeps_the_org_on_no(env):
+    env(["n", "fogcutter", "", ""], ["key-us-0001"])
+
+    _, out = env(["2", "fogcutter", "n", "4", ""], (), "menu")
+
+    assert [o["label"] for o in _orgs(env)] == ["fogcutter"] and "Kept 'fogcutter'" in out
+
+
+def test_the_menu_waits_for_return_before_closing(env):
+    code, out = env(["4", ""], (), "menu")
+
+    assert code == 0 and "Press Return to close this window" in out
