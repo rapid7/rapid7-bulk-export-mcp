@@ -35,6 +35,7 @@ WRITE_TOOLS = (
     "check_rapid7_multi_org_export",
     "compact_rapid7_database",
     "generate_rapid7_dashboard_report",
+    "open_rapid7_org_setup",
 )
 READ_TOOLS = (
     "query_rapid7",
