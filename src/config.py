@@ -7,7 +7,10 @@ import json
 import os
 import platform
 import subprocess  # nosec B404
+from pathlib import Path
 from typing import Any, Dict, List, Optional
+
+from . import keystore
 
 USER_AGENT = "r7:bulk-export-mcp"
 
@@ -27,10 +30,10 @@ REGION_ENDPOINTS = {
 
 
 def _get_key_from_keychain(service_name: str) -> Optional[str]:
-    """Retrieve a password from macOS Keychain.
+    """Retrieve a password from the operating system's key store.
 
-    Uses the `security find-generic-password` command to look up a stored
-    credential by service name. Only available on macOS.
+    On macOS, uses the `security find-generic-password` command to look up a stored
+    credential by service name. On Windows and Linux, reads the same name through keyring.
 
     Args:
         service_name: The service name used when storing the credential.
@@ -39,7 +42,9 @@ def _get_key_from_keychain(service_name: str) -> Optional[str]:
         The password string if found, None otherwise.
     """
     if platform.system() != "Darwin":
-        return None
+        # Windows Credential Manager and the Linux Secret Service, through keyring. macOS
+        # keeps the security lookup below, which also finds keys stored under any account.
+        return None if keystore.is_macos_keychain() else keystore.read(service_name)
 
     try:
         result = subprocess.run(  # nosec B603 B607
@@ -201,11 +206,32 @@ def _validate_org_entry(entry: Any, index: int) -> None:
             raise ValueError(f"orgs[{index}] is missing a non-empty '{field}'")
 
 
+def default_orgs_file() -> Path:
+    """The orgs file in the data folder that the server and rapid7-orgs share."""
+    return (
+        Path(os.environ.get("DATA_DIR") or os.environ.get("PLUGIN_DATA") or "~/.rapid7_mcp").expanduser() / "orgs.json"
+    )
+
+
+def orgs_file_path() -> Optional[str]:
+    """The orgs file in use: the one RAPID7_ORGS_FILE names, else the default when it exists.
+
+    Claude Desktop passes an empty value, or its placeholder, for an unfilled setting, so
+    either one counts as unset.
+    """
+    named = os.environ.get(ORGS_FILE_ENV, "").strip()
+    if named and not named.startswith("${"):
+        return named
+    default = default_orgs_file()
+    return str(default) if default.is_file() else None
+
+
 def _read_org_entries() -> Optional[List[Any]]:
-    """Return the raw entries of the RAPID7_ORGS_FILE org list, or None when it is unset."""
-    orgs_path = os.environ.get(ORGS_FILE_ENV)
+    """Return the raw entries of the org list, or None when no orgs file is in use."""
+    orgs_path = orgs_file_path()
     if not orgs_path:
         return None
+    named = orgs_path != str(default_orgs_file())
     try:
         with open(os.path.expanduser(orgs_path), encoding="utf-8") as handle:
             document = json.load(handle)
@@ -215,6 +241,10 @@ def _read_org_entries() -> Optional[List[Any]]:
         raise ValueError(f"{ORGS_FILE_ENV} at '{orgs_path}' is not valid JSON: {e}") from e
 
     entries = document.get("orgs") if isinstance(document, dict) else None
+    if not named and entries == []:
+        # The setup command leaves the default file empty when every org is removed,
+        # which means the customer is back to one organization.
+        return None
     if not isinstance(entries, list) or not entries:
         raise ValueError(f"{ORGS_FILE_ENV} at '{orgs_path}' must contain a non-empty 'orgs' array")
     return entries

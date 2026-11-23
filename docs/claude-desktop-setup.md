@@ -216,24 +216,14 @@ before quoting totals. Do not skip it.
 
 ## Adding a second organization to a single-org setup
 
-If you already use one API key, you do not start again:
-
-1. Run `uv run scripts/add_rapid7_org.py`.
-2. Answer yes when it asks to keep the key you already use (`RAPID7_API_KEY`). Give that
-   organization a label and a region.
-3. Add the new organization at the next prompt. The script stores its key in the
-   Keychain and writes the orgs file with both organizations. It does not store the
-   existing key again. That organization's entry references `RAPID7_API_KEY`.
-4. Set the organizations file in Claude Desktop to the path the script prints. Keep the
-   Rapid7 API Key setting as it is, because the first organization uses it.
-5. Quit and reopen Claude Desktop, then export every organization.
+If you already use one API key, you do not start again. Ask Claude "Set up my Rapid7
+organizations", and follow [Setting up your organizations](setting-up-organizations.md).
+A setup window opens, keeps the key you already use as the first organization, and adds
+the others one at a time. The extension finds them with no setting to change.
 
 The first multi-org export of your original organization replaces its single-org data,
-so its totals are not counted twice.
-
-To go back to one organization, clear the organizations file setting in Claude Desktop
-and restart it. The server then uses the Rapid7 API Key alone, as before. The next
-export replaces the data with that organization only.
+so its totals are not counted twice. When every added organization is removed, the
+extension goes back to the Rapid7 API Key alone, as before.
 
 ## Verifying the whole thing end to end
 

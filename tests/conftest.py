@@ -45,3 +45,15 @@ def _no_outside_network(monkeypatch):
         return real_connect(sock, address)
 
     monkeypatch.setattr(socket.socket, "connect", _local_only)
+
+
+@pytest.fixture(autouse=True)
+def _no_real_default_orgs_file(monkeypatch, tmp_path_factory):
+    """The default orgs file is <data folder>/orgs.json. A real one on this machine must not reach a test.
+
+    Tests of the default point it at a file of their own.
+    """
+    from src import config
+
+    missing = tmp_path_factory.mktemp("no-default-orgs") / "orgs.json"
+    monkeypatch.setattr(config, "default_orgs_file", lambda: missing)

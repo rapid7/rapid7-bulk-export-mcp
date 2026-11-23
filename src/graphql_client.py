@@ -6,7 +6,7 @@ It provides functionality to send GraphQL queries and mutations with proper
 authentication and error handling.
 """
 
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Optional, Tuple
 from urllib.parse import urlparse
 
 import requests
@@ -24,7 +24,11 @@ class RegionUnavailableError(requests.RequestException):
 
 
 def send_graphql_request(
-    endpoint: str, api_key: str, query: str, variables: Optional[Dict[str, Any]] = None
+    endpoint: str,
+    api_key: str,
+    query: str,
+    variables: Optional[Dict[str, Any]] = None,
+    timeout: Tuple[float, float] = TIMEOUT_SECONDS,
 ) -> Dict[str, Any]:
     """
     Send a GraphQL request to the Rapid7 API.
@@ -39,6 +43,7 @@ def send_graphql_request(
         api_key: The API key for authentication
         query: The GraphQL query or mutation string
         variables: Optional dictionary of GraphQL variables
+        timeout: Connect and read timeouts in seconds. Defaults to TIMEOUT_SECONDS.
 
     Returns:
         The parsed JSON response as a dictionary
@@ -70,7 +75,7 @@ def send_graphql_request(
     # The underlying message is dropped on purpose: a proxy or adapter can echo the
     # request, and this text reaches the transcript.
     try:
-        response = requests.post(endpoint, headers=headers, json=body, timeout=TIMEOUT_SECONDS)
+        response = requests.post(endpoint, headers=headers, json=body, timeout=timeout)
     except requests.Timeout:
         raise RegionUnavailableError(f"{host} did not respond in time") from None
     except requests.ConnectionError:

@@ -11,6 +11,7 @@ import glob
 import json
 import logging
 import os
+import platform
 import sys
 import threading
 import time
@@ -23,10 +24,17 @@ from fastmcp import FastMCP
 from fastmcp.server.auth import restrict_tag
 from mcp.types import ToolAnnotations
 
-from . import kev_catalogue, orchestrator
+from . import kev_catalogue, orchestrator, orgs_cli, setup_launcher
 from .artifact_store import download_artifact, storage_configured
 from .auth import ENV_AUDIENCE, ENV_ISSUER, ENV_JWKS_URI, build_auth
-from .config import ORGS_FILE_ENV, key_configured, load_config, load_org_configs, load_org_labels, redact_secret
+from .config import (
+    key_configured,
+    load_config,
+    load_org_configs,
+    load_org_labels,
+    orgs_file_path,
+    redact_secret,
+)
 from .dashboard_queries import CARDS, run_card
 from .dashboard_report import render_report
 from .download import download_all_files
@@ -163,7 +171,7 @@ def _write_precondition() -> Optional[str]:
     may have no single default key. A missing per-org key still fails loudly, in
     load_org_configs, before any export starts.
     """
-    if not key_configured() and not os.environ.get(ORGS_FILE_ENV):
+    if not key_configured() and not orgs_file_path():
         return _NO_KEY_MESSAGE
     return None
 
@@ -1576,6 +1584,56 @@ def list_rapid7_orgs() -> str:
         "Then check progress with: check_rapid7_multi_org_export()"
     )
     return result
+
+
+@mcp.tool(
+    annotations=ToolAnnotations(
+        title="Open Rapid7 Organization Setup",
+        readOnlyHint=False,
+        destructiveHint=False,
+        idempotentHint=True,
+        openWorldHint=False,
+    ),
+    tags={WRITE_TOOL_TAG},
+    auth=_require_write_scope,
+)
+def open_rapid7_org_setup() -> str:
+    """Open the organization setup in a terminal window on the user's computer.
+
+    Use this when the user wants to add, remove, or check the organizations for multi-org
+    reporting. The user types each key into that window, never into this chat. Takes no input.
+    """
+    if os.environ.get("MCP_TRANSPORT", "stdio") == "http" or storage_configured():
+        return (
+            "✗ This server is hosted, so it cannot open a window on the user's computer. "
+            "Run rapid7-orgs on the computer that runs the server instead."
+        )
+    try:
+        path = setup_launcher.write_setup_file(_DATA_DIR)
+    except OSError as e:
+        return f"✗ Could not write the setup file: {redact_secret(str(e))}"
+
+    setup_file = orgs_cli.orgs_path()
+    if orgs_cli.uses_default(setup_file):
+        finish = "When they finish, nothing else needs setting: ask Claude to export every organization."
+    else:
+        finish = (
+            f"When they finish, they set Organizations file to {setup_file} in this extension's "
+            "settings, then quit and reopen Claude Desktop."
+        )
+    if setup_launcher.open_window(path):
+        window = "A Terminal window" if platform.system() == "Darwin" else "A console window"
+        return (
+            f"{window} has opened with the Rapid7 organization setup. Tell the user to follow it there: "
+            "a name for each organization, then its Organization API key, which the window hides. "
+            f"Tell them to never type or paste a key into this chat. {finish}"
+        )
+    setup_launcher.open_folder(path.parent)
+    return (
+        f"A terminal window could not be opened here, so the folder {path.parent} has opened instead. "
+        f"Tell the user to double-click '{path.name}' in it. Tell them to never type or paste a key "
+        f"into this chat. {finish}"
+    )
 
 
 @mcp.tool(

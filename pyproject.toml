@@ -36,6 +36,7 @@ dev = [
 [project.scripts]
 rapid7-mcp-server = "src.mcp_server:main"
 rapid7-refresh = "src.cli:main"
+rapid7-orgs = "src.orgs_cli:main"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src"]
