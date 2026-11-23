@@ -156,7 +156,7 @@ def test_the_command_installs_with_the_server():
 def test_the_menu_lists_the_orgs_then_runs_the_chosen_task(env):
     env(["n", "fogcutter", "", ""], ["key-us-0001"])
 
-    code, out = env(["2", "fogcutter", "y", "4", ""], (), "menu")
+    code, out = env(["2", "fogcutter", "y", "5", ""], (), "menu")
 
     assert code == 0
     assert "fogcutter" in out and "1. Add organizations" in out and "2. Remove an organization" in out
@@ -164,7 +164,7 @@ def test_the_menu_lists_the_orgs_then_runs_the_chosen_task(env):
 
 
 def test_the_menu_add_choice_starts_the_walkthrough(env):
-    code, out = env(["1", "n", "emea", "", "", "4", ""], ["key-eu-0002"], "menu")
+    code, out = env(["1", "n", "emea", "", "", "5", ""], ["key-eu-0002"], "menu")
 
     assert code == 0 and [o["label"] for o in _orgs(env)] == ["emea"]
 
@@ -172,12 +172,49 @@ def test_the_menu_add_choice_starts_the_walkthrough(env):
 def test_the_menu_asks_before_removing_and_keeps_the_org_on_no(env):
     env(["n", "fogcutter", "", ""], ["key-us-0001"])
 
-    _, out = env(["2", "fogcutter", "n", "4", ""], (), "menu")
+    _, out = env(["2", "fogcutter", "n", "5", ""], (), "menu")
 
     assert [o["label"] for o in _orgs(env)] == ["fogcutter"] and "Kept 'fogcutter'" in out
 
 
 def test_the_menu_waits_for_return_before_closing(env):
-    code, out = env(["4", ""], (), "menu")
+    code, out = env(["5", ""], (), "menu")
 
     assert code == 0 and "Press Return to close this window" in out
+
+
+def test_clear_removes_every_org_and_its_stored_keys_after_typing_clear(env):
+    env(["", "", "", "one", "", "two", "", ""], ["key-us-0001", "key-eu-0002"])
+
+    code, out = env(["clear"], (), "clear")
+
+    assert code == 0 and not env.path.exists() and env.stored == {}
+    assert "This removes all 3 organizations" in out and "deletes their 2 stored keys" in out
+    assert "The Rapid7 API Key in Claude Desktop is not changed." in out
+
+
+def test_clear_keeps_everything_unless_the_word_is_typed(env):
+    env(["n", "one", "", ""], ["key-us-0001"])
+
+    code, out = env(["y"], (), "clear")
+
+    assert code == 1 and env.path.exists() and env.stored == {"R7_KEY_ONE": "key-us-0001"}
+    assert "Nothing was removed." in out
+
+
+def test_the_menu_can_remove_every_org(env):
+    env(["n", "one", "", ""], ["key-us-0001"])
+
+    env(["3", "clear", "5", ""], (), "menu")
+
+    assert not env.path.exists() and env.stored == {}
+
+
+def test_with_the_default_file_the_next_steps_need_no_setting(env, monkeypatch):
+    monkeypatch.setattr(orgs_cli.config, "default_orgs_file", lambda: env.path)
+    monkeypatch.setattr(orgs_cli.config, "orgs_file_path", lambda: None)
+
+    _, out = env(["n", "one", "", ""], ["key-us-0001"], "--orgs-file", "")
+
+    assert "Claude Desktop uses this file by itself" in out
+    assert "Set Organizations file" not in out

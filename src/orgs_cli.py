@@ -9,6 +9,7 @@ holds names and regions only, never a key.
     rapid7-orgs list       show the organizations, never their keys
     rapid7-orgs remove X   remove organization X and its stored key
     rapid7-orgs check      re-check every key and its region
+    rapid7-orgs clear      remove every organization and its stored key
     rapid7-orgs menu       choose a task from a menu (the window Claude opens)
 """
 
@@ -21,18 +22,18 @@ import sys
 import tempfile
 from typing import Dict, List, Optional
 
-from . import keystore
+from . import config, keystore
 from .config import REGION_ENDPOINTS
 from .region_detect import detect_region
 
-DEFAULT_ORGS_FILE = os.path.join("~", ".rapid7_mcp", "orgs.json")
+DEFAULT_ORGS_FILE = os.path.join("<data folder>", "orgs.json")
 SINGLE_ORG_KEY_REF = "RAPID7_API_KEY"
 KEY_REF_PREFIX = "R7_KEY_"
 LABEL = re.compile(r"^[a-z0-9][a-z0-9_-]{0,47}$")
 
 
 def orgs_path(raw: Optional[str] = None) -> str:
-    return os.path.expanduser(raw or os.environ.get("RAPID7_ORGS_FILE") or DEFAULT_ORGS_FILE)
+    return os.path.expanduser(raw) if raw else (config.orgs_file_path() or str(config.default_orgs_file()))
 
 
 def key_ref_for(label: str) -> str:
@@ -79,6 +80,11 @@ def write_orgs(path: str, orgs: List[Dict[str, str]]) -> None:
 def resolve(key_ref: str) -> Optional[str]:
     """Find a key the same way the server does: the environment first, then the key store."""
     return os.environ.get(key_ref) or keystore.read(key_ref)
+
+
+def uses_default(path: str) -> bool:
+    """Whether path is the default orgs file, which the server finds with no setting."""
+    return os.path.abspath(path) == os.path.abspath(str(config.default_orgs_file()))
 
 
 def key_status(org: Dict[str, str]) -> str:
@@ -178,6 +184,10 @@ def command_add(path: str) -> int:
         return 0
     print(f"{len(orgs)} organization(s) in {path}:")
     command_list(path)
+    if uses_default(path):
+        print("\nClaude Desktop uses this file by itself. Nothing else to set.")
+        print('Next, ask Claude: "Start vulnerability exports for every org in the orgs file."')
+        return 0
     print("\nNext:")
     print("  1. In Claude Desktop, open Settings, then Extensions, then Rapid7 Bulk Export, then Configure.")
     print(f"  2. Set Organizations file to: {path}")
@@ -206,8 +216,34 @@ def command_remove(path: str, raw_label: str) -> int:
     write_orgs(path, [org for org in orgs if org is not match])
     if match.get("key_ref", "").startswith(KEY_REF_PREFIX):
         keystore.remove(match["key_ref"])
+    if uses_default(path):
+        print(f"Removed '{label}'. Claude Desktop stops using it from the next request.")
+        if len(orgs) == 1:
+            print("No organizations are left, so Claude Desktop is back to one organization.")
+        return 0
     print(f"Removed '{label}'. Restart Claude Desktop to stop using it.")
     if len(orgs) <= 2:
+        print("To go back to one organization, clear the Organizations file setting in Claude Desktop.")
+    return 0
+
+
+def command_clear(path: str) -> int:
+    orgs = load_orgs(path)
+    if not orgs:
+        print(f"No organizations in {path}.")
+        return 0
+    stored = [org["key_ref"] for org in orgs if org.get("key_ref", "").startswith(KEY_REF_PREFIX)]
+    print(f"This removes all {len(orgs)} organizations in {path}")
+    print(f"and deletes their {len(stored)} stored keys. The Rapid7 API Key in Claude Desktop is not changed.")
+    if input("Type clear to confirm: ").strip() != "clear":
+        print("Nothing was removed.")
+        return 1
+    removed = sum(keystore.remove(key_ref) for key_ref in stored)
+    os.remove(path)
+    print(f"Removed {len(orgs)} organizations and {removed} stored keys.")
+    if uses_default(path):
+        print("Claude Desktop is back to one organization.")
+    else:
         print("To go back to one organization, clear the Organizations file setting in Claude Desktop.")
     return 0
 
@@ -241,7 +277,7 @@ def command_check(path: str) -> int:
     return 0 if not problems else 1
 
 
-MENU = ("Add organizations", "Remove an organization", "Check every key", "Quit")
+MENU = ("Add organizations", "Remove an organization", "Remove every organization", "Check every key", "Quit")
 
 
 def command_menu(path: str) -> int:
@@ -263,8 +299,10 @@ def command_menu(path: str) -> int:
                 else:
                     print(f"Kept '{name}'.")
             elif choice == "3":
+                command_clear(path)
+            elif choice == "4":
                 command_check(path)
-            elif choice in ("4", "q", "quit"):
+            elif choice in ("5", "q", "quit"):
                 break
         except ValueError as e:
             print(f"  {e}")
@@ -282,7 +320,9 @@ def main(argv: Optional[List[str]] = None) -> int:
         prog="rapid7-orgs", description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
     )
     parser.add_argument("--orgs-file", help=f"The orgs file (default: $RAPID7_ORGS_FILE, else {DEFAULT_ORGS_FILE})")
-    parser.add_argument("command", nargs="?", default="add", choices=["add", "list", "remove", "check", "menu"])
+    parser.add_argument(
+        "command", nargs="?", default="add", choices=["add", "list", "remove", "check", "clear", "menu"]
+    )
     parser.add_argument("name", nargs="?", help="The organization to remove")
     args = parser.parse_args(argv)
     path = orgs_path(args.orgs_file)
@@ -297,6 +337,8 @@ def main(argv: Optional[List[str]] = None) -> int:
             return command_check(path)
         if args.command == "menu":
             return command_menu(path)
+        if args.command == "clear":
+            return command_clear(path)
         return command_add(path)
     except (ValueError, keystore.KeyStoreUnavailable) as e:
         print(f"Error: {e}", file=sys.stderr)

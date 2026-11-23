@@ -27,7 +27,14 @@ from mcp.types import ToolAnnotations
 from . import kev_catalogue, orchestrator, orgs_cli, setup_launcher
 from .artifact_store import download_artifact, storage_configured
 from .auth import ENV_AUDIENCE, ENV_ISSUER, ENV_JWKS_URI, build_auth
-from .config import ORGS_FILE_ENV, key_configured, load_config, load_org_configs, load_org_labels, redact_secret
+from .config import (
+    key_configured,
+    load_config,
+    load_org_configs,
+    load_org_labels,
+    orgs_file_path,
+    redact_secret,
+)
 from .dashboard_queries import CARDS, run_card
 from .dashboard_report import render_report
 from .download import download_all_files
@@ -164,7 +171,7 @@ def _write_precondition() -> Optional[str]:
     may have no single default key. A missing per-org key still fails loudly, in
     load_org_configs, before any export starts.
     """
-    if not key_configured() and not os.environ.get(ORGS_FILE_ENV):
+    if not key_configured() and not orgs_file_path():
         return _NO_KEY_MESSAGE
     return None
 
@@ -1606,10 +1613,14 @@ def open_rapid7_org_setup() -> str:
     except OSError as e:
         return f"✗ Could not write the setup file: {redact_secret(str(e))}"
 
-    finish = (
-        f"When they finish, they set Organizations file to {orgs_cli.orgs_path()} in this extension's "
-        "settings, then quit and reopen Claude Desktop."
-    )
+    setup_file = orgs_cli.orgs_path()
+    if orgs_cli.uses_default(setup_file):
+        finish = "When they finish, nothing else needs setting: ask Claude to export every organization."
+    else:
+        finish = (
+            f"When they finish, they set Organizations file to {setup_file} in this extension's "
+            "settings, then quit and reopen Claude Desktop."
+        )
     if setup_launcher.open_window(path):
         window = "A Terminal window" if platform.system() == "Darwin" else "A console window"
         return (

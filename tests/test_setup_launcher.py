@@ -137,3 +137,13 @@ def test_without_an_installed_launcher_the_file_runs_the_module_from_the_project
 
     assert "-m src.orgs_cli menu" in text and str(Path(setup_launcher.__file__).resolve().parent.parent) in text
     assert sys.executable  # the real interpreter is untouched
+
+
+def test_with_the_default_orgs_file_the_tool_says_nothing_else_needs_setting(tmp_path, launcher, monkeypatch, opened):
+    _as(monkeypatch, "Darwin")
+    monkeypatch.setattr(mcp_server, "_DATA_DIR", tmp_path / "data")
+    monkeypatch.setattr(setup_launcher.os, "environ", {**setup_launcher.os.environ})
+
+    reply = mcp_server.open_rapid7_org_setup()
+
+    assert "nothing else needs setting" in reply and "set Organizations file" not in reply
