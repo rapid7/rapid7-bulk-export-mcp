@@ -120,3 +120,27 @@ def test_any_other_refusal_counts_as_not_this_region(monkeypatch, status):
     monkeypatch.setattr(region_detect, "send_graphql_request", _send)
 
     assert region_detect.detect_region("key").region == "ca"
+
+
+def test_a_slow_region_does_not_hold_up_a_key_another_region_accepted(monkeypatch):
+    import threading
+    import time
+
+    release = threading.Event()
+
+    def _send(endpoint, api_key, query, variables=None, timeout=None):
+        if endpoint == REGION_ENDPOINTS["me1"]:
+            release.wait(5)
+            raise RegionUnavailableError("me1 did not respond in time")
+        return _platform(home="us")(endpoint, api_key, query, variables, timeout)
+
+    monkeypatch.setattr(region_detect, "send_graphql_request", _send)
+    monkeypatch.setattr(region_detect, "GRACE_SECONDS", 0.2)
+
+    started = time.monotonic()
+    result = region_detect.detect_region("key")
+    elapsed = time.monotonic() - started
+    release.set()
+
+    assert (result.region, result.unavailable) == ("us", ["me1"])
+    assert elapsed < 2, "the answer comes once the home region accepts, not when the slow region times out"

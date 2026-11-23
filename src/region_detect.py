@@ -5,7 +5,9 @@ query for an export that does not exist. The home region answers "not found", an
 other region refuses the key with HTTP 401. The query creates nothing.
 """
 
-from concurrent.futures import ThreadPoolExecutor
+import queue
+import threading
+import time
 from dataclasses import dataclass, field
 from typing import List, Optional
 
@@ -16,6 +18,9 @@ from .graphql_client import RegionUnavailableError, send_graphql_request
 
 TIMEOUT_SECONDS = (5, 10)
 """Shorter than an export's timeouts, so a region that is down costs seconds, not a minute."""
+
+GRACE_SECONDS = 2.0
+"""How long to wait for the other regions once one region accepts the key."""
 
 _QUERY = 'query { export(id: "rapid7-orgs-region-check") { id } }'
 
@@ -43,13 +48,38 @@ def _accepts(endpoint: str, api_key: str) -> str:
 
 
 def detect_region(api_key: str) -> Detection:
-    """Ask every region at once whether it accepts api_key."""
-    regions = list(REGION_ENDPOINTS)
-    with ThreadPoolExecutor(max_workers=len(regions)) as pool:
-        outcomes = dict(zip(regions, pool.map(lambda r: _accepts(REGION_ENDPOINTS[r], api_key), regions)))
+    """Ask every region at once whether it accepts api_key.
 
-    accepted = [r for r in regions if outcomes[r] == "accepted"]
-    unavailable = [r for r in regions if outcomes[r] == "unavailable"]
+    Once one region accepts, the others get GRACE_SECONDS to answer before the result is
+    decided, so a region that is down costs seconds only for a key that belongs to it.
+    """
+    regions = list(REGION_ENDPOINTS)
+    answers: "queue.Queue" = queue.Queue()
+    for region in regions:
+        # Daemon threads: a region that is slow to answer never holds up the command or its exit.
+        threading.Thread(
+            target=lambda r=region: answers.put((r, _accepts(REGION_ENDPOINTS[r], api_key))), daemon=True
+        ).start()
+
+    outcomes = {}
+    give_up = time.monotonic() + sum(TIMEOUT_SECONDS) + 5
+    accepted_by = None
+    while len(outcomes) < len(regions):
+        limit = min(give_up, accepted_by + GRACE_SECONDS) if accepted_by else give_up
+        wait = limit - time.monotonic()
+        if wait <= 0:
+            break
+        try:
+            region, outcome = answers.get(timeout=wait)
+        except queue.Empty:
+            break
+        outcomes[region] = outcome
+        if outcome == "accepted" and accepted_by is None:
+            accepted_by = time.monotonic()
+
+    accepted = [r for r in regions if outcomes.get(r) == "accepted"]
+    # A region still silent is treated as unavailable: it answered neither yes nor no in time.
+    unavailable = [r for r in regions if outcomes.get(r, "unavailable") == "unavailable"]
     if len(accepted) == 1:
         return Detection(accepted[0], unavailable)
     if len(accepted) > 1:
