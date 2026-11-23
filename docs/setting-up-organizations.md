@@ -12,35 +12,22 @@ takes about one minute per organization.
   needs its own key. One key cannot export two organizations.
 - Keep the keys open in your password manager. You paste them one at a time.
 
-You do not need to know each organization's region. The setup command finds it.
+You do not need to know each organization's region. The setup finds it.
 
-## 1. Open a terminal
+## 1. Ask Claude to open the setup
 
-- **macOS:** open Terminal (Applications, then Utilities).
-- **Windows:** open PowerShell (Start, then type PowerShell).
+In Claude Desktop, ask: "Set up my Rapid7 organizations."
 
-## 2. Start the setup command
+A Terminal window opens on macOS, or a console window on Windows, with a short menu.
+Never type or paste a key into the Claude chat. Keys go into that window only.
 
-The command installs with the extension. Copy the line for your computer:
+If no window opens, Claude opens a folder instead. Double-click **Set up Rapid7
+organizations** in it.
 
-**macOS**
+## 2. Add your organizations
 
-```
-"$HOME/Library/Application Support/Claude/Claude Extensions/local.mcpb.rapid7.rapid7-bulk-export/.venv/bin/rapid7-orgs"
-```
-
-**Windows (PowerShell)**
-
-```
-& "$env:APPDATA\Claude\Claude Extensions\local.mcpb.rapid7.rapid7-bulk-export\.venv\Scripts\rapid7-orgs.exe"
-```
-
-If the command is not found, open Claude Desktop once after you install the extension,
-then try again. Claude Desktop finishes the install when it first starts the extension.
-
-## 3. Answer the questions
-
-The first time, the command asks about the organization you already use:
+Choose **1. Add organizations**. The first time, the setup asks about the organization
+you already use:
 
 ```
 Keep that organization in the list too? (Y/n):        press Return
@@ -60,44 +47,31 @@ Paste its Organization API key (it will not show):     paste the key, then press
 ```
 
 - The key does not show on the screen when you paste it. That is expected.
-- If a key does not work, the command says why and adds nothing. Paste the correct key
-  at the next prompt.
-- To finish, press Return at an empty organization name.
+- If a key does not work, the setup says why and adds nothing. Paste the correct key at
+  the next prompt.
+- To finish, press Return at an empty organization name, then choose **5. Quit**.
 
-The command then lists every organization and prints the path of your organizations
-file.
+## 3. Export in Claude
 
-## 4. Point Claude Desktop at the organizations file
+Ask Claude: "Start vulnerability exports for every org in the orgs file."
 
-1. In Claude Desktop, open Settings, then Extensions, then Rapid7 Bulk Export, then
-   Configure.
-2. Set **Organizations file** to the path the command printed.
-3. Keep the **Rapid7 API Key** setting as it is, if you kept that organization in step 3.
-4. Quit Claude Desktop completely, then open it again.
-
-## 5. Check it in Claude
-
-Ask Claude: "Which organizations are configured for Rapid7 reporting?"
-
-Claude lists every organization and its region. It never shows a key.
-
-Then ask: "Start vulnerability exports for every org in the orgs file."
+You do not need to change any setting or restart Claude Desktop. The extension finds the
+organizations by itself.
 
 ## Changing the list later
 
-Run the same command with one of these words after it:
+Ask Claude to open the setup again, and choose from the menu:
 
-| Command | What it does |
+| Menu choice | What it does |
 | --- | --- |
-| `rapid7-orgs` | Add more organizations |
-| `rapid7-orgs list` | Show each organization, its region, and whether its key is stored |
-| `rapid7-orgs remove fogcutter` | Remove one organization and delete its stored key |
-| `rapid7-orgs check` | Test every key again and confirm its region |
+| 1. Add organizations | Add more organizations |
+| 2. Remove an organization | Remove one organization and delete its stored key, after you confirm |
+| 3. Remove every organization | Remove all of them and their stored keys, after you type `clear` |
+| 4. Check every key | Test every key again and confirm its region |
+| 5. Quit | Close the setup |
 
-After any change, quit and reopen Claude Desktop.
-
-To go back to one organization, clear the **Organizations file** setting in Claude
-Desktop, then restart it.
+When no organizations are left, Claude Desktop goes back to the one organization in the
+Rapid7 API Key setting. That setting is never changed by the setup.
 
 ## Where your keys are
 
@@ -107,6 +81,31 @@ Desktop, then restart it.
 | Windows | Windows Credential Manager |
 | Linux desktop | Secret Service (GNOME Keyring or KWallet) |
 
-The organizations file holds names and regions only. It never holds a key. On a server
-or in Docker, with no key store, put each key in an environment variable instead and
-name that variable in the organizations file.
+The organizations file, `orgs.json` in the extension's data folder (normally
+`~/.rapid7_mcp`), holds names and regions only. It never holds a key.
+
+## If Claude cannot open the setup
+
+Run the setup command yourself. Copy the line for your computer into Terminal on macOS or
+PowerShell on Windows:
+
+**macOS**
+
+```
+"$HOME/Library/Application Support/Claude/Claude Extensions/local.mcpb.rapid7.rapid7-bulk-export/.venv/bin/rapid7-orgs" menu
+```
+
+**Windows (PowerShell)**
+
+```
+& "$env:APPDATA\Claude\Claude Extensions\local.mcpb.rapid7.rapid7-bulk-export\.venv\Scripts\rapid7-orgs.exe" menu
+```
+
+The same command also takes `list`, `check`, `remove NAME`, and `clear` in place of
+`menu`.
+
+## Servers and Docker
+
+A server has no key store and no desktop. Put each key in an environment variable,
+list the organizations in an orgs file that names those variables, and set
+`RAPID7_ORGS_FILE` to that file.

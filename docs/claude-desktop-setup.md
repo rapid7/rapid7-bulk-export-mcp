@@ -216,17 +216,14 @@ before quoting totals. Do not skip it.
 
 ## Adding a second organization to a single-org setup
 
-If you already use one API key, you do not start again. Follow
-[Setting up your organizations](setting-up-organizations.md). The `rapid7-orgs` command
-installs with the extension and works on macOS and Windows. It keeps the key you already
-use as the first organization, then adds the others one at a time.
+If you already use one API key, you do not start again. Ask Claude "Set up my Rapid7
+organizations", and follow [Setting up your organizations](setting-up-organizations.md).
+A setup window opens, keeps the key you already use as the first organization, and adds
+the others one at a time. The extension finds them with no setting to change.
 
 The first multi-org export of your original organization replaces its single-org data,
-so its totals are not counted twice.
-
-To go back to one organization, clear the Organizations file setting in Claude Desktop
-and restart it. The server then uses the Rapid7 API Key alone, as before. The next
-export replaces the data with that organization only.
+so its totals are not counted twice. When every added organization is removed, the
+extension goes back to the Rapid7 API Key alone, as before.
 
 ## Verifying the whole thing end to end
 
