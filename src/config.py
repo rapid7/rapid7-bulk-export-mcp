@@ -9,6 +9,8 @@ import platform
 import subprocess  # nosec B404
 from typing import Any, Dict, List, Optional
 
+from . import keystore
+
 USER_AGENT = "r7:bulk-export-mcp"
 
 
@@ -27,10 +29,10 @@ REGION_ENDPOINTS = {
 
 
 def _get_key_from_keychain(service_name: str) -> Optional[str]:
-    """Retrieve a password from macOS Keychain.
+    """Retrieve a password from the operating system's key store.
 
-    Uses the `security find-generic-password` command to look up a stored
-    credential by service name. Only available on macOS.
+    On macOS, uses the `security find-generic-password` command to look up a stored
+    credential by service name. On Windows and Linux, reads the same name through keyring.
 
     Args:
         service_name: The service name used when storing the credential.
@@ -39,7 +41,9 @@ def _get_key_from_keychain(service_name: str) -> Optional[str]:
         The password string if found, None otherwise.
     """
     if platform.system() != "Darwin":
-        return None
+        # Windows Credential Manager and the Linux Secret Service, through keyring. macOS
+        # keeps the security lookup below, which also finds keys stored under any account.
+        return None if keystore.is_macos_keychain() else keystore.read(service_name)
 
     try:
         result = subprocess.run(  # nosec B603 B607
