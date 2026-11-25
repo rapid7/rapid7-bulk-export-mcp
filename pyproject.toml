@@ -6,7 +6,7 @@ build-backend = "hatchling.build"
 name = "rapid7-vulnerability-export"
 version = "0.7.1"
 description = "Python script to export vulnerability data from Rapid7 InsightVM using the Bulk Export API"
-requires-python = ">=3.10"
+requires-python = ">=3.11"
 dependencies = [
     "requests>=2.31.0",
     "pyarrow>=12.0.0",
@@ -70,7 +70,7 @@ markers = [
 max_examples = 100
 
 [tool.ruff]
-target-version = "py310"
+target-version = "py311"
 line-length = 120
 
 [tool.ruff.lint]
