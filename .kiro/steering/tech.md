@@ -2,7 +2,7 @@
 
 ## Language & Runtime
 
-- Python >= 3.10
+- Python >= 3.11
 
 ## Build System
 
@@ -72,7 +72,7 @@ The server requires two environment variables:
 
 ## Code Quality Rules
 
-- **Ruff** config: target Python 3.10, line length 120, rules E/F/W/I (isort)
+- **Ruff** config: target Python 3.11, line length 120, rules E/F/W/I (isort)
 - **Bandit** skips: B110 (bare except pass), B112 (try-except-continue)
 - **Pytest** markers: `property`, `unit`, `integration`
 - **Hypothesis** max examples: 100
